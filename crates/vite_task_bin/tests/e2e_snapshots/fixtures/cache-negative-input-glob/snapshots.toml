@@ -1,0 +1,18 @@
+# Tests that negative input globs exclude paths from fspy tracking,
+# so tasks writing to excluded paths (like node_modules/.vite-temp) are still cached.
+# See: https://github.com/voidzero-dev/vite-plus/issues/1095
+
+[[e2e]]
+name = "negative input glob excludes vite-temp from tracking"
+steps = [
+  "vt run build # first run: cache miss",
+  "vt run build # second run: should hit cache despite .vite-temp write",
+]
+
+[[e2e]]
+name = "source change still causes cache miss with negative input glob"
+steps = [
+  "vt run build # first run: cache miss",
+  "replace-file-content src/index.ts world universe # modify real source",
+  "vt run build # cache miss: source changed",
+]

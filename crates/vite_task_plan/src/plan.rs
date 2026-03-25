@@ -20,7 +20,7 @@ use vite_str::Str;
 use vite_task_graph::{
     TaskNodeIndex, TaskSource,
     config::{
-        CacheConfig, ResolvedGlobalCacheConfig, ResolvedTaskOptions,
+        CacheConfig, ResolvedGlobalCacheConfig, ResolvedInputConfig, ResolvedTaskOptions,
         user::{UserCacheConfig, UserTaskOptions},
     },
     query::TaskQuery,
@@ -463,6 +463,24 @@ fn resolve_synthetic_cache_config(
                     }
                     if let Some(extra_pts) = enabled_cache_config.untracked_env {
                         parent_config.env_config.untracked_env.extend(extra_pts);
+                    }
+                    // Merge synthetic's input config (resolve relative to workspace root,
+                    // since synthetic commands operate at CLI level, not package level)
+                    if let Some(ref input) = enabled_cache_config.input {
+                        let synthetic_input = ResolvedInputConfig::from_user_config(
+                            Some(input),
+                            workspace_path,
+                            workspace_path,
+                        )
+                        .map_err(Error::ResolveTaskConfig)?;
+                        parent_config
+                            .input_config
+                            .negative_globs
+                            .extend(synthetic_input.negative_globs);
+                        parent_config
+                            .input_config
+                            .positive_globs
+                            .extend(synthetic_input.positive_globs);
                     }
                     Some(parent_config)
                 }

@@ -1,0 +1,10 @@
+{
+  "cache": true,
+  "tasks": {
+    "build": {
+      "command": "node build.mjs",
+      "cache": true,
+      "input": [{ "auto": true }, "!node_modules/.vite-temp/**"]
+    }
+  }
+}
