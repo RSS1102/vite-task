@@ -767,3 +767,212 @@ pub async fn plan_query_request(
         Error::CycleDependencyDetected(displays)
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use rustc_hash::FxHashSet;
+    use vite_path::AbsolutePathBuf;
+    use vite_str::Str;
+    use vite_task_graph::config::{
+        CacheConfig, EnvConfig, ResolvedInputConfig,
+        user::{EnabledCacheConfig, UserCacheConfig, UserInputEntry},
+    };
+
+    use super::{ParentCacheConfig, resolve_synthetic_cache_config};
+
+    fn make_workspace_path() -> AbsolutePathBuf {
+        #[cfg(unix)]
+        {
+            AbsolutePathBuf::new("/workspace".into()).unwrap()
+        }
+        #[cfg(windows)]
+        {
+            AbsolutePathBuf::new("C:\\workspace".into()).unwrap()
+        }
+    }
+
+    fn make_parent_config() -> CacheConfig {
+        CacheConfig {
+            env_config: EnvConfig {
+                fingerprinted_envs: FxHashSet::default(),
+                untracked_env: FxHashSet::default(),
+            },
+            input_config: ResolvedInputConfig::default_auto(),
+        }
+    }
+
+    #[test]
+    fn inherited_disabled_synthetic_returns_none() {
+        let workspace = make_workspace_path();
+        let cwd = workspace.clone().into();
+        let result = resolve_synthetic_cache_config(
+            ParentCacheConfig::Inherited(make_parent_config()),
+            UserCacheConfig::disabled(),
+            &cwd,
+            &workspace,
+        )
+        .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn disabled_parent_returns_none() {
+        let workspace = make_workspace_path();
+        let cwd = workspace.clone().into();
+        let result = resolve_synthetic_cache_config(
+            ParentCacheConfig::Disabled,
+            UserCacheConfig::with_config(EnabledCacheConfig {
+                env: None,
+                untracked_env: None,
+                input: None,
+            }),
+            &cwd,
+            &workspace,
+        )
+        .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn inherited_merges_env() {
+        let workspace = make_workspace_path();
+        let cwd = workspace.clone().into();
+        let result = resolve_synthetic_cache_config(
+            ParentCacheConfig::Inherited(make_parent_config()),
+            UserCacheConfig::with_config(EnabledCacheConfig {
+                env: Some(Box::new([Str::from("VITE_*")])),
+                untracked_env: Some(vec![Str::from("HOME")]),
+                input: None,
+            }),
+            &cwd,
+            &workspace,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(result.env_config.fingerprinted_envs.contains("VITE_*"));
+        assert!(result.env_config.untracked_env.contains("HOME"));
+    }
+
+    #[test]
+    fn inherited_merges_negative_input_globs() {
+        let workspace = make_workspace_path();
+        let cwd = workspace.clone().into();
+        let result = resolve_synthetic_cache_config(
+            ParentCacheConfig::Inherited(make_parent_config()),
+            UserCacheConfig::with_config(EnabledCacheConfig {
+                env: None,
+                untracked_env: None,
+                input: Some(vec![
+                    UserInputEntry::Auto { auto: true },
+                    UserInputEntry::Glob(Str::from("!node_modules/.vite-temp/**")),
+                ]),
+            }),
+            &cwd,
+            &workspace,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(result.input_config.includes_auto);
+        assert!(
+            result.input_config.negative_globs.contains(&Str::from("node_modules/.vite-temp/**")),
+            "negative globs should contain the vite-temp exclusion, got: {:?}",
+            result.input_config.negative_globs,
+        );
+    }
+
+    #[test]
+    fn inherited_merges_positive_input_globs() {
+        let workspace = make_workspace_path();
+        let cwd = workspace.clone().into();
+        let result = resolve_synthetic_cache_config(
+            ParentCacheConfig::Inherited(make_parent_config()),
+            UserCacheConfig::with_config(EnabledCacheConfig {
+                env: None,
+                untracked_env: None,
+                input: Some(vec![UserInputEntry::Glob(Str::from("src/**"))]),
+            }),
+            &cwd,
+            &workspace,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(
+            result.input_config.positive_globs.contains(&Str::from("src/**")),
+            "positive globs should contain src/**, got: {:?}",
+            result.input_config.positive_globs,
+        );
+    }
+
+    #[test]
+    fn inherited_input_none_preserves_parent_config() {
+        let workspace = make_workspace_path();
+        let cwd = workspace.clone().into();
+        let mut parent = make_parent_config();
+        parent.input_config.negative_globs.insert(Str::from("existing/**"));
+        let result = resolve_synthetic_cache_config(
+            ParentCacheConfig::Inherited(parent),
+            UserCacheConfig::with_config(EnabledCacheConfig {
+                env: None,
+                untracked_env: None,
+                input: None,
+            }),
+            &cwd,
+            &workspace,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(result.input_config.negative_globs, BTreeSet::from([Str::from("existing/**")]),);
+    }
+
+    #[test]
+    fn inherited_merges_input_with_existing_parent_globs() {
+        let workspace = make_workspace_path();
+        let cwd = workspace.clone().into();
+        let mut parent = make_parent_config();
+        parent.input_config.negative_globs.insert(Str::from("dist/**"));
+        let result = resolve_synthetic_cache_config(
+            ParentCacheConfig::Inherited(parent),
+            UserCacheConfig::with_config(EnabledCacheConfig {
+                env: None,
+                untracked_env: None,
+                input: Some(vec![UserInputEntry::Glob(Str::from("!node_modules/.vite-temp/**"))]),
+            }),
+            &cwd,
+            &workspace,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            result.input_config.negative_globs,
+            BTreeSet::from([Str::from("dist/**"), Str::from("node_modules/.vite-temp/**"),]),
+        );
+    }
+
+    #[test]
+    fn inherited_input_globs_resolved_relative_to_workspace_root() {
+        let workspace = make_workspace_path();
+        // cwd is a subdirectory, but globs should resolve relative to workspace root
+        let cwd = workspace.join("packages/hello").into();
+        let result = resolve_synthetic_cache_config(
+            ParentCacheConfig::Inherited(make_parent_config()),
+            UserCacheConfig::with_config(EnabledCacheConfig {
+                env: None,
+                untracked_env: None,
+                input: Some(vec![UserInputEntry::Glob(Str::from("!node_modules/.vite-temp/**"))]),
+            }),
+            &cwd,
+            &workspace,
+        )
+        .unwrap()
+        .unwrap();
+        // The glob should be workspace-root-relative, NOT cwd-relative
+        // (i.e., "node_modules/.vite-temp/**", NOT "packages/hello/node_modules/.vite-temp/**")
+        assert!(
+            result.input_config.negative_globs.contains(&Str::from("node_modules/.vite-temp/**")),
+            "glob should be workspace-root-relative, got: {:?}",
+            result.input_config.negative_globs,
+        );
+    }
+}
