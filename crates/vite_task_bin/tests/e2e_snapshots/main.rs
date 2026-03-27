@@ -190,9 +190,7 @@ fn run_case(tmpdir: &AbsolutePath, fixture_path: &std::path::Path, filter: Optio
     {
         println!("{fixture_name}");
     }
-    // Configure insta to write snapshots to fixture directory
     let mut settings = insta::Settings::clone_current();
-    settings.set_snapshot_path(fixture_path.join("snapshots"));
     settings.set_prepend_module_to_snapshot(false);
     settings.remove_snapshot_suffix();
 
@@ -216,6 +214,13 @@ fn run_case_inner(tmpdir: &AbsolutePath, fixture_path: &std::path::Path, fixture
     // Copy the case directory to a temporary directory to avoid discovering workspace outside of the test case.
     let stage_path = tmpdir.join(fixture_name);
     CopyOptions::new().copy_tree(fixture_path, stage_path.as_path()).unwrap();
+
+    // Point insta at the staged copy's snapshot dir (which is writable). The
+    // original fixture_path may be on a read-only filesystem (e.g. WebDAV mount
+    // during cross-platform testing via cargo-xtest).
+    let mut settings = insta::Settings::clone_current();
+    settings.set_snapshot_path(stage_path.as_path().join("snapshots"));
+    let _guard = settings.bind_to_scope();
 
     let (workspace_root, _cwd) = find_workspace_root(&stage_path).unwrap();
 
@@ -418,7 +423,13 @@ fn run_case_inner(tmpdir: &AbsolutePath, fixture_path: &std::path::Path, fixture
 
 fn main() {
     // SAFETY: Called before any threads are spawned; insta reads this lazily on first assertion.
-    unsafe { std::env::set_var("INSTA_REQUIRE_FULL_MATCH", "1") };
+    // Skip INSTA_REQUIRE_FULL_MATCH when running cross-platform (via cargo-xtest): the snapshot
+    // source metadata changes when the test binary runs on a remote machine, causing insta to
+    // write .snap.new even when content matches. INSTA_UPDATE=always in this mode accepts
+    // metadata-only changes.
+    if std::env::var_os("INSTA_UPDATE").is_none() {
+        unsafe { std::env::set_var("INSTA_REQUIRE_FULL_MATCH", "1") };
+    }
 
     let filter = std::env::args().nth(1);
 
