@@ -8,6 +8,7 @@
 
 mod barrier;
 mod check_tty;
+mod exit_on_ctrlc;
 mod print;
 mod print_cwd;
 mod print_env;
@@ -21,7 +22,7 @@ fn main() {
     if args.len() < 2 {
         eprintln!("Usage: vtt <subcommand> [args...]");
         eprintln!(
-            "Subcommands: barrier, check-tty, print, print-cwd, print-env, print-file, read-stdin, replace-file-content, touch-file"
+            "Subcommands: barrier, check-tty, exit-on-ctrlc, print, print-cwd, print-env, print-file, read-stdin, replace-file-content, touch-file"
         );
         std::process::exit(1);
     }
@@ -32,6 +33,7 @@ fn main() {
             check_tty::run();
             Ok(())
         }
+        "exit-on-ctrlc" => exit_on_ctrlc::run(),
         "print" => {
             print::run(&args[2..]);
             Ok(())
