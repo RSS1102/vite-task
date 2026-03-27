@@ -86,24 +86,26 @@ impl Step {
     fn spawn_mode(&self) -> StepSpawn<'_> {
         match self {
             Self::Command(command) => StepSpawn::Shell(command.as_str()),
-            Self::Detailed(config) => {
-                if let Some(argv) = &config.argv {
-                    StepSpawn::Direct(argv)
-                } else if let Some(command) = &config.command {
-                    StepSpawn::Shell(command.as_str())
-                } else {
-                    panic!("step must have either 'command' or 'argv'");
-                }
-            }
+            Self::Detailed(config) => config.argv.as_deref().map_or_else(
+                || {
+                    StepSpawn::Shell(
+                        config
+                            .command
+                            .as_ref()
+                            .expect("step must have either 'command' or 'argv'")
+                            .as_str(),
+                    )
+                },
+                StepSpawn::Direct,
+            ),
         }
     }
 
+    #[expect(clippy::disallowed_types, reason = "String required by join")]
     fn display_command(&self) -> String {
         match self.spawn_mode() {
             StepSpawn::Shell(cmd) => cmd.to_string(),
-            StepSpawn::Direct(argv) => {
-                argv.iter().map(|a| a.as_str()).collect::<Vec<_>>().join(" ")
-            }
+            StepSpawn::Direct(argv) => argv.iter().map(Str::as_str).collect::<Vec<_>>().join(" "),
         }
     }
 
@@ -467,12 +469,12 @@ fn run_case_inner(tmpdir: &AbsolutePath, fixture_path: &std::path::Path, fixture
 }
 
 fn main() {
-    // SAFETY: Called before any threads are spawned; insta reads this lazily on first assertion.
     // Skip INSTA_REQUIRE_FULL_MATCH when running cross-platform (via cargo-xtest): the snapshot
     // source metadata changes when the test binary runs on a remote machine, causing insta to
     // write .snap.new even when content matches. INSTA_UPDATE=always in this mode accepts
     // metadata-only changes.
     if std::env::var_os("INSTA_UPDATE").is_none() {
+        // SAFETY: Called before any threads are spawned; insta reads this lazily on first assertion.
         unsafe { std::env::set_var("INSTA_REQUIRE_FULL_MATCH", "1") };
     }
 

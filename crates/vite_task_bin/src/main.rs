@@ -13,6 +13,7 @@ fn main() -> ! {
         tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap().block_on(async {
             match run().await {
                 Ok(status) => i32::from(status.0),
+                #[expect(clippy::print_stderr, reason = "top-level error reporting")]
                 Err(err) => {
                     eprintln!("Error: {err:?}");
                     1
