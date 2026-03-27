@@ -386,7 +386,9 @@ fn run_case_inner(tmpdir: &AbsolutePath, fixture_path: &std::path::Path, fixture
                     e2e_outputs.push_str("[timeout]");
                 }
                 TerminationState::Exited(exit_code) => {
-                    if *exit_code != 0 {
+                    // Normalize Windows CTRL_C exit code (512) to match Unix (1).
+                    let exit_code = if cfg!(windows) && *exit_code == 512 { 1 } else { *exit_code };
+                    if exit_code != 0 {
                         e2e_outputs.push_str(vite_str::format!("[{exit_code}]").as_str());
                     }
                 }

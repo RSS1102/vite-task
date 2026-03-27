@@ -12,4 +12,4 @@ expression: e2e_outputs
 @ write-key: ctrl-c
 ~/packages/a$ vtt exit-on-ctrlc ⊘ cache disabled
 ~/packages/b$ vtt exit-on-ctrlc ⊘ cache disabled
-^Cctrl-c receivedctrl-c received
+ctrl-c received

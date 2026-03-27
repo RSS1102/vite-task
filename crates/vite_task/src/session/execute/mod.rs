@@ -560,6 +560,7 @@ async fn spawn_inherited(
                     }
                 }
             }
+
             Ok(())
         });
     }
