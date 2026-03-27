@@ -435,7 +435,7 @@ fn main() {
 
         // Copy .node-version to the tmp dir so version manager shims can resolve the correct
         // Node.js binary when running task commands.
-        let repo_root = manifest_dir.join("../..").canonicalize().unwrap();
+        let repo_root = manifest_dir.parent().unwrap().parent().unwrap();
         std::fs::copy(repo_root.join(".node-version"), tmp_dir.path().join(".node-version"))
             .unwrap();
 
