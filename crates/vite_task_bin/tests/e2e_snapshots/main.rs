@@ -64,16 +64,46 @@ enum Step {
 #[derive(serde::Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 struct StepConfig {
-    command: Str,
+    /// Shell command string (run via `sh -c`).
+    #[serde(default)]
+    command: Option<Str>,
+    /// Argument vector — spawned directly without a shell wrapper.
+    #[serde(default)]
+    argv: Option<Vec<Str>>,
     #[serde(default)]
     interactions: Vec<Interaction>,
 }
 
+/// How to spawn a step: either via shell or directly.
+enum StepSpawn<'a> {
+    /// Run through `sh -c "<command>"`.
+    Shell(&'a str),
+    /// Spawn directly with the given argv (first element is the program).
+    Direct(&'a [Str]),
+}
+
 impl Step {
-    fn command(&self) -> &str {
+    fn spawn_mode(&self) -> StepSpawn<'_> {
         match self {
-            Self::Command(command) => command.as_str(),
-            Self::Detailed(config) => config.command.as_str(),
+            Self::Command(command) => StepSpawn::Shell(command.as_str()),
+            Self::Detailed(config) => {
+                if let Some(argv) = &config.argv {
+                    StepSpawn::Direct(argv)
+                } else if let Some(command) = &config.command {
+                    StepSpawn::Shell(command.as_str())
+                } else {
+                    panic!("step must have either 'command' or 'argv'");
+                }
+            }
+        }
+    }
+
+    fn display_command(&self) -> String {
+        match self.spawn_mode() {
+            StepSpawn::Shell(cmd) => cmd.to_string(),
+            StepSpawn::Direct(argv) => {
+                argv.iter().map(|a| a.as_str()).collect::<Vec<_>>().join(" ")
+            }
         }
     }
 
@@ -284,10 +314,27 @@ fn run_case_inner(tmpdir: &AbsolutePath, fixture_path: &std::path::Path, fixture
 
         let mut e2e_outputs = String::new();
         for step in &e2e.steps {
-            let step_command = step.command();
-            let mut cmd = CommandBuilder::new(&shell_exe);
-            cmd.arg("-c");
-            cmd.arg(step_command);
+            let step_display = step.display_command();
+            let mut cmd = match step.spawn_mode() {
+                StepSpawn::Shell(command) => {
+                    let mut cmd = CommandBuilder::new(&shell_exe);
+                    cmd.arg("-c");
+                    cmd.arg(command);
+                    cmd
+                }
+                StepSpawn::Direct(argv) => {
+                    // Resolve the program from CARGO_BIN_EXE_<name> if available,
+                    // since CommandBuilder doesn't do PATH lookup on all platforms.
+                    let program = argv[0].as_str();
+                    let exe_env = vite_str::format!("CARGO_BIN_EXE_{program}");
+                    let resolved = env::var_os(exe_env.as_str()).unwrap_or_else(|| program.into());
+                    let mut cmd = CommandBuilder::new(resolved);
+                    for arg in &argv[1..] {
+                        cmd.arg(arg.as_str());
+                    }
+                    cmd
+                }
+            };
             cmd.env_clear();
             cmd.env("PATH", &e2e_env_path);
             cmd.env("NO_COLOR", "1");
@@ -391,16 +438,14 @@ fn run_case_inner(tmpdir: &AbsolutePath, fixture_path: &std::path::Path, fixture
                     e2e_outputs.push_str("[timeout]");
                 }
                 TerminationState::Exited(exit_code) => {
-                    // Normalize Windows CTRL_C exit code (512) to match Unix (1).
-                    let exit_code = if cfg!(windows) && *exit_code == 512 { 1 } else { *exit_code };
-                    if exit_code != 0 {
+                    if *exit_code != 0 {
                         e2e_outputs.push_str(vite_str::format!("[{exit_code}]").as_str());
                     }
                 }
             }
 
             e2e_outputs.push_str("> ");
-            e2e_outputs.push_str(step_command);
+            e2e_outputs.push_str(&step_display);
             e2e_outputs.push('\n');
 
             e2e_outputs.push_str(&redact_e2e_output(output, e2e_stage_path_str));
