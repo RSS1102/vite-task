@@ -33,7 +33,7 @@ Two equivalent styles are proposed.
 
 ### Style 1: CLI string syntax
 
-Each `dependsOn` element is a string (or array of strings) written exactly as you would type CLI arguments to `vp run`:
+Each `dependsOn` element is a string (existing syntax) or a string array written exactly as you would type CLI arguments to `vp run`:
 
 ```jsonc
 {
@@ -45,25 +45,21 @@ Each `dependsOn` element is a string (or array of strings) written exactly as yo
         "utils#build",
 
         // Run `build` across all workspace packages
-        "--recursive build",
+        ["--recursive", "build"],
 
         // Run `build` in current package and its transitive dependencies
-        "--transitive build",
+        ["--transitive", "build"],
 
         // Run `build` in packages matching a filter
-        "--filter @myorg/core build",
-        "--filter @myorg/core... build", // @myorg/core and its deps
-
-        // Array form — each element is one CLI token
         ["--filter", "@myorg/core", "build"],
-        ["--transitive", "build"],
+        ["--filter", "@myorg/core...", "build"], // @myorg/core and its deps
       ],
     },
   },
 }
 ```
 
-The parser splits a string element on whitespace (like a shell would) and interprets the tokens as `vp run` arguments. The array form avoids splitting entirely — useful when a filter value contains whitespace or for explicitness.
+Each element in the array is one CLI token, exactly as you would pass to `vp run`.
 
 **Supported flags:**
 
@@ -128,3 +124,11 @@ The same validation rules from the CLI apply:
 ## Context: "Current Package"
 
 When `--transitive` or a filter with traversal suffixes (e.g. `@myorg/core...`) resolves packages, "current package" means the package that owns the task containing this `dependsOn` entry — the same package that would be inferred from an unqualified `"build"` dependency today.
+
+## Comparison
+
+|                    | Style 1 (CLI string)                                           | Style 2 (Object)                                                   |
+| ------------------ | -------------------------------------------------------------- | ------------------------------------------------------------------ |
+| Learning curve     | None if you already know `vp run` — identical syntax           | Minimal — same flag names, written as JSON keys                    |
+| IDE autocompletion | Yes — TypeScript tuple types can constrain each array position | Yes — TypeScript object types can validate keys and suggest fields |
+| Config consistency | Unusual — CLI syntax embedded in config arrays                 | Consistent — matches the object style used elsewhere in the config |
