@@ -29,6 +29,8 @@ These simple forms remain valid and unchanged under both proposed styles.
 
 ## Proposed Syntax
 
+Two equivalent styles are proposed.
+
 ### Style 1: CLI string syntax
 
 Each `dependsOn` element is a string (or array of strings) written exactly as you would type CLI arguments to `vp run`:
@@ -88,10 +90,10 @@ Each `dependsOn` element can be an object whose keys mirror the CLI flag names:
         "utils#build",
 
         // Run `build` across all workspace packages
-        { "recursive": true, "task": "build" },
+        { "recursive": "build" },
 
         // Run `build` in current package and its transitive dependencies
-        { "transitive": true, "task": "build" },
+        { "transitive": "build" },
 
         // Run `build` in packages matching a filter
         { "filter": "@myorg/core", "task": "build" },
@@ -101,28 +103,27 @@ Each `dependsOn` element can be an object whose keys mirror the CLI flag names:
         { "filter": ["@myorg/core", "@myorg/utils"], "task": "build" },
 
         // Workspace root
-        { "workspaceRoot": true, "task": "build" },
+        { "workspaceRoot": "build" },
       ],
     },
   },
 }
 ```
 
-**Object fields:**
+**Object forms:**
 
-| Field           | Type                 | Meaning                                                    |
-| --------------- | -------------------- | ---------------------------------------------------------- |
-| `task`          | `string`             | **Required.** Task specifier (`"build"` or `"pkg#build"`). |
-| `recursive`     | `boolean`            | Select all workspace packages.                             |
-| `transitive`    | `boolean`            | Select current package + transitive dependencies.          |
-| `filter`        | `string \| string[]` | Select packages by filter expression(s).                   |
-| `workspaceRoot` | `boolean`            | Select the workspace root package.                         |
+| Form                                               | Meaning                                                          |
+| -------------------------------------------------- | ---------------------------------------------------------------- |
+| `{ "recursive": "<task>" }`                        | Run `<task>` across all workspace packages.                      |
+| `{ "transitive": "<task>" }`                       | Run `<task>` in current package and its transitive dependencies. |
+| `{ "filter": "<pattern>", "task": "<task>" }`      | Run `<task>` in packages matching a filter expression.           |
+| `{ "filter": ["<p1>", "<p2>"], "task": "<task>" }` | Run `<task>` in packages matching multiple filters.              |
+| `{ "workspaceRoot": "<task>" }`                    | Run `<task>` in the workspace root package.                      |
 
 The same validation rules from the CLI apply:
 
-- `recursive` and `transitive` are mutually exclusive.
-- `filter` cannot be combined with `recursive` or `transitive`.
-- When `task` contains a `#` (e.g. `"pkg#build"`), it cannot be combined with `recursive` or `filter`.
+- `recursive`, `transitive`, `filter`, and `workspaceRoot` are mutually exclusive.
+- When using `filter`, the task name goes in a separate `task` field (since `filter` takes a pattern as its value).
 
 ## Context: "Current Package"
 
