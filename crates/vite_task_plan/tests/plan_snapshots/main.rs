@@ -272,15 +272,8 @@ fn run_case_inner(
                     // and redact workspace paths for snapshot stability.
                     let anyhow_err: anyhow::Error = err.into();
                     let err_formatted = vite_str::format!("{anyhow_err:#}");
-                    // On Windows, paths printed via `{path:?}` are Debug-formatted
-                    // with each backslash escaped as `\\`. Unescape them before
-                    // redacting so the raw `workspace_root_str` matches.
-                    let err_str = if cfg!(windows) {
-                        err_formatted.as_str().cow_replace("\\\\", "\\")
-                    } else {
-                        std::borrow::Cow::Borrowed(err_formatted.as_str())
-                    };
-                    let err_str = err_str.as_ref().cow_replace(workspace_root_str, "<workspace>");
+                    let err_str =
+                        err_formatted.as_str().cow_replace(workspace_root_str, "<workspace>");
                     let err_str = if cfg!(windows) {
                         err_str.as_ref().cow_replace('\\', "/")
                     } else {
