@@ -264,14 +264,13 @@ pub enum TraversalMode {
 
 impl TraversalMode {
     /// Convert to the internal graph traversal specification.
-    pub(crate) fn to_graph_traversal(self) -> GraphTraversal {
+    ///
+    /// `Recursive` and `Transitive` produce the same graph traversal; they differ
+    /// in how seeds are chosen (all packages vs. the current package), which is
+    /// decided by the caller in [`PackageQueryArgs::into_package_query`].
+    pub(crate) const fn to_graph_traversal(self) -> GraphTraversal {
         match self {
-            Self::Recursive => GraphTraversal {
-                direction: TraversalDirection::Dependencies,
-                exclude_self: false,
-                direct_only: false,
-            },
-            Self::Transitive => GraphTraversal {
+            Self::Recursive | Self::Transitive => GraphTraversal {
                 direction: TraversalDirection::Dependencies,
                 exclude_self: false,
                 direct_only: false,
@@ -289,6 +288,12 @@ impl TraversalMode {
 ///
 /// Use `#[clap(flatten)]` to embed these in a parent clap struct.
 /// Call [`into_package_query`](Self::into_package_query) to convert into an opaque [`PackageQuery`].
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "clap requires separate bool fields for the mutually-exclusive traversal flags \
+              (-r/-t/-d) plus the independent -w flag; they are resolved into `TraversalMode` \
+              via `TraversalMode::from_flags`"
+)]
 #[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
 pub struct PackageQueryArgs {
     /// Select all packages in the workspace.
@@ -331,7 +336,7 @@ impl TraversalMode {
     ///
     /// Clap's `group = "traversal"` enforces mutual exclusivity at parse time.
     /// This function also handles direct struct construction (e.g. in tests).
-    fn from_flags(
+    const fn from_flags(
         recursive: bool,
         transitive: bool,
         direct: bool,
@@ -368,23 +373,7 @@ impl PackageQueryArgs {
     ) -> Result<(PackageQuery, bool), PackageQueryError> {
         let Self { recursive, transitive, direct, workspace_root, filters } = self;
         let traversal_mode = TraversalMode::from_flags(recursive, transitive, direct)?;
-
-        // Collect filter tokens from all `--filter` arguments, splitting on whitespace.
-        let mut filter_tokens = Vec::<Str>::with_capacity(filters.len());
-        for filter in filters {
-            let mut is_empty = true;
-            for filter_token in filter.split_ascii_whitespace() {
-                is_empty = false;
-                filter_tokens.push(filter_token.into());
-            }
-            // Error if any --filter value is empty or whitespace-only.
-            if is_empty {
-                return Err(PackageQueryError::EmptyFilter);
-            }
-        }
-        // We have checked that filter_tokens is non-empty if any filters were provided,
-        // If no tokens are collected, it means no filters were provided.
-        let filter_tokens: Option<Vec1<Str>> = Vec1::try_from_vec(filter_tokens).ok();
+        let filter_tokens = collect_filter_tokens(filters)?;
 
         // Error arms only match the conflicting fields (wildcards for the rest).
         // Success arms explicitly match every field — no wildcards.
@@ -502,6 +491,27 @@ impl PackageQueryArgs {
             )),
         }
     }
+}
+
+/// Collect filter tokens from all `--filter` arguments, splitting each on whitespace.
+///
+/// Returns `None` if no filters were provided, `Some` if at least one token was collected.
+/// Errors with [`PackageQueryError::EmptyFilter`] if any `--filter` value is empty or
+/// whitespace-only.
+fn collect_filter_tokens(filters: Vec<Str>) -> Result<Option<Vec1<Str>>, PackageQueryError> {
+    let mut filter_tokens = Vec::<Str>::with_capacity(filters.len());
+    for filter in filters {
+        let mut is_empty = true;
+        for filter_token in filter.split_ascii_whitespace() {
+            is_empty = false;
+            filter_tokens.push(filter_token.into());
+        }
+        if is_empty {
+            return Err(PackageQueryError::EmptyFilter);
+        }
+    }
+    // If no tokens were collected, no filters were provided.
+    Ok(Vec1::try_from_vec(filter_tokens).ok())
 }
 
 // ────────────────────────────────────────────────────────────────────────────
