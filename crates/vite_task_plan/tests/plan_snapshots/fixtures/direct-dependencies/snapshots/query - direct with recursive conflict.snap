@@ -1,6 +1,6 @@
 ---
 source: crates/vite_task_plan/tests/plan_snapshots/main.rs
-expression: err_str.as_ref()
+expression: err
 info:
   args:
     - run
@@ -9,4 +9,8 @@ info:
     - build
 input_file: crates/vite_task_plan/tests/plan_snapshots/fixtures/direct-dependencies
 ---
-Invalid vite task command: vt with args [] under cwd "<workspace>/": --direct and --recursive cannot be used together
+error: the argument '--direct' cannot be used with '--recursive'
+
+Usage: vt run --direct <TASK_SPECIFIER> <ADDITIONAL_ARGS>...
+
+For more information, try '--help'.

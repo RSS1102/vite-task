@@ -10,4 +10,4 @@ info:
     - build
 input_file: crates/vite_task_plan/tests/plan_snapshots/fixtures/direct-dependencies
 ---
-Invalid vite task command: vt with args [] under cwd "<workspace>/": --direct and --filter cannot be used together
+Invalid vite task command: vt with args [] under cwd "<workspace>/": --filter and --direct cannot be used together
