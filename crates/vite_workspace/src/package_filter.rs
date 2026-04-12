@@ -170,6 +170,12 @@ pub(crate) struct GraphTraversal {
     /// Produced by `^` in `foo^...` (keep dependencies, drop foo)
     /// or `...^foo` (keep dependents, drop foo).
     pub(crate) exclude_self: bool,
+
+    /// When `true`, only traverse one hop (direct dependencies/dependents).
+    /// When `false`, traverse the full transitive closure.
+    ///
+    /// Produced by `--dependencies` / `-d`.
+    pub(crate) direct_only: bool,
 }
 
 /// A single package filter, corresponding to one `--filter` argument.
@@ -224,6 +230,15 @@ pub enum PackageQueryError {
     #[error("--filter and --recursive cannot be used together")]
     FilterWithRecursive,
 
+    #[error("--direct and --recursive cannot be used together")]
+    DirectWithRecursive,
+
+    #[error("--direct and --transitive cannot be used together")]
+    DirectWithTransitive,
+
+    #[error("--direct and --filter cannot be used together")]
+    DirectWithFilter,
+
     #[error("cannot specify package name with --recursive")]
     PackageNameWithRecursive { package_name: Str },
 
@@ -245,6 +260,7 @@ pub enum PackageQueryError {
 /// Use `#[clap(flatten)]` to embed these in a parent clap struct.
 /// Call [`into_package_query`](Self::into_package_query) to convert into an opaque [`PackageQuery`].
 #[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
+#[expect(clippy::struct_excessive_bools, reason = "CLI flags are naturally boolean")]
 pub struct PackageQueryArgs {
     /// Select all packages in the workspace.
     #[clap(default_value = "false", short, long)]
@@ -253,6 +269,10 @@ pub struct PackageQueryArgs {
     /// Select the current package and its transitive dependencies.
     #[clap(default_value = "false", short, long)]
     transitive: bool,
+
+    /// Select the direct dependencies of the current package.
+    #[clap(default_value = "false", short, long)]
+    direct: bool,
 
     /// Select the workspace root package.
     #[clap(default_value = "false", short = 'w', long = "workspace-root")]
@@ -297,7 +317,7 @@ impl PackageQueryArgs {
         package_name: Option<Str>,
         cwd: &Arc<AbsolutePath>,
     ) -> Result<(PackageQuery, bool), PackageQueryError> {
-        let Self { recursive, transitive, workspace_root, filters } = self;
+        let Self { recursive, transitive, direct, workspace_root, filters } = self;
 
         // Collect filter tokens from all `--filter` arguments, splitting on whitespace.
         let mut filter_tokens = Vec::<Str>::with_capacity(filters.len());
@@ -318,34 +338,40 @@ impl PackageQueryArgs {
 
         // Error arms only match the conflicting fields (wildcards for the rest).
         // Success arms explicitly match every field — no wildcards.
-        match (recursive, transitive, workspace_root, filter_tokens, package_name) {
+        match (recursive, transitive, direct, workspace_root, filter_tokens, package_name) {
             // ------------------------- error cases --------------------------------
 
             // --recursive --transitive
-            (true, true, _, _, _) => Err(PackageQueryError::RecursiveTransitiveConflict),
+            (true, true, _, _, _, _) => Err(PackageQueryError::RecursiveTransitiveConflict),
+            // --recursive --direct
+            (true, _, true, _, _, _) => Err(PackageQueryError::DirectWithRecursive),
+            // --transitive --direct
+            (_, true, true, _, _, _) => Err(PackageQueryError::DirectWithTransitive),
             // --recursive --filter
-            (true, _, _, Some(_), _) => Err(PackageQueryError::FilterWithRecursive),
+            (true, _, _, _, Some(_), _) => Err(PackageQueryError::FilterWithRecursive),
+            // --direct --filter
+            (_, _, true, _, Some(_), _) => Err(PackageQueryError::DirectWithFilter),
             // --recursive <pkg>#<task>
-            (true, false, _, _, Some(package_name)) => {
+            (true, false, false, _, _, Some(package_name)) => {
                 Err(PackageQueryError::PackageNameWithRecursive { package_name })
             }
             // --transitive --filter
-            (false, true, _, Some(_), _) => Err(PackageQueryError::FilterWithTransitive),
+            (false, true, false, _, Some(_), _) => Err(PackageQueryError::FilterWithTransitive),
             // --filter <pkg>#<task>
-            (_, _, _, Some(_), Some(package_name)) => {
+            (_, _, _, _, Some(_), Some(package_name)) => {
                 Err(PackageQueryError::PackageNameWithFilter { package_name })
             }
             // --workspace-root <pkg>#<task>
-            (_, _, true, _, Some(package_name)) => {
+            (_, _, _, true, _, Some(package_name)) => {
                 Err(PackageQueryError::PackageNameWithWorkspaceRoot { package_name })
             }
 
             // ------------------------ success cases -------------------------------
 
             // --recursive (--workspace-root is redundant)
-            (true, false, true | false, None, None) => Ok((PackageQuery::all(), false)),
+            (true, false, false, true | false, None, None) => Ok((PackageQuery::all(), false)),
             // --filter [--workspace-root]
-            (false, false, workspace_root, Some(filter_tokens), None) => {
+            (false, false, false, workspace_root, Some(filter_tokens), None) => {
                 let mut parsed: Vec1<PackageFilter> =
                     filter_tokens.try_mapped(|f| parse_filter(&f, cwd))?;
                 if workspace_root {
@@ -358,12 +384,13 @@ impl PackageQueryArgs {
                 }
                 Ok((PackageQuery::filters(parsed), false))
             }
-            // --workspace-root [--transitive]
-            (false, transitive, true, None, None) => {
-                let traversal = if transitive {
+            // --workspace-root [--transitive|--direct]
+            (false, transitive, direct, true, None, None) => {
+                let traversal = if transitive || direct {
                     Some(GraphTraversal {
                         direction: TraversalDirection::Dependencies,
-                        exclude_self: false,
+                        exclude_self: direct,
+                        direct_only: direct,
                     })
                 } else {
                     None
@@ -378,12 +405,13 @@ impl PackageQueryArgs {
                     false,
                 ))
             }
-            // [--transitive] <pkg>#<task>
-            (false, transitive, false, None, Some(name)) => {
-                let traversal = if transitive {
+            // [--transitive|--direct] <pkg>#<task>
+            (false, transitive, direct, false, None, Some(name)) => {
+                let traversal = if transitive || direct {
                     Some(GraphTraversal {
                         direction: TraversalDirection::Dependencies,
-                        exclude_self: false,
+                        exclude_self: direct,
+                        direct_only: direct,
                     })
                 } else {
                     None
@@ -402,20 +430,35 @@ impl PackageQueryArgs {
                 ))
             }
             // --transitive
-            (false, true, false, None, None) => Ok((
+            (false, true, false, false, None, None) => Ok((
                 PackageQuery::filters(Vec1::new(PackageFilter {
                     exclude: false,
                     selector: PackageSelector::ContainingPackage(Arc::clone(cwd)),
                     traversal: Some(GraphTraversal {
                         direction: TraversalDirection::Dependencies,
                         exclude_self: false,
+                        direct_only: false,
+                    }),
+                    source: None,
+                })),
+                false,
+            )),
+            // --direct
+            (false, false, true, false, None, None) => Ok((
+                PackageQuery::filters(Vec1::new(PackageFilter {
+                    exclude: false,
+                    selector: PackageSelector::ContainingPackage(Arc::clone(cwd)),
+                    traversal: Some(GraphTraversal {
+                        direction: TraversalDirection::Dependencies,
+                        exclude_self: true,
+                        direct_only: true,
                     }),
                     source: None,
                 })),
                 false,
             )),
             // (no flags, implicit cwd)
-            (false, false, false, None, None) => Ok((
+            (false, false, false, false, None, None) => Ok((
                 PackageQuery::filters(Vec1::new(PackageFilter {
                     exclude: false,
                     selector: PackageSelector::ContainingPackage(Arc::clone(cwd)),
@@ -476,15 +519,24 @@ pub(crate) fn parse_filter(
     let exclude_self = deps_exclude_self || dependents_exclude_self;
 
     // Step 4–5: build the traversal descriptor.
+    // Filter-based traversals are always transitive (not direct_only).
     let traversal = match (include_dependencies, include_dependents) {
         (false, false) => None,
-        (true, false) => {
-            Some(GraphTraversal { direction: TraversalDirection::Dependencies, exclude_self })
-        }
-        (false, true) => {
-            Some(GraphTraversal { direction: TraversalDirection::Dependents, exclude_self })
-        }
-        (true, true) => Some(GraphTraversal { direction: TraversalDirection::Both, exclude_self }),
+        (true, false) => Some(GraphTraversal {
+            direction: TraversalDirection::Dependencies,
+            exclude_self,
+            direct_only: false,
+        }),
+        (false, true) => Some(GraphTraversal {
+            direction: TraversalDirection::Dependents,
+            exclude_self,
+            direct_only: false,
+        }),
+        (true, true) => Some(GraphTraversal {
+            direction: TraversalDirection::Both,
+            exclude_self,
+            direct_only: false,
+        }),
     };
 
     // Step 6–9: parse the remaining core selector.
@@ -1116,6 +1168,7 @@ mod tests {
         let args = PackageQueryArgs {
             recursive: false,
             transitive: false,
+            direct: false,
             workspace_root: true,
             filters: Vec::new(),
         };
@@ -1142,6 +1195,7 @@ mod tests {
         let args = PackageQueryArgs {
             recursive: true,
             transitive: false,
+            direct: false,
             workspace_root: true,
             filters: Vec::new(),
         };
@@ -1160,6 +1214,7 @@ mod tests {
         let args = PackageQueryArgs {
             recursive: false,
             transitive: true,
+            direct: false,
             workspace_root: true,
             filters: Vec::new(),
         };
@@ -1185,6 +1240,7 @@ mod tests {
         let args = PackageQueryArgs {
             recursive: false,
             transitive: false,
+            direct: false,
             workspace_root: true,
             filters: vec![Str::from("foo")],
         };
@@ -1209,6 +1265,7 @@ mod tests {
         let args = PackageQueryArgs {
             recursive: false,
             transitive: false,
+            direct: false,
             workspace_root: true,
             filters: Vec::new(),
         };
@@ -1233,6 +1290,7 @@ mod tests {
         let args = PackageQueryArgs {
             recursive: false,
             transitive: false,
+            direct: false,
             workspace_root: false,
             filters: vec![Str::from("a b")],
         };
@@ -1253,6 +1311,7 @@ mod tests {
         let args = PackageQueryArgs {
             recursive: false,
             transitive: false,
+            direct: false,
             workspace_root: true,
             filters: vec![Str::from("foo")],
         };
@@ -1273,6 +1332,7 @@ mod tests {
         let args = PackageQueryArgs {
             recursive: false,
             transitive: false,
+            direct: false,
             workspace_root: false,
             filters: Vec::new(),
         };
@@ -1294,6 +1354,7 @@ mod tests {
         let args = PackageQueryArgs {
             recursive: false,
             transitive: false,
+            direct: false,
             workspace_root: false,
             filters: vec![Str::from("")],
         };
@@ -1306,6 +1367,7 @@ mod tests {
         let args = PackageQueryArgs {
             recursive: false,
             transitive: false,
+            direct: false,
             workspace_root: false,
             filters: vec![Str::from("   ")],
         };
@@ -1318,6 +1380,7 @@ mod tests {
         let args = PackageQueryArgs {
             recursive: false,
             transitive: false,
+            direct: false,
             workspace_root: false,
             filters: vec![Str::from("foo"), Str::from("")],
         };
@@ -1330,6 +1393,7 @@ mod tests {
         let args = PackageQueryArgs {
             recursive: false,
             transitive: false,
+            direct: false,
             workspace_root: false,
             filters: vec![Str::from(""), Str::from("foo")],
         };
@@ -1342,6 +1406,7 @@ mod tests {
         let args = PackageQueryArgs {
             recursive: false,
             transitive: false,
+            direct: false,
             workspace_root: false,
             filters: vec![Str::from("foo"), Str::from("  \t  ")],
         };
@@ -1356,6 +1421,7 @@ mod tests {
         let args = PackageQueryArgs {
             recursive: false,
             transitive: false,
+            direct: false,
             workspace_root: false,
             filters: Vec::new(),
         };
@@ -1369,6 +1435,7 @@ mod tests {
         let args = PackageQueryArgs {
             recursive: false,
             transitive: false,
+            direct: false,
             workspace_root: false,
             filters: Vec::new(),
         };
@@ -1382,6 +1449,7 @@ mod tests {
         let args = PackageQueryArgs {
             recursive: false,
             transitive: true,
+            direct: false,
             workspace_root: false,
             filters: Vec::new(),
         };
@@ -1395,6 +1463,7 @@ mod tests {
         let args = PackageQueryArgs {
             recursive: true,
             transitive: false,
+            direct: false,
             workspace_root: false,
             filters: Vec::new(),
         };
@@ -1408,6 +1477,7 @@ mod tests {
         let args = PackageQueryArgs {
             recursive: false,
             transitive: false,
+            direct: false,
             workspace_root: false,
             filters: vec![Str::from("foo")],
         };
@@ -1421,6 +1491,7 @@ mod tests {
         let args = PackageQueryArgs {
             recursive: false,
             transitive: false,
+            direct: false,
             workspace_root: true,
             filters: Vec::new(),
         };
