@@ -25,54 +25,11 @@ The CLI already supports package selection through flags like `--recursive`, `--
 }
 ```
 
-These simple forms remain valid and unchanged under both proposed styles.
+These simple forms remain valid and unchanged.
 
 ## Proposed Syntax
 
-Two equivalent styles are proposed.
-
-### Style 1: CLI string syntax
-
-Each `dependsOn` element is a string (existing syntax) or a string array written exactly as you would type CLI arguments to `vp run`:
-
-```jsonc
-{
-  "tasks": {
-    "test": {
-      "dependsOn": [
-        // Existing syntax — still works
-        "build",
-        "utils#build",
-
-        // Run `build` across all workspace packages
-        ["--recursive", "build"],
-
-        // Run `build` in current package and its transitive dependencies
-        ["--transitive", "build"],
-
-        // Run `build` in packages matching a filter
-        ["--filter", "@myorg/core", "build"],
-        ["--filter", "@myorg/core...", "build"], // @myorg/core and its deps
-      ],
-    },
-  },
-}
-```
-
-Each element in the array is one CLI token, exactly as you would pass to `vp run`.
-
-**Supported flags:**
-
-| Flag                 | Short          | Meaning                                                            |
-| -------------------- | -------------- | ------------------------------------------------------------------ |
-| `--recursive`        | `-r`           | All workspace packages                                             |
-| `--transitive`       | `-t`           | Current package + its transitive dependencies                      |
-| `--filter <pattern>` | `-F <pattern>` | Packages matching a [filter expression](https://pnpm.io/filtering) |
-| `--workspace-root`   | `-w`           | The workspace root package                                         |
-
-Everything after the flags is the task specifier (e.g. `build`, `pkg#task`).
-
-### Style 2: Object syntax
+### Object syntax
 
 Each `dependsOn` element can be an object whose keys mirror the CLI flag names:
 
@@ -124,11 +81,3 @@ The same validation rules from the CLI apply:
 ## Context: "Current Package"
 
 When `--transitive` or a filter with traversal suffixes (e.g. `@myorg/core...`) resolves packages, "current package" means the package that owns the task containing this `dependsOn` entry — the same package that would be inferred from an unqualified `"build"` dependency today.
-
-## Comparison
-
-|                    | Style 1 (CLI string)                                           | Style 2 (Object)                                                   |
-| ------------------ | -------------------------------------------------------------- | ------------------------------------------------------------------ |
-| Learning curve     | None if you already know `vp run` — identical syntax           | Minimal — same flag names, written as JSON keys                    |
-| IDE autocompletion | Yes — TypeScript tuple types can constrain each array position | Yes — TypeScript object types can validate keys and suggest fields |
-| Config consistency | Unusual — CLI syntax embedded in config arrays                 | Consistent — matches the object style used elsewhere in the config |
