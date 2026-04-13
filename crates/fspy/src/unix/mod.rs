@@ -8,9 +8,11 @@ use std::{io, path::Path};
 
 #[cfg(target_os = "linux")]
 use fspy_seccomp_unotify::supervisor::supervise;
-use fspy_shared::ipc::PathAccess;
 #[cfg(not(target_env = "musl"))]
-use fspy_shared::ipc::{NativeStr, channel::channel};
+use fspy_shared::ipc::NativeStr;
+use fspy_shared::ipc::PathAccess;
+#[cfg(all(not(target_os = "android"), not(target_env = "musl")))]
+use fspy_shared::ipc::channel::channel;
 #[cfg(target_os = "macos")]
 use fspy_shared_unix::payload::Artifacts;
 use fspy_shared_unix::{
@@ -24,7 +26,7 @@ use syscall_handler::SyscallHandler;
 use tokio::task::spawn_blocking;
 use tokio_util::sync::CancellationToken;
 
-#[cfg(not(target_env = "musl"))]
+#[cfg(all(not(target_os = "android"), not(target_env = "musl")))]
 use crate::ipc::{OwnedReceiverLockGuard, SHM_CAPACITY};
 use crate::{ChildTermination, Command, TrackedChild, arena::PathAccessArena, error::SpawnError};
 
@@ -86,12 +88,12 @@ impl SpyImpl {
         #[cfg(target_os = "linux")]
         let supervisor = supervise::<SyscallHandler>().map_err(SpawnError::Supervisor)?;
 
-        #[cfg(not(target_env = "musl"))]
+        #[cfg(all(not(target_os = "android"), not(target_env = "musl")))]
         let (ipc_channel_conf, ipc_receiver) =
             channel(SHM_CAPACITY).map_err(SpawnError::ChannelCreation)?;
 
         let payload = Payload {
-            #[cfg(not(target_env = "musl"))]
+            #[cfg(all(not(target_os = "android"), not(target_env = "musl")))]
             ipc_channel_conf,
 
             #[cfg(target_os = "macos")]
@@ -169,12 +171,12 @@ impl SpyImpl {
 
                 // Lock the ipc channel after the child has exited.
                 // We are not interested in path accesses from descendants after the main child has exited.
-                #[cfg(not(target_env = "musl"))]
+                #[cfg(all(not(target_os = "android"), not(target_env = "musl")))]
                 let ipc_receiver_lock_guard =
                     OwnedReceiverLockGuard::lock_async(ipc_receiver).await?;
                 let path_accesses = PathAccessIterable {
                     arenas,
-                    #[cfg(not(target_env = "musl"))]
+                    #[cfg(all(not(target_os = "android"), not(target_env = "musl")))]
                     ipc_receiver_lock_guard,
                 };
 
@@ -188,7 +190,7 @@ impl SpyImpl {
 
 pub struct PathAccessIterable {
     arenas: Vec<PathAccessArena>,
-    #[cfg(not(target_env = "musl"))]
+    #[cfg(all(not(target_os = "android"), not(target_env = "musl")))]
     ipc_receiver_lock_guard: OwnedReceiverLockGuard,
 }
 
@@ -197,12 +199,12 @@ impl PathAccessIterable {
         let accesses_in_arena =
             self.arenas.iter().flat_map(|arena| arena.borrow_accesses().iter()).copied();
 
-        #[cfg(not(target_env = "musl"))]
+        #[cfg(all(not(target_os = "android"), not(target_env = "musl")))]
         {
             let accesses_in_shm = self.ipc_receiver_lock_guard.iter_path_accesses();
             accesses_in_shm.chain(accesses_in_arena)
         }
-        #[cfg(target_env = "musl")]
+        #[cfg(any(target_os = "android", target_env = "musl"))]
         {
             accesses_in_arena
         }
