@@ -89,51 +89,17 @@ impl<'de> SchemaRead<'de> for DurationSchema {
 ///
 /// Contains the post-run fingerprint (from fspy), captured outputs,
 /// execution duration, and explicit input file hashes.
-#[derive(Debug, Serialize)]
+#[derive(Debug, SchemaWrite, SchemaRead, Serialize)]
 pub struct CacheEntryValue {
     pub post_run_fingerprint: PostRunFingerprint,
     pub std_outputs: Arc<[StdOutput]>,
+    #[wincode(with = "DurationSchema")]
     pub duration: Duration,
     /// Hashes of explicit input files computed from positive globs.
     /// Files matching negative globs are already filtered out.
     /// Path is relative to workspace root, value is `xxHash3_64` of file content.
     /// Stored in the value (not the key) so changes can be detected and reported.
     pub globbed_inputs: BTreeMap<RelativePathBuf, u64>,
-}
-
-impl SchemaWrite for CacheEntryValue {
-    type Src = Self;
-
-    fn size_of(src: &Self::Src) -> WriteResult<usize> {
-        Ok(PostRunFingerprint::size_of(&src.post_run_fingerprint)?
-            + <Arc<[StdOutput]>>::size_of(&src.std_outputs)?
-            + DurationSchema::size_of(&src.duration)?
-            + <BTreeMap<RelativePathBuf, u64>>::size_of(&src.globbed_inputs)?)
-    }
-
-    fn write(writer: &mut impl Writer, src: &Self::Src) -> WriteResult<()> {
-        PostRunFingerprint::write(writer, &src.post_run_fingerprint)?;
-        <Arc<[StdOutput]>>::write(writer, &src.std_outputs)?;
-        DurationSchema::write(writer, &src.duration)?;
-        <BTreeMap<RelativePathBuf, u64>>::write(writer, &src.globbed_inputs)?;
-        Ok(())
-    }
-}
-
-impl<'de> SchemaRead<'de> for CacheEntryValue {
-    type Dst = Self;
-
-    fn read(
-        reader: &mut impl Reader<'de>,
-        dst: &mut std::mem::MaybeUninit<Self::Dst>,
-    ) -> ReadResult<()> {
-        let post_run_fingerprint = <PostRunFingerprint as SchemaRead<'_>>::get(reader)?;
-        let std_outputs = <Arc<[StdOutput]> as SchemaRead<'_>>::get(reader)?;
-        let duration = <DurationSchema as SchemaRead<'_>>::get(reader)?;
-        let globbed_inputs = <BTreeMap<RelativePathBuf, u64> as SchemaRead<'_>>::get(reader)?;
-        dst.write(Self { post_run_fingerprint, std_outputs, duration, globbed_inputs });
-        Ok(())
-    }
 }
 
 #[derive(Debug)]

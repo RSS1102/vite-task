@@ -28,13 +28,12 @@ impl SchemaWrite for ArcStrSchema {
     }
 }
 
-#[expect(clippy::disallowed_types, reason = "wincode decode: String → Arc<str>")]
 impl<'de> SchemaRead<'de> for ArcStrSchema {
     type Dst = Arc<str>;
 
     fn read(reader: &mut impl Reader<'de>, dst: &mut MaybeUninit<Self::Dst>) -> ReadResult<()> {
-        let s: String = String::get(reader)?;
-        dst.write(Arc::from(s.as_str()));
+        let s: &str = <&str>::get(reader)?;
+        dst.write(Arc::from(s));
         Ok(())
     }
 }
@@ -43,46 +42,18 @@ impl<'de> SchemaRead<'de> for ArcStrSchema {
 ///
 /// Contents of this struct are only for fingerprinting and cache key computation (some of envs may be hashed for security).
 /// The actual environment variables to be passed to the execution are in `LeafExecutionItem.all_envs`.
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
+#[derive(Debug, SchemaWrite, SchemaRead, Serialize, Deserialize, PartialEq, Eq, Clone)]
 pub struct EnvFingerprints {
     /// Environment variables that should be fingerprinted for this execution.
     ///
     /// Use `BTreeMap` to ensure stable order.
+    #[wincode(with = "BTreeMap<Str, ArcStrSchema>")]
     pub fingerprinted_envs: BTreeMap<Str, Arc<str>>,
 
     /// Environment variable names that should be passed through without values being fingerprinted.
     ///
     /// Names are still included in the fingerprint so that changes to these names can invalidate the cache.
     pub untracked_env_config: Arc<[Str]>,
-}
-
-impl SchemaWrite for EnvFingerprints {
-    type Src = Self;
-
-    fn size_of(src: &Self::Src) -> WriteResult<usize> {
-        Ok(<BTreeMap<Str, ArcStrSchema>>::size_of(&src.fingerprinted_envs)?
-            + <Arc<[Str]>>::size_of(&src.untracked_env_config)?)
-    }
-
-    fn write(writer: &mut impl Writer, src: &Self::Src) -> WriteResult<()> {
-        <BTreeMap<Str, ArcStrSchema>>::write(writer, &src.fingerprinted_envs)?;
-        <Arc<[Str]>>::write(writer, &src.untracked_env_config)?;
-        Ok(())
-    }
-}
-
-impl<'de> SchemaRead<'de> for EnvFingerprints {
-    type Dst = Self;
-
-    fn read(
-        reader: &mut impl Reader<'de>,
-        dst: &mut std::mem::MaybeUninit<Self::Dst>,
-    ) -> ReadResult<()> {
-        let fingerprinted_envs = <BTreeMap<Str, ArcStrSchema> as SchemaRead<'_>>::get(reader)?;
-        let untracked_env_config = <Arc<[Str]> as SchemaRead<'_>>::get(reader)?;
-        dst.write(Self { fingerprinted_envs, untracked_env_config });
-        Ok(())
-    }
 }
 
 #[derive(Debug, thiserror::Error)]
