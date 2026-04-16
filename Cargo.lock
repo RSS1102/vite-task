@@ -189,26 +189,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
-name = "bincode"
-version = "2.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "36eaf5d7b090263e8150820482d5d93cd964a81e4019913c972f4edcc6edb740"
-dependencies = [
- "bincode_derive",
- "serde",
- "unty",
-]
-
-[[package]]
-name = "bincode_derive"
-version = "2.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf95709a440f45e986983918d0e8a1f30a9b1df04918fc828670606804ac3c09"
-dependencies = [
- "virtue",
-]
-
-[[package]]
 name = "bindgen"
 version = "0.72.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -765,6 +745,16 @@ dependencies = [
 
 [[package]]
 name = "darling"
+version = "0.21.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9cdf337090841a411e2a7f3deb9187445851f91b309c0c0a29e05f74a00a48c0"
+dependencies = [
+ "darling_core 0.21.3",
+ "darling_macro 0.21.3",
+]
+
+[[package]]
+name = "darling"
 version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "25ae13da2f202d56bd7f91c25fba009e7717a1e4a1cc98a76d844b65ae912e9d"
@@ -778,6 +768,20 @@ name = "darling_core"
 version = "0.20.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d00b9596d185e565c2207a0b01f8bd1a135483d02d9b7b0a54b11da8d53412e"
+dependencies = [
+ "fnv",
+ "ident_case",
+ "proc-macro2",
+ "quote",
+ "strsim",
+ "syn 2.0.114",
+]
+
+[[package]]
+name = "darling_core"
+version = "0.21.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1247195ecd7e3c85f83c8d2a366e4210d588e802133e1e355180a9870b517ea4"
 dependencies = [
  "fnv",
  "ident_case",
@@ -807,6 +811,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc34b93ccb385b40dc71c6fceac4b2ad23662c7eeb248cf10d529b7e055b6ead"
 dependencies = [
  "darling_core 0.20.11",
+ "quote",
+ "syn 2.0.114",
+]
+
+[[package]]
+name = "darling_macro"
+version = "0.21.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d38308df82d1080de0afee5d069fa14b0326a88c14f15c5ccda35b4a6c414c81"
+dependencies = [
+ "darling_core 0.21.3",
  "quote",
  "syn 2.0.114",
 ]
@@ -1158,7 +1173,6 @@ version = "0.1.0"
 dependencies = [
  "allocator-api2",
  "anyhow",
- "bincode",
  "bstr",
  "bumpalo",
  "const_format",
@@ -1188,6 +1202,7 @@ dependencies = [
  "tokio-util",
  "which",
  "winapi",
+ "wincode",
  "winsafe 0.0.24",
  "xxhash-rust",
 ]
@@ -1219,20 +1234,19 @@ name = "fspy_preload_unix"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "bincode",
  "bstr",
  "ctor",
  "fspy_shared",
  "fspy_shared_unix",
  "libc",
  "nix 0.30.1",
+ "wincode",
 ]
 
 [[package]]
 name = "fspy_preload_windows"
 version = "0.1.0"
 dependencies = [
- "bincode",
  "constcat",
  "fspy_detours_sys",
  "fspy_shared",
@@ -1241,6 +1255,7 @@ dependencies = [
  "tempfile",
  "widestring",
  "winapi",
+ "wincode",
  "winsafe 0.0.24",
 ]
 
@@ -1249,7 +1264,6 @@ name = "fspy_seccomp_unotify"
 version = "0.1.0"
 dependencies = [
  "assertables",
- "bincode",
  "futures-util",
  "libc",
  "nix 0.30.1",
@@ -1260,6 +1274,7 @@ dependencies = [
  "test-log",
  "tokio",
  "tracing",
+ "wincode",
 ]
 
 [[package]]
@@ -1268,7 +1283,6 @@ version = "0.0.0"
 dependencies = [
  "allocator-api2",
  "assert2",
- "bincode",
  "bitflags 2.10.0",
  "bstr",
  "bytemuck",
@@ -1281,6 +1295,7 @@ dependencies = [
  "tracing",
  "uuid",
  "winapi",
+ "wincode",
 ]
 
 [[package]]
@@ -1289,7 +1304,6 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "base64",
- "bincode",
  "bstr",
  "elf",
  "fspy_seccomp_unotify",
@@ -1298,6 +1312,7 @@ dependencies = [
  "nix 0.30.1",
  "phf",
  "stackalloc",
+ "wincode",
 ]
 
 [[package]]
@@ -3276,11 +3291,11 @@ name = "subprocess_test"
 version = "0.0.0"
 dependencies = [
  "base64",
- "bincode",
  "ctor",
  "fspy",
  "portable-pty",
  "rustc-hash",
+ "wincode",
 ]
 
 [[package]]
@@ -3799,12 +3814,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
 
 [[package]]
-name = "unty"
-version = "0.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d49784317cd0d1ee7ec5c716dd598ec5b4483ea832a2dced265471cc0f690ae"
-
-[[package]]
 name = "utf8-chars"
 version = "3.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3860,12 +3869,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
-name = "virtue"
-version = "0.0.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "051eb1abcf10076295e815102942cc58f9d5e3b4560e46e53c21e8ff6f3af7b1"
-
-[[package]]
 name = "vite_glob"
 version = "0.0.0"
 dependencies = [
@@ -3889,7 +3892,6 @@ name = "vite_path"
 version = "0.1.0"
 dependencies = [
  "assert2",
- "bincode",
  "diff-struct",
  "path-clean",
  "ref-cast",
@@ -3897,6 +3899,7 @@ dependencies = [
  "thiserror 2.0.18",
  "ts-rs",
  "vite_str",
+ "wincode",
 ]
 
 [[package]]
@@ -3914,23 +3917,23 @@ dependencies = [
 name = "vite_shell"
 version = "0.0.0"
 dependencies = [
- "bincode",
  "brush-parser",
  "diff-struct",
  "serde",
  "shell-escape",
  "vite_str",
+ "wincode",
 ]
 
 [[package]]
 name = "vite_str"
 version = "0.1.0"
 dependencies = [
- "bincode",
  "compact_str",
  "diff-struct",
  "serde",
  "ts-rs",
+ "wincode",
 ]
 
 [[package]]
@@ -3939,7 +3942,6 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "bincode",
  "bstr",
  "clap",
  "ctrlc",
@@ -3970,6 +3972,7 @@ dependencies = [
  "vite_workspace",
  "wax",
  "winapi",
+ "wincode",
 ]
 
 [[package]]
@@ -4010,7 +4013,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "bincode",
  "monostate",
  "petgraph",
  "pretty_assertions",
@@ -4025,6 +4027,7 @@ dependencies = [
  "vite_str",
  "vite_workspace",
  "wax",
+ "wincode",
 ]
 
 [[package]]
@@ -4033,7 +4036,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "bincode",
  "clap",
  "copy_dir",
  "cow-utils",
@@ -4061,6 +4063,7 @@ dependencies = [
  "vite_task_graph",
  "vite_workspace",
  "which",
+ "wincode",
 ]
 
 [[package]]
@@ -4399,6 +4402,30 @@ name = "winapi-x86_64-pc-windows-gnu"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
+
+[[package]]
+name = "wincode"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d5cec722a3274e47d1524cbe2cea762f2c19d615bd9d73ada21db9066349d57e"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "thiserror 2.0.18",
+ "wincode-derive",
+]
+
+[[package]]
+name = "wincode-derive"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8961eb04054a1b2e026b5628e24da7e001350249a787e1a85aa961f33dc5f286"
+dependencies = [
+ "darling 0.21.3",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.114",
+]
 
 [[package]]
 name = "windows"

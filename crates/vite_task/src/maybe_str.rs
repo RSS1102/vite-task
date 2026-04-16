@@ -3,14 +3,14 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
-use bincode::{Decode, Encode};
 use bstr::BStr;
 use serde::Serialize;
+use wincode::{SchemaRead, SchemaWrite};
 
-/// Similar to `bstr::BString`, but also implements `bincode::{Encode`, Decode},
+/// Similar to `bstr::BString`, but also implements `wincode::{SchemaWrite, SchemaRead}`,
 /// and serializes losslessly to utf8 for outputting debug json
 
-#[derive(Encode, Decode)]
+#[derive(SchemaWrite, SchemaRead)]
 #[expect(dead_code, reason = "struct fields accessed via Deref<Target = Vec<u8>>")]
 pub struct MaybeString(Vec<u8>);
 

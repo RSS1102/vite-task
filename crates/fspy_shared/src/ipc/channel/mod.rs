@@ -2,23 +2,81 @@
 
 mod shm_io;
 
-use std::{env::temp_dir, fs::File, io, ops::Deref, path::PathBuf, sync::Arc};
+use std::{env::temp_dir, fs::File, io, mem::MaybeUninit, ops::Deref, path::PathBuf, sync::Arc};
 
-use bincode::{Decode, Encode};
 use shared_memory::{Shmem, ShmemConf};
 pub use shm_io::FrameMut;
 use shm_io::{ShmReader, ShmWriter};
 use tracing::debug;
 use uuid::Uuid;
+use wincode::{
+    SchemaRead, SchemaWrite,
+    error::{ReadResult, WriteResult},
+    io::{Reader, Writer},
+};
 
 use super::NativeStr;
 
+/// wincode schema adapter for `Arc<str>`, which is a foreign type with unsized inner.
+struct ArcStrSchema;
+
+impl SchemaWrite for ArcStrSchema {
+    type Src = Arc<str>;
+
+    fn size_of(src: &Self::Src) -> WriteResult<usize> {
+        <str as SchemaWrite>::size_of(src)
+    }
+
+    fn write(writer: &mut impl Writer, src: &Self::Src) -> WriteResult<()> {
+        <str as SchemaWrite>::write(writer, src)
+    }
+}
+
+impl<'de> SchemaRead<'de> for ArcStrSchema {
+    type Dst = Arc<str>;
+
+    fn read(reader: &mut impl Reader<'de>, dst: &mut MaybeUninit<Self::Dst>) -> ReadResult<()> {
+        let s: String = String::get(reader)?;
+        dst.write(Arc::from(s.as_str()));
+        Ok(())
+    }
+}
+
 /// Serializable configuration to create channel senders.
-#[derive(Encode, Decode, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct ChannelConf {
     lock_file_path: Box<NativeStr>,
     shm_id: Arc<str>,
     shm_size: usize,
+}
+
+impl SchemaWrite for ChannelConf {
+    type Src = Self;
+
+    fn size_of(src: &Self::Src) -> WriteResult<usize> {
+        Ok(<Box<NativeStr>>::size_of(&src.lock_file_path)?
+            + ArcStrSchema::size_of(&src.shm_id)?
+            + usize::size_of(&src.shm_size)?)
+    }
+
+    fn write(writer: &mut impl Writer, src: &Self::Src) -> WriteResult<()> {
+        <Box<NativeStr>>::write(writer, &src.lock_file_path)?;
+        ArcStrSchema::write(writer, &src.shm_id)?;
+        usize::write(writer, &src.shm_size)?;
+        Ok(())
+    }
+}
+
+impl<'de> SchemaRead<'de> for ChannelConf {
+    type Dst = Self;
+
+    fn read(reader: &mut impl Reader<'de>, dst: &mut MaybeUninit<Self::Dst>) -> ReadResult<()> {
+        let lock_file_path = <Box<NativeStr>>::get(reader)?;
+        let shm_id = ArcStrSchema::get(reader)?;
+        let shm_size = usize::get(reader)?;
+        dst.write(Self { lock_file_path, shm_id, shm_size });
+        Ok(())
+    }
 }
 
 /// Creates a mpsc IPC channel with one receiver and a `ChannelConf` that can be passed around processes and used to create multiple senders

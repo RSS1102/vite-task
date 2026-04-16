@@ -1,6 +1,5 @@
-use std::{collections::BTreeMap, ffi::OsStr, sync::Arc};
+use std::{collections::BTreeMap, ffi::OsStr, mem::MaybeUninit, sync::Arc};
 
-use bincode::{Decode, Encode};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -8,12 +7,43 @@ use supports_color::{Stream, on};
 use vite_glob::GlobPatternSet;
 use vite_str::Str;
 use vite_task_graph::config::EnvConfig;
+use wincode::{
+    SchemaRead, SchemaWrite,
+    error::{ReadResult, WriteResult},
+    io::{Reader, Writer},
+};
+
+/// wincode schema adapter for `Arc<str>`, which is a foreign type with unsized inner.
+struct ArcStrSchema;
+
+impl SchemaWrite for ArcStrSchema {
+    type Src = Arc<str>;
+
+    fn size_of(src: &Self::Src) -> WriteResult<usize> {
+        <str as SchemaWrite>::size_of(src)
+    }
+
+    fn write(writer: &mut impl Writer, src: &Self::Src) -> WriteResult<()> {
+        <str as SchemaWrite>::write(writer, src)
+    }
+}
+
+#[expect(clippy::disallowed_types, reason = "wincode decode: String → Arc<str>")]
+impl<'de> SchemaRead<'de> for ArcStrSchema {
+    type Dst = Arc<str>;
+
+    fn read(reader: &mut impl Reader<'de>, dst: &mut MaybeUninit<Self::Dst>) -> ReadResult<()> {
+        let s: String = String::get(reader)?;
+        dst.write(Arc::from(s.as_str()));
+        Ok(())
+    }
+}
 
 /// Environment variable fingerprints for a task execution.
 ///
 /// Contents of this struct are only for fingerprinting and cache key computation (some of envs may be hashed for security).
 /// The actual environment variables to be passed to the execution are in `LeafExecutionItem.all_envs`.
-#[derive(Debug, Encode, Decode, Serialize, Deserialize, PartialEq, Eq, Clone)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
 pub struct EnvFingerprints {
     /// Environment variables that should be fingerprinted for this execution.
     ///
@@ -24,6 +54,35 @@ pub struct EnvFingerprints {
     ///
     /// Names are still included in the fingerprint so that changes to these names can invalidate the cache.
     pub untracked_env_config: Arc<[Str]>,
+}
+
+impl SchemaWrite for EnvFingerprints {
+    type Src = Self;
+
+    fn size_of(src: &Self::Src) -> WriteResult<usize> {
+        Ok(<BTreeMap<Str, ArcStrSchema>>::size_of(&src.fingerprinted_envs)?
+            + <Arc<[Str]>>::size_of(&src.untracked_env_config)?)
+    }
+
+    fn write(writer: &mut impl Writer, src: &Self::Src) -> WriteResult<()> {
+        <BTreeMap<Str, ArcStrSchema>>::write(writer, &src.fingerprinted_envs)?;
+        <Arc<[Str]>>::write(writer, &src.untracked_env_config)?;
+        Ok(())
+    }
+}
+
+impl<'de> SchemaRead<'de> for EnvFingerprints {
+    type Dst = Self;
+
+    fn read(
+        reader: &mut impl Reader<'de>,
+        dst: &mut std::mem::MaybeUninit<Self::Dst>,
+    ) -> ReadResult<()> {
+        let fingerprinted_envs = <BTreeMap<Str, ArcStrSchema> as SchemaRead<'_>>::get(reader)?;
+        let untracked_env_config = <Arc<[Str]> as SchemaRead<'_>>::get(reader)?;
+        dst.write(Self { fingerprinted_envs, untracked_env_config });
+        Ok(())
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
