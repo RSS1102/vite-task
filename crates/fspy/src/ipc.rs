@@ -32,7 +32,10 @@ impl OwnedReceiverLockGuard {
 
     pub fn iter_path_accesses(&self) -> impl Iterator<Item = PathAccess<'_>> {
         self.borrow_lock_guard().iter_frames().map(|frame| {
-            let path_access: PathAccess<'_> = wincode::deserialize(frame).unwrap();
+            let mut reader: &[u8] = frame;
+            let path_access =
+                <PathAccess<'_> as wincode::SchemaRead<'_>>::get(&mut reader).unwrap();
+            assert_eq!(reader.len(), 0, "trailing bytes after PathAccess frame");
             path_access
         })
     }

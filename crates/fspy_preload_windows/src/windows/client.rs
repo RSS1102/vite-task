@@ -14,7 +14,9 @@ pub struct Client<'a> {
 
 impl<'a> Client<'a> {
     pub fn from_payload_bytes(payload_bytes: &'a [u8]) -> Self {
-        let payload: Payload<'a> = wincode::deserialize(payload_bytes).unwrap();
+        let mut reader: &'a [u8] = payload_bytes;
+        let payload = <Payload<'a> as wincode::SchemaRead<'a>>::get(&mut reader).unwrap();
+        assert_eq!(reader.len(), 0, "trailing bytes after Payload");
 
         let ipc_sender = match payload.channel_conf.sender() {
             Ok(sender) => Some(sender),

@@ -70,6 +70,8 @@ pub fn decode_payload_from_env() -> anyhow::Result<EncodedPayload> {
 
 fn decode_payload(encoded_string: BString) -> anyhow::Result<EncodedPayload> {
     let bytes = BASE64_STANDARD_NO_PAD.decode(&encoded_string)?;
-    let payload: Payload = wincode::deserialize(&bytes)?;
+    let mut reader: &[u8] = &bytes;
+    let payload = <Payload as wincode::SchemaRead<'_>>::get(&mut reader)?;
+    assert_eq!(reader.len(), 0, "trailing bytes after Payload");
     Ok(EncodedPayload { payload, encoded_string })
 }
