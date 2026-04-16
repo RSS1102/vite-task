@@ -29,6 +29,7 @@ pub struct NativePath {
     inner: NativeStr,
 }
 
+// Manual impl: wincode derive requires Sized, but NativePath wraps unsized NativeStr.
 impl SchemaWrite for NativePath {
     type Src = Self;
 

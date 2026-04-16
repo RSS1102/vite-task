@@ -15,11 +15,7 @@ use diff::Diff;
 use ref_cast::{RefCastCustom, ref_cast_custom};
 use serde::{Deserialize, Serialize};
 use vite_str::Str;
-use wincode::{
-    SchemaRead, SchemaWrite,
-    error::{ReadResult, WriteResult},
-    io::{Reader, Writer},
-};
+use wincode::{SchemaRead, SchemaWrite, error::ReadResult, io::Reader};
 
 /// A relative path with additional guarantees to make it portable:
 ///
@@ -105,24 +101,14 @@ impl RelativePath {
 }
 
 /// A owned relative path buf with the same guarantees as `RelativePath`
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, SchemaWrite, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Serialize, Deserialize, Default,
+)]
 #[expect(
     clippy::unsafe_derive_deserialize,
     reason = "unsafe in SchemaRead impl validates portability invariants"
 )]
 pub struct RelativePathBuf(Str);
-
-impl SchemaWrite for RelativePathBuf {
-    type Src = Self;
-
-    fn size_of(src: &Self::Src) -> WriteResult<usize> {
-        Str::size_of(&src.0)
-    }
-
-    fn write(writer: &mut impl Writer, src: &Self::Src) -> WriteResult<()> {
-        Str::write(writer, &src.0)
-    }
-}
 
 impl<'de> SchemaRead<'de> for RelativePathBuf {
     type Dst = Self;

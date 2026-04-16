@@ -129,12 +129,8 @@ impl SchemaWrite for Str {
 impl<'de> SchemaRead<'de> for Str {
     type Dst = Self;
 
-    #[expect(
-        clippy::disallowed_types,
-        reason = "wincode String decode, converted to CompactString"
-    )]
     fn read(reader: &mut impl Reader<'de>, dst: &mut MaybeUninit<Self::Dst>) -> ReadResult<()> {
-        let s: String = String::get(reader)?;
+        let s: &str = <&str>::get(reader)?;
         dst.write(Self(CompactString::from(s)));
         Ok(())
     }

@@ -74,13 +74,7 @@ impl NativeStr {
     }
 }
 
-impl Debug for NativeStr {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        <OsStr as Debug>::fmt(self.to_cow_os_str().as_ref(), f)
-    }
-}
-
-// SchemaWrite for &NativeStr: encode as byte slice
+// Manual impl: wincode derive requires Sized, but NativeStr wraps unsized [u8].
 impl SchemaWrite for NativeStr {
     type Src = Self;
 
@@ -90,6 +84,12 @@ impl SchemaWrite for NativeStr {
 
     fn write(writer: &mut impl Writer, src: &Self::Src) -> WriteResult<()> {
         <[u8] as SchemaWrite>::write(writer, &src.data)
+    }
+}
+
+impl Debug for NativeStr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        <OsStr as Debug>::fmt(self.to_cow_os_str().as_ref(), f)
     }
 }
 
@@ -121,8 +121,8 @@ impl<'de> SchemaRead<'de> for Box<NativeStr> {
     type Dst = Self;
 
     fn read(reader: &mut impl Reader<'de>, dst: &mut MaybeUninit<Self::Dst>) -> ReadResult<()> {
-        let data: Vec<u8> = <Vec<u8>>::get(reader)?;
-        dst.write(NativeStr::wrap_box(data.into_boxed_slice()));
+        let data: &[u8] = <&[u8]>::get(reader)?;
+        dst.write(NativeStr::wrap_box(data.into()));
         Ok(())
     }
 }
