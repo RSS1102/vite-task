@@ -16,6 +16,7 @@ use diff::Diff;
 use serde::{Deserialize, Serialize};
 use wincode::{
     SchemaRead, SchemaWrite,
+    config::Config,
     error::{ReadResult, WriteResult},
     io::{Reader, Writer},
 };
@@ -114,23 +115,25 @@ impl Debug for Str {
     }
 }
 
-impl SchemaWrite for Str {
+// SAFETY: Delegates to `str`'s SchemaWrite impl, preserving its size/write invariants.
+unsafe impl<C: Config> SchemaWrite<C> for Str {
     type Src = Self;
 
     fn size_of(src: &Self::Src) -> WriteResult<usize> {
-        <str as SchemaWrite>::size_of(src.as_str())
+        <str as SchemaWrite<C>>::size_of(src.as_str())
     }
 
-    fn write(writer: &mut impl Writer, src: &Self::Src) -> WriteResult<()> {
-        <str as SchemaWrite>::write(writer, src.as_str())
+    fn write(writer: impl Writer, src: &Self::Src) -> WriteResult<()> {
+        <str as SchemaWrite<C>>::write(writer, src.as_str())
     }
 }
 
-impl<'de> SchemaRead<'de> for Str {
+// SAFETY: Delegates to `&str`'s SchemaRead impl and wraps the result; dst is initialized on Ok.
+unsafe impl<'de, C: Config> SchemaRead<'de, C> for Str {
     type Dst = Self;
 
-    fn read(reader: &mut impl Reader<'de>, dst: &mut MaybeUninit<Self::Dst>) -> ReadResult<()> {
-        let s: &str = <&str>::get(reader)?;
+    fn read(mut reader: impl Reader<'de>, dst: &mut MaybeUninit<Self::Dst>) -> ReadResult<()> {
+        let s: &str = <&str as SchemaRead<'de, C>>::get(&mut reader)?;
         dst.write(Self(CompactString::from(s)));
         Ok(())
     }

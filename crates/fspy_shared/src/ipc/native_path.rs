@@ -11,6 +11,7 @@ use allocator_api2::alloc::Allocator;
 use bytemuck::TransparentWrapper;
 use wincode::{
     SchemaRead, SchemaWrite,
+    config::Config,
     error::{ReadResult, WriteResult},
     io::{Reader, Writer},
 };
@@ -30,23 +31,25 @@ pub struct NativePath {
 }
 
 // Manual impl: wincode derive requires Sized, but NativePath wraps unsized NativeStr.
-impl SchemaWrite for NativePath {
+// SAFETY: Delegates to `NativeStr`'s SchemaWrite impl, preserving its invariants.
+unsafe impl<C: Config> SchemaWrite<C> for NativePath {
     type Src = Self;
 
     fn size_of(src: &Self::Src) -> WriteResult<usize> {
-        NativeStr::size_of(&src.inner)
+        <NativeStr as SchemaWrite<C>>::size_of(&src.inner)
     }
 
-    fn write(writer: &mut impl Writer, src: &Self::Src) -> WriteResult<()> {
-        NativeStr::write(writer, &src.inner)
+    fn write(writer: impl Writer, src: &Self::Src) -> WriteResult<()> {
+        <NativeStr as SchemaWrite<C>>::write(writer, &src.inner)
     }
 }
 
-impl<'de> SchemaRead<'de> for &'de NativePath {
+// SAFETY: Delegates to `&NativeStr`'s SchemaRead impl; dst is initialized on Ok.
+unsafe impl<'de, C: Config> SchemaRead<'de, C> for &'de NativePath {
     type Dst = &'de NativePath;
 
-    fn read(reader: &mut impl Reader<'de>, dst: &mut MaybeUninit<Self::Dst>) -> ReadResult<()> {
-        let inner: &'de NativeStr = <&NativeStr>::get(reader)?;
+    fn read(mut reader: impl Reader<'de>, dst: &mut MaybeUninit<Self::Dst>) -> ReadResult<()> {
+        let inner: &'de NativeStr = <&NativeStr as SchemaRead<'de, C>>::get(&mut reader)?;
         dst.write(NativePath::wrap_ref(inner));
         Ok(())
     }

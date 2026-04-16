@@ -18,6 +18,7 @@ use vite_task_graph::config::ResolvedInputConfig;
 use vite_task_plan::cache_metadata::{CacheMetadata, ExecutionCacheKey, SpawnFingerprint};
 use wincode::{
     SchemaRead, SchemaReadOwned, SchemaWrite,
+    config::{ConfigCore, DefaultConfig},
     error::{ReadResult, WriteResult},
     io::{Reader, Writer},
 };
@@ -57,29 +58,31 @@ impl CacheEntryKey {
 /// wincode schema adapter for `Duration`.
 struct DurationSchema;
 
-impl SchemaWrite for DurationSchema {
+// SAFETY: Writes exactly `size_of::<u64>() + size_of::<u32>()` bytes matching size_of.
+unsafe impl<C: ConfigCore> SchemaWrite<C> for DurationSchema {
     type Src = Duration;
 
     fn size_of(_src: &Self::Src) -> WriteResult<usize> {
         Ok(size_of::<u64>() + size_of::<u32>())
     }
 
-    fn write(writer: &mut impl Writer, src: &Self::Src) -> WriteResult<()> {
-        u64::write(writer, &src.as_secs())?;
-        u32::write(writer, &src.subsec_nanos())?;
+    fn write(mut writer: impl Writer, src: &Self::Src) -> WriteResult<()> {
+        <u64 as SchemaWrite<C>>::write(writer.by_ref(), &src.as_secs())?;
+        <u32 as SchemaWrite<C>>::write(writer.by_ref(), &src.subsec_nanos())?;
         Ok(())
     }
 }
 
-impl<'de> SchemaRead<'de> for DurationSchema {
+// SAFETY: Reads u64 + u32, matching the write format; dst is initialized on Ok.
+unsafe impl<'de, C: ConfigCore> SchemaRead<'de, C> for DurationSchema {
     type Dst = Duration;
 
     fn read(
-        reader: &mut impl Reader<'de>,
+        mut reader: impl Reader<'de>,
         dst: &mut std::mem::MaybeUninit<Self::Dst>,
     ) -> ReadResult<()> {
-        let secs = u64::get(reader)?;
-        let nanos = u32::get(reader)?;
+        let secs = <u64 as SchemaRead<'de, C>>::get(&mut reader)?;
+        let nanos = <u32 as SchemaRead<'de, C>>::get(&mut reader)?;
         dst.write(Duration::new(secs, nanos));
         Ok(())
     }
@@ -180,10 +183,6 @@ impl ExecutionCache {
         // Use file lock to prevent race conditions when multiple processes initialize the database
         let lock_path = path.join("db_open.lock");
         let lock_file = File::create(lock_path.as_path())?;
-        #[expect(
-            clippy::incompatible_msrv,
-            reason = "File::lock is stable since 1.84.0, our MSRV 1.88.0 is higher; clippy false positive"
-        )]
         lock_file.lock()?;
 
         let db_path = path.join("cache.db");
@@ -361,7 +360,10 @@ impl ExecutionCache {
         clippy::significant_drop_tightening,
         reason = "lock guard cannot be dropped earlier because prepared statement borrows connection"
     )]
-    async fn get_key_by_value<K: SchemaWrite<Src = K>, V: SchemaReadOwned<Dst = V>>(
+    async fn get_key_by_value<
+        K: SchemaWrite<DefaultConfig, Src = K>,
+        V: SchemaReadOwned<DefaultConfig, Dst = V>,
+    >(
         &self,
         table: &str,
         key: &K,
@@ -404,7 +406,10 @@ impl ExecutionCache {
         clippy::significant_drop_tightening,
         reason = "lock guard must be held while executing the prepared statement"
     )]
-    async fn upsert<K: SchemaWrite<Src = K>, V: SchemaWrite<Src = V>>(
+    async fn upsert<
+        K: SchemaWrite<DefaultConfig, Src = K>,
+        V: SchemaWrite<DefaultConfig, Src = V>,
+    >(
         &self,
         table: &str,
         key: &K,
@@ -442,8 +447,8 @@ impl ExecutionCache {
         reason = "lock guard must be held while iterating over query rows"
     )]
     async fn list_table<
-        K: SchemaReadOwned<Dst = K> + Serialize,
-        V: SchemaReadOwned<Dst = V> + Serialize,
+        K: SchemaReadOwned<DefaultConfig, Dst = K> + Serialize,
+        V: SchemaReadOwned<DefaultConfig, Dst = V> + Serialize,
     >(
         &self,
         table: &str,

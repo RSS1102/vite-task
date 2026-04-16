@@ -10,7 +10,7 @@ use std::{
 
 use bytemuck::must_cast;
 use shared_memory::Shmem;
-use wincode::{SchemaWrite, Serialize as _};
+use wincode::{SchemaWrite, Serialize as _, config::DefaultConfig};
 
 // `ShmWriter` writes headers using atomic operations to prevent partial writes due to crashes,
 // while `ShmReader` reads headers by simple pointer dereferences.
@@ -224,7 +224,7 @@ impl<M: AsRawSlice> ShmWriter<M> {
     }
 
     /// Append an encoded value into the shared memory.
-    pub fn write_encoded<T: SchemaWrite<Src = T>>(
+    pub fn write_encoded<T: SchemaWrite<DefaultConfig, Src = T>>(
         &self,
         value: &T,
     ) -> Result<(), WriteEncodedError> {

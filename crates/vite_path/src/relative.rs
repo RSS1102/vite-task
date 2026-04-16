@@ -15,7 +15,7 @@ use diff::Diff;
 use ref_cast::{RefCastCustom, ref_cast_custom};
 use serde::{Deserialize, Serialize};
 use vite_str::Str;
-use wincode::{SchemaRead, SchemaWrite, error::ReadResult, io::Reader};
+use wincode::{SchemaRead, SchemaWrite, config::Config, error::ReadResult, io::Reader};
 
 /// A relative path with additional guarantees to make it portable:
 ///
@@ -110,11 +110,12 @@ impl RelativePath {
 )]
 pub struct RelativePathBuf(Str);
 
-impl<'de> SchemaRead<'de> for RelativePathBuf {
+// SAFETY: Delegates to `Str`'s SchemaRead impl; dst is initialized only on Ok.
+unsafe impl<'de, C: Config> SchemaRead<'de, C> for RelativePathBuf {
     type Dst = Self;
 
-    fn read(reader: &mut impl Reader<'de>, dst: &mut MaybeUninit<Self::Dst>) -> ReadResult<()> {
-        let path_str = Str::get(reader)?;
+    fn read(mut reader: impl Reader<'de>, dst: &mut MaybeUninit<Self::Dst>) -> ReadResult<()> {
+        let path_str = <Str as SchemaRead<'de, C>>::get(&mut reader)?;
         Self::new(path_str.as_str()).map_or(
             Err(wincode::error::ReadError::Custom("invalid relative path in encoded data")),
             |path| {

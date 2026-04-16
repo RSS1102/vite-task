@@ -14,6 +14,7 @@ use bytemuck::must_cast_slice;
 use bytemuck::{TransparentWrapper, TransparentWrapperAlloc};
 use wincode::{
     SchemaRead, SchemaWrite,
+    config::Config,
     error::{ReadResult, WriteResult},
     io::{Reader, Writer},
 };
@@ -75,15 +76,16 @@ impl NativeStr {
 }
 
 // Manual impl: wincode derive requires Sized, but NativeStr wraps unsized [u8].
-impl SchemaWrite for NativeStr {
+// SAFETY: Delegates to `[u8]`'s SchemaWrite impl, preserving its size/write invariants.
+unsafe impl<C: Config> SchemaWrite<C> for NativeStr {
     type Src = Self;
 
     fn size_of(src: &Self::Src) -> WriteResult<usize> {
-        <[u8] as SchemaWrite>::size_of(&src.data)
+        <[u8] as SchemaWrite<C>>::size_of(&src.data)
     }
 
-    fn write(writer: &mut impl Writer, src: &Self::Src) -> WriteResult<()> {
-        <[u8] as SchemaWrite>::write(writer, &src.data)
+    fn write(writer: impl Writer, src: &Self::Src) -> WriteResult<()> {
+        <[u8] as SchemaWrite<C>>::write(writer, &src.data)
     }
 }
 
@@ -94,34 +96,37 @@ impl Debug for NativeStr {
 }
 
 // SchemaRead for &NativeStr: zero-copy borrow from input bytes
-impl<'de> SchemaRead<'de> for &'de NativeStr {
+// SAFETY: Delegates to `&[u8]`'s SchemaRead impl; dst is initialized on Ok.
+unsafe impl<'de, C: Config> SchemaRead<'de, C> for &'de NativeStr {
     type Dst = &'de NativeStr;
 
-    fn read(reader: &mut impl Reader<'de>, dst: &mut MaybeUninit<Self::Dst>) -> ReadResult<()> {
-        let data: &'de [u8] = <&[u8]>::get(reader)?;
+    fn read(mut reader: impl Reader<'de>, dst: &mut MaybeUninit<Self::Dst>) -> ReadResult<()> {
+        let data: &'de [u8] = <&[u8] as SchemaRead<'de, C>>::get(&mut reader)?;
         dst.write(NativeStr::wrap_ref(data));
         Ok(())
     }
 }
 
-impl SchemaWrite for Box<NativeStr> {
+// SAFETY: Delegates to `NativeStr`'s SchemaWrite impl, preserving its invariants.
+unsafe impl<C: Config> SchemaWrite<C> for Box<NativeStr> {
     type Src = Self;
 
     fn size_of(src: &Self::Src) -> WriteResult<usize> {
-        NativeStr::size_of(src)
+        <NativeStr as SchemaWrite<C>>::size_of(src)
     }
 
-    fn write(writer: &mut impl Writer, src: &Self::Src) -> WriteResult<()> {
-        NativeStr::write(writer, src)
+    fn write(writer: impl Writer, src: &Self::Src) -> WriteResult<()> {
+        <NativeStr as SchemaWrite<C>>::write(writer, src)
     }
 }
 
 // SchemaRead for Box<NativeStr>: owned decode
-impl<'de> SchemaRead<'de> for Box<NativeStr> {
+// SAFETY: Delegates to `&[u8]`'s SchemaRead impl; dst is initialized on Ok.
+unsafe impl<'de, C: Config> SchemaRead<'de, C> for Box<NativeStr> {
     type Dst = Self;
 
-    fn read(reader: &mut impl Reader<'de>, dst: &mut MaybeUninit<Self::Dst>) -> ReadResult<()> {
-        let data: &[u8] = <&[u8]>::get(reader)?;
+    fn read(mut reader: impl Reader<'de>, dst: &mut MaybeUninit<Self::Dst>) -> ReadResult<()> {
+        let data: &[u8] = <&[u8] as SchemaRead<'de, C>>::get(&mut reader)?;
         dst.write(NativeStr::wrap_box(data.into()));
         Ok(())
     }

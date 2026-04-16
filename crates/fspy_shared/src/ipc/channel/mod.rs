@@ -11,6 +11,7 @@ use tracing::debug;
 use uuid::Uuid;
 use wincode::{
     SchemaRead, SchemaWrite,
+    config::Config,
     error::{ReadResult, WriteResult},
     io::{Reader, Writer},
 };
@@ -20,23 +21,25 @@ use super::NativeStr;
 /// wincode schema adapter for `Arc<str>`, which is a foreign type with unsized inner.
 pub(crate) struct ArcStrSchema;
 
-impl SchemaWrite for ArcStrSchema {
+// SAFETY: Delegates to `str`'s SchemaWrite impl, preserving its size/write invariants.
+unsafe impl<C: Config> SchemaWrite<C> for ArcStrSchema {
     type Src = Arc<str>;
 
     fn size_of(src: &Self::Src) -> WriteResult<usize> {
-        <str as SchemaWrite>::size_of(src)
+        <str as SchemaWrite<C>>::size_of(src)
     }
 
-    fn write(writer: &mut impl Writer, src: &Self::Src) -> WriteResult<()> {
-        <str as SchemaWrite>::write(writer, src)
+    fn write(writer: impl Writer, src: &Self::Src) -> WriteResult<()> {
+        <str as SchemaWrite<C>>::write(writer, src)
     }
 }
 
-impl<'de> SchemaRead<'de> for ArcStrSchema {
+// SAFETY: Delegates to `&str`'s SchemaRead impl; dst is initialized on Ok.
+unsafe impl<'de, C: Config> SchemaRead<'de, C> for ArcStrSchema {
     type Dst = Arc<str>;
 
-    fn read(reader: &mut impl Reader<'de>, dst: &mut MaybeUninit<Self::Dst>) -> ReadResult<()> {
-        let s: &str = <&str>::get(reader)?;
+    fn read(mut reader: impl Reader<'de>, dst: &mut MaybeUninit<Self::Dst>) -> ReadResult<()> {
+        let s: &str = <&str as SchemaRead<'de, C>>::get(&mut reader)?;
         dst.write(Arc::from(s));
         Ok(())
     }

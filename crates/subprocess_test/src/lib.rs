@@ -2,7 +2,7 @@ use std::{env::current_exe, ffi::OsString, path::PathBuf, process::Command as St
 
 use base64::{Engine, prelude::BASE64_STANDARD_NO_PAD};
 use rustc_hash::FxHashMap;
-use wincode::{SchemaReadOwned, SchemaWrite};
+use wincode::{SchemaReadOwned, SchemaWrite, config::DefaultConfig};
 
 /// A command configuration that can be converted to `std::process::Command`
 /// or `fspy::Command` for execution.
@@ -119,7 +119,7 @@ fn read_proc_cmdline() -> Option<Vec<String>> {
 }
 
 #[doc(hidden)]
-pub fn init_impl<A: SchemaReadOwned<Dst = A>>(expected_id: &str, f: impl FnOnce(A)) {
+pub fn init_impl<A: SchemaReadOwned<DefaultConfig, Dst = A>>(expected_id: &str, f: impl FnOnce(A)) {
     let args = get_args();
     // <test_binary> <expected_id> <arg_base64>
     let (Some(current_id), Some(arg_base64)) = (args.get(1), args.get(2)) else {
@@ -135,7 +135,7 @@ pub fn init_impl<A: SchemaReadOwned<Dst = A>>(expected_id: &str, f: impl FnOnce(
 }
 
 #[doc(hidden)]
-pub fn create_command<T: SchemaWrite<Src = T>>(id: &str, arg: T) -> Command {
+pub fn create_command<T: SchemaWrite<DefaultConfig, Src = T>>(id: &str, arg: T) -> Command {
     let program = current_exe().unwrap().into_os_string();
     let arg_bytes = wincode::serialize(&arg).expect("Failed to encode arg");
     let arg_base64 = BASE64_STANDARD_NO_PAD.encode(&arg_bytes);
