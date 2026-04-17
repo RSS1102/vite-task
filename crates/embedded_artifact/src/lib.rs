@@ -11,12 +11,14 @@ pub struct Artifact {
     pub hash: &'static str,
 }
 
-#[cfg(target_os = "macos")]
-#[doc(hidden)]
+/// Declare an [`Artifact`] whose content and hash live in the caller's `OUT_DIR`.
+///
+/// Expects the build script to have written two files:
+/// `$OUT_DIR/{name}` (the raw bytes) and `$OUT_DIR/{name}.hash` (the hex hash).
 #[macro_export]
 macro_rules! artifact {
     ($name: literal) => {
-        $crate::artifact::Artifact::new(
+        $crate::Artifact::new(
             $name,
             ::core::include_bytes!(::core::concat!(::core::env!("OUT_DIR"), "/", $name)),
             ::core::include_str!(::core::concat!(::core::env!("OUT_DIR"), "/", $name, ".hash")),
@@ -24,15 +26,21 @@ macro_rules! artifact {
     };
 }
 
-#[cfg(target_os = "macos")]
-pub use artifact;
-
 impl Artifact {
-    #[cfg(not(target_os = "linux"))]
+    #[must_use]
     pub const fn new(name: &'static str, content: &'static [u8], hash: &'static str) -> Self {
         Self { name, content, hash }
     }
 
+    /// Write the artifact's content to `dir` under a content-addressed filename.
+    ///
+    /// Returns the final path. If a file with the same hash already exists at
+    /// the target path, it is reused without rewriting.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the directory can't be read/written, or if the
+    /// temp-file rename fails and the destination still doesn't exist.
     pub fn write_to(&self, dir: impl AsRef<Path>, suffix: &str) -> io::Result<PathBuf> {
         let dir = dir.as_ref();
         let path = dir.join(format!("{}_{}{}", self.name, self.hash, suffix));

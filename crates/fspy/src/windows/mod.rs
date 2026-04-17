@@ -7,6 +7,7 @@ use std::{
 };
 
 use const_format::formatcp;
+use embedded_artifact::Artifact;
 use fspy_detours_sys::{DetourCopyPayloadToProcess, DetourUpdateProcessWithDll};
 use fspy_shared::{
     ipc::{PathAccess, channel::channel},
@@ -23,7 +24,6 @@ use xxhash_rust::const_xxh3::xxh3_128;
 
 use crate::{
     ChildTermination, TrackedChild,
-    artifact::Artifact,
     command::Command,
     error::SpawnError,
     ipc::{OwnedReceiverLockGuard, SHM_CAPACITY},

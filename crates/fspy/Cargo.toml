@@ -11,6 +11,7 @@ bstr = { workspace = true, default-features = false }
 bumpalo = { workspace = true }
 const_format = { workspace = true, features = ["fmt"] }
 derive_more = { workspace = true, features = ["debug"] }
+embedded_artifact = { workspace = true }
 fspy_shared = { workspace = true }
 futures-util = { workspace = true }
 libc = { workspace = true }

@@ -1,4 +1,4 @@
-use crate::artifact::{Artifact, artifact};
+use embedded_artifact::{Artifact, artifact};
 
 pub const COREUTILS_BINARY: Artifact = artifact!("coreutils");
 pub const OILS_BINARY: Artifact = artifact!("oils-for-unix");
