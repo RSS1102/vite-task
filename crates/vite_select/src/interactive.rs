@@ -1,4 +1,9 @@
-use std::io::{Write, stdout};
+#[cfg(unix)]
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::{
+    io::{Write, stdout},
+    time::Duration,
+};
 
 use crossterm::{
     cursor::{self, MoveToColumn},
@@ -15,6 +20,9 @@ const ROOT_PREFIX_WIDTH: usize = 4;
 /// Prefix width for grouped items (`"    › "` or `"      "`).
 const GROUP_PREFIX_WIDTH: usize = 6;
 
+/// How often the event loop wakes up to check [`SIGINT_RECEIVED`].
+const EVENT_POLL_TICK: Duration = Duration::from_millis(50);
+
 struct RawModeGuard;
 
 impl RawModeGuard {
@@ -27,6 +35,58 @@ impl RawModeGuard {
 impl Drop for RawModeGuard {
     fn drop(&mut self) {
         let _ = terminal::disable_raw_mode();
+    }
+}
+
+/// Signal handler flag. Set by `handle_sigint` when SIGINT is delivered while
+/// interactive selection is active, polled by the event loop.
+#[cfg(unix)]
+static SIGINT_RECEIVED: AtomicBool = AtomicBool::new(false);
+
+/// Installs a SIGINT handler that marks [`SIGINT_RECEIVED`] and restores the
+/// previous handler on drop.
+///
+/// Interactive selection puts the terminal in raw mode, which on most systems
+/// clears `ISIG` so a `0x03` byte is delivered as data (decoded as
+/// `KeyEvent(Ctrl+C)`). In some sandboxed PTY implementations (e.g. gVisor)
+/// the kernel still synthesizes SIGINT regardless of `ISIG`, which would kill
+/// the process with the default disposition and leave the terminal in raw
+/// mode. This guard makes that path behave the same as the key-event path:
+/// the event loop observes the flag and returns [`super::SelectResult::Cancelled`].
+#[cfg(unix)]
+struct SigintGuard {
+    old_action: libc::sigaction,
+}
+
+#[cfg(unix)]
+impl SigintGuard {
+    fn install() -> Self {
+        extern "C" fn handle_sigint(_sig: i32) {
+            SIGINT_RECEIVED.store(true, Ordering::Relaxed);
+        }
+        SIGINT_RECEIVED.store(false, Ordering::Relaxed);
+        // SAFETY: `libc::sigaction` is zero-initialisable; `sigaction(2)` is
+        // safe to call with valid pointers to a writable `libc::sigaction`;
+        // `sigemptyset` only writes into a valid `sigset_t`.
+        let old_action = unsafe {
+            let mut new_action: libc::sigaction = std::mem::zeroed();
+            new_action.sa_sigaction = handle_sigint as *const () as usize;
+            libc::sigemptyset(&raw mut new_action.sa_mask);
+            let mut old_action: libc::sigaction = std::mem::zeroed();
+            libc::sigaction(libc::SIGINT, &raw const new_action, &raw mut old_action);
+            old_action
+        };
+        Self { old_action }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for SigintGuard {
+    fn drop(&mut self) {
+        // SAFETY: restoring a previously-valid `sigaction` to the same signal.
+        unsafe {
+            libc::sigaction(libc::SIGINT, &raw const self.old_action, std::ptr::null_mut());
+        }
     }
 }
 
@@ -495,6 +555,8 @@ pub fn run(
     }
 
     let _guard = RawModeGuard::enable()?;
+    #[cfg(unix)]
+    let _sigint_guard = SigintGuard::install();
     // Hide cursor while the widget is active
     let mut out = stdout();
     crossterm::execute!(out, cursor::Hide)?;
@@ -506,7 +568,27 @@ pub fn run(
     after_render(&RenderState { query: &state.query, selected_index: state.selected });
 
     loop {
-        let ev = event::read()?;
+        #[cfg(unix)]
+        if SIGINT_RECEIVED.load(Ordering::Relaxed) {
+            cleanup(&mut out, &state)?;
+            return Ok(super::SelectResult::Cancelled);
+        }
+        // Poll with a short timeout so we can notice SIGINT between events.
+        // Retry on EINTR — the SIGINT handler itself interrupts the poll and
+        // the flag check at the top of the next iteration handles it.
+        let has_event = match event::poll(EVENT_POLL_TICK) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e.into()),
+        };
+        if !has_event {
+            continue;
+        }
+        let ev = match event::read() {
+            Ok(ev) => ev,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e.into()),
+        };
         match ev {
             Event::Key(KeyEvent { code, modifiers, kind: KeyEventKind::Press, .. }) => match code {
                 KeyCode::Esc => {
