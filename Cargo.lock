@@ -1007,6 +1007,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "embedded_artifact_build"
+version = "0.0.0"
+dependencies = [
+ "xxhash-rust",
+]
+
+[[package]]
 name = "env_filter"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1197,6 +1204,7 @@ dependencies = [
  "ctor",
  "derive_more",
  "embedded_artifact",
+ "embedded_artifact_build",
  "flate2",
  "fspy_detours_sys",
  "fspy_preload_unix",
@@ -1222,7 +1230,6 @@ dependencies = [
  "winapi",
  "wincode",
  "winsafe 0.0.24",
- "xxhash-rust",
 ]
 
 [[package]]

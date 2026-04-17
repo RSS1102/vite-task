@@ -28,12 +28,11 @@ macro_rules! artifact_of {
     };
 }
 
-/// Construct an [`Artifact`] from a file in the caller's `OUT_DIR`. The build
-/// script is expected to have written `$OUT_DIR/{name}` (the raw bytes) and
-/// `$OUT_DIR/{name}.hash` (the hex hash).
+/// Construct an [`Artifact`] from a file in the caller's `OUT_DIR`.
 ///
-/// Use this for large artifacts where the build script already has the bytes
-/// and can hash them cheaply — avoiding const-time hashing at compile time.
+/// The build script is expected to have written `$OUT_DIR/{name}` (the raw
+/// bytes) and `$OUT_DIR/{name}.hash` (the hex hash) — see the
+/// `embedded_artifact_build` crate for a helper that does both in one call.
 #[macro_export]
 macro_rules! artifact {
     ($name: literal) => {

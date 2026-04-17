@@ -60,9 +60,9 @@ fspy_test_bin = { path = "../fspy_test_bin", artifact = "bin", target = "x86_64-
 
 [build-dependencies]
 anyhow = { workspace = true }
+embedded_artifact_build = { workspace = true }
 flate2 = { workspace = true }
 tar = { workspace = true }
-xxhash-rust = { workspace = true, features = ["xxh3"] }
 
 [lints]
 workspace = true

@@ -7,7 +7,6 @@ use std::{
 };
 
 use anyhow::{Context, bail};
-use xxhash_rust::xxh3::xxh3_128;
 
 fn download(url: &str) -> anyhow::Result<impl Read + use<>> {
     let curl = Command::new("curl")
@@ -103,22 +102,24 @@ fn fetch_macos_binaries() -> anyhow::Result<()> {
     for (url, path_in_targz, expected_hash) in downloads.iter().copied() {
         let filename = path_in_targz.split('/').next_back().unwrap();
         let download_path = out_dir.join(filename);
-        let hash_path = out_dir.join(format!("{filename}.hash"));
 
-        let file_exists = matches!(fs::read(&download_path), Ok(existing_file_data) if xxh3_128(&existing_file_data) == expected_hash);
-        if !file_exists {
+        let cached = matches!(
+            fs::read(&download_path),
+            Ok(existing) if embedded_artifact_build::hash(&existing) == expected_hash,
+        );
+        let data = if cached {
+            fs::read(&download_path)?
+        } else {
             let data = download_and_unpack_tar_gz(url, path_in_targz)?;
-            fs::write(&download_path, &data).context(format!(
-                "Saving {path_in_targz} in {url} to {}",
-                download_path.display()
-            ))?;
-            let actual_hash = xxh3_128(&data);
+            let actual_hash = embedded_artifact_build::hash(&data);
             assert_eq!(
                 actual_hash, expected_hash,
-                "expected_hash of {path_in_targz} in {url} needs to be updated"
+                "expected_hash of {path_in_targz} in {url} needs to be updated",
             );
-        }
-        fs::write(&hash_path, format!("{expected_hash:x}"))?;
+            data
+        };
+        embedded_artifact_build::write_artifact(&out_dir, filename, &data)
+            .context(format!("Writing artifact {filename} to {}", out_dir.display()))?;
     }
     Ok(())
     // let zsh_path = ensure_downloaded(&zsh_url);
