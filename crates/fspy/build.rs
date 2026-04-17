@@ -54,12 +54,8 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 /// `(url, path_in_targz, expected_sha256_of_tarball)`
 ///
-/// The SHA-256 verifies the tarball (the file served by the GitHub release
-/// asset URL). Neither upstream currently publishes a `*.sha256` file, so
-/// these values are the hash of the asset at the time it was pinned.
-///
-/// To verify or refresh after a release bump:
-///   `curl -sL <url> | shasum -a 256`
+/// The SHA-256 verifies the tarball served by the GitHub release URL. Each
+/// value can be obtained from the release download page.
 type BinaryDownload = (&'static str, &'static str, &'static str);
 
 const MACOS_BINARY_DOWNLOADS: &[(&str, &[BinaryDownload])] = &[
