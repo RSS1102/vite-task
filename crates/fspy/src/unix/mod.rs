@@ -48,15 +48,9 @@ impl SpyImpl {
     pub fn init_in(#[cfg_attr(target_env = "musl", allow(unused))] dir: &Path) -> io::Result<Self> {
         #[cfg(not(target_env = "musl"))]
         let preload_path = {
-            use const_format::formatcp;
-            use embedded_artifact::Artifact;
-            use xxhash_rust::const_xxh3::xxh3_128;
+            use embedded_artifact::{Artifact, artifact_of};
 
-            const PRELOAD_CDYLIB: Artifact = Artifact::new(
-                "fspy_preload",
-                PRELOAD_CDYLIB_BINARY,
-                formatcp!("{:x}", xxh3_128(PRELOAD_CDYLIB_BINARY)),
-            );
+            const PRELOAD_CDYLIB: Artifact = artifact_of!("fspy_preload", PRELOAD_CDYLIB_BINARY);
 
             let preload_cdylib_path = PRELOAD_CDYLIB.write_to(dir, ".dylib")?;
             preload_cdylib_path.as_path().into()

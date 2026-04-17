@@ -11,10 +11,29 @@ pub struct Artifact {
     pub hash: &'static str,
 }
 
-/// Declare an [`Artifact`] whose content and hash live in the caller's `OUT_DIR`.
+/// Construct an [`Artifact`] from a `&'static [u8]` expression; the hash is
+/// computed from the bytes at compile time.
 ///
-/// Expects the build script to have written two files:
-/// `$OUT_DIR/{name}` (the raw bytes) and `$OUT_DIR/{name}.hash` (the hex hash).
+/// Only use this for small artifacts — const-time hashing of large payloads
+/// significantly slows compilation. For large artifacts, pre-compute the hash
+/// in a build script and use [`artifact!`].
+#[macro_export]
+macro_rules! artifact_of {
+    ($name: literal, $content: expr) => {
+        $crate::Artifact::new(
+            $name,
+            $content,
+            $crate::__private::formatcp!("{:x}", $crate::__private::xxh3_128($content)),
+        )
+    };
+}
+
+/// Construct an [`Artifact`] from a file in the caller's `OUT_DIR`. The build
+/// script is expected to have written `$OUT_DIR/{name}` (the raw bytes) and
+/// `$OUT_DIR/{name}.hash` (the hex hash).
+///
+/// Use this for large artifacts where the build script already has the bytes
+/// and can hash them cheaply — avoiding const-time hashing at compile time.
 #[macro_export]
 macro_rules! artifact {
     ($name: literal) => {
@@ -24,6 +43,12 @@ macro_rules! artifact {
             ::core::include_str!(::core::concat!(::core::env!("OUT_DIR"), "/", $name, ".hash")),
         )
     };
+}
+
+#[doc(hidden)]
+pub mod __private {
+    pub use const_format::formatcp;
+    pub use xxhash_rust::const_xxh3::xxh3_128;
 }
 
 impl Artifact {

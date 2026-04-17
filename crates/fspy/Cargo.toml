@@ -9,7 +9,6 @@ allocator-api2 = { workspace = true, features = ["alloc"] }
 wincode = { workspace = true }
 bstr = { workspace = true, default-features = false }
 bumpalo = { workspace = true }
-const_format = { workspace = true, features = ["fmt"] }
 derive_more = { workspace = true, features = ["debug"] }
 embedded_artifact = { workspace = true }
 fspy_shared = { workspace = true }
@@ -23,7 +22,6 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["net", "process", "io-util", "sync", "rt"] }
 tokio-util = { workspace = true }
 which = { workspace = true, features = ["tracing"] }
-xxhash-rust = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 fspy_seccomp_unotify = { workspace = true, features = ["supervisor"] }

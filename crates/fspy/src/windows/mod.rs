@@ -6,8 +6,7 @@ use std::{
     sync::Arc,
 };
 
-use const_format::formatcp;
-use embedded_artifact::Artifact;
+use embedded_artifact::{Artifact, artifact_of};
 use fspy_detours_sys::{DetourCopyPayloadToProcess, DetourUpdateProcessWithDll};
 use fspy_shared::{
     ipc::{PathAccess, channel::channel},
@@ -20,7 +19,6 @@ use winapi::{
     um::{processthreadsapi::ResumeThread, winbase::CREATE_SUSPENDED},
 };
 use winsafe::co::{CP, WC};
-use xxhash_rust::const_xxh3::xxh3_128;
 
 use crate::{
     ChildTermination, TrackedChild,
@@ -30,11 +28,7 @@ use crate::{
 };
 
 const PRELOAD_CDYLIB_BINARY: &[u8] = include_bytes!(env!("CARGO_CDYLIB_FILE_FSPY_PRELOAD_WINDOWS"));
-const INTERPOSE_CDYLIB: Artifact = Artifact::new(
-    "fsyp_preload",
-    PRELOAD_CDYLIB_BINARY,
-    formatcp!("{:x}", xxh3_128(PRELOAD_CDYLIB_BINARY)),
-);
+const INTERPOSE_CDYLIB: Artifact = artifact_of!("fsyp_preload", PRELOAD_CDYLIB_BINARY);
 
 pub struct PathAccessIterable {
     ipc_receiver_lock_guard: OwnedReceiverLockGuard,
