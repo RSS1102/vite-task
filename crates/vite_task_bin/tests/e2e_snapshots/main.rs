@@ -437,13 +437,7 @@ fn main() {
         .collect::<Vec<_>>();
     fixture_paths.sort();
 
-    let mut args = libtest_mimic::Arguments::from_args();
-    // On Linux, running e2e fixtures in parallel causes PTY and signal-routing
-    // contention (ctrl-c test intermittently fails). macOS and Windows are
-    // unaffected, so only force sequential execution on Linux.
-    if cfg!(target_os = "linux") && args.test_threads.is_none() {
-        args.test_threads = Some(1);
-    }
+    let args = libtest_mimic::Arguments::from_args();
 
     let tests: Vec<libtest_mimic::Trial> = fixture_paths
         .into_iter()
