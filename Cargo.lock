@@ -336,6 +336,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "bundled_artifact"
+version = "0.0.0"
+dependencies = [
+ "rand 0.9.2",
+]
+
+[[package]]
+name = "bundled_artifact_build"
+version = "0.0.0"
+dependencies = [
+ "xxhash-rust",
+]
+
+[[package]]
 name = "bytemuck"
 version = "1.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -997,20 +1011,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "55dd888a213fc57e957abf2aa305ee3e8a28dbe05687a251f33b637cd46b0070"
 
 [[package]]
-name = "embedded_artifact"
-version = "0.0.0"
-dependencies = [
- "rand 0.9.2",
-]
-
-[[package]]
-name = "embedded_artifact_build"
-version = "0.0.0"
-dependencies = [
- "xxhash-rust",
-]
-
-[[package]]
 name = "env_filter"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1197,11 +1197,11 @@ dependencies = [
  "anyhow",
  "bstr",
  "bumpalo",
+ "bundled_artifact",
+ "bundled_artifact_build",
  "csv-async",
  "ctor",
  "derive_more",
- "embedded_artifact",
- "embedded_artifact_build",
  "flate2",
  "fspy_detours_sys",
  "fspy_preload_unix",

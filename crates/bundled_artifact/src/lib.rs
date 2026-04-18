@@ -12,19 +12,19 @@ pub struct Artifact {
 }
 
 /// Construct an [`Artifact`] from the env vars published by a build script
-/// via `embedded_artifact_build::register`. Must match the `ENV_PREFIX`
-/// constant in `embedded_artifact_build`.
+/// via `bundled_artifact_build::register`. Must match the `ENV_PREFIX`
+/// constant in `bundled_artifact_build`.
 #[macro_export]
 macro_rules! artifact {
     ($name:literal) => {
         $crate::Artifact::__new(
             $name,
             ::core::include_bytes!(::core::env!(::core::concat!(
-                "EMBEDDED_ARTIFACT_",
+                "BUNDLED_ARTIFACT_",
                 $name,
                 "_PATH"
             ))),
-            ::core::env!(::core::concat!("EMBEDDED_ARTIFACT_", $name, "_HASH")),
+            ::core::env!(::core::concat!("BUNDLED_ARTIFACT_", $name, "_HASH")),
         )
     };
 }
@@ -36,7 +36,8 @@ impl Artifact {
         Self { name, content, hash }
     }
 
-    /// Write the artifact's content to `dir` under a content-addressed filename.
+    /// Ensure the artifact is materialized in `dir` under a content-addressed
+    /// filename, writing it if missing.
     ///
     /// Returns the final path. If a file with the same hash already exists at
     /// the target path, it is reused without rewriting.
@@ -45,7 +46,7 @@ impl Artifact {
     ///
     /// Returns an error if the directory can't be read/written, or if the
     /// temp-file rename fails and the destination still doesn't exist.
-    pub fn write_to(&self, dir: impl AsRef<Path>, suffix: &str) -> io::Result<PathBuf> {
+    pub fn ensure_in(&self, dir: impl AsRef<Path>, suffix: &str) -> io::Result<PathBuf> {
         let dir = dir.as_ref();
         let path = dir.join(format!("{}_{}{}", self.name, self.hash, suffix));
 

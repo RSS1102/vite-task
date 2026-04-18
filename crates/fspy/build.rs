@@ -129,7 +129,7 @@ fn fetch_macos_binaries(out_dir: &Path) -> anyhow::Result<()> {
         let data = unpack_tar_gz(Cursor::new(tarball), path_in_targz)
             .context(format!("Failed to extract {path_in_targz} from {url}"))?;
         fs::write(&dest, &data).with_context(|| format!("writing {}", dest.display()))?;
-        embedded_artifact_build::register(name, &dest);
+        bundled_artifact_build::register(name, &dest);
     }
     Ok(())
 }
@@ -144,7 +144,7 @@ fn register_preload_cdylib() -> anyhow::Result<()> {
     // the path changes. Track it so we re-publish the hash on update.
     println!("cargo::rerun-if-env-changed={env_name}");
     let dylib_path = env::var_os(env_name).with_context(|| format!("{env_name} not set"))?;
-    embedded_artifact_build::register("fspy_preload", Path::new(&dylib_path));
+    bundled_artifact_build::register("fspy_preload", Path::new(&dylib_path));
     Ok(())
 }
 

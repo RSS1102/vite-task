@@ -6,7 +6,7 @@ use std::{
     sync::Arc,
 };
 
-use embedded_artifact::{Artifact, artifact};
+use bundled_artifact::{Artifact, artifact};
 use fspy_detours_sys::{DetourCopyPayloadToProcess, DetourUpdateProcessWithDll};
 use fspy_shared::{
     ipc::{PathAccess, channel::channel},
@@ -51,7 +51,7 @@ pub struct SpyImpl {
 
 impl SpyImpl {
     pub fn init_in(path: &Path) -> io::Result<Self> {
-        let dll_path = INTERPOSE_CDYLIB.write_to(path, ".dll").unwrap();
+        let dll_path = INTERPOSE_CDYLIB.ensure_in(path, ".dll").unwrap();
 
         let wide_dll_path = dll_path.as_os_str().encode_wide().collect::<Vec<u16>>();
         let mut ansi_dll_path =

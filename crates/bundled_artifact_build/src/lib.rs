@@ -1,21 +1,21 @@
 use std::{fs, path::Path};
 
 /// Namespace prefix for the env vars set by [`register`] and consumed by
-/// `embedded_artifact`'s `artifact!` macro. Exported so both crates agree on
+/// `bundled_artifact`'s `artifact!` macro. Exported so both crates agree on
 /// the same prefix.
-pub const ENV_PREFIX: &str = "EMBEDDED_ARTIFACT_";
+pub const ENV_PREFIX: &str = "BUNDLED_ARTIFACT_";
 
-/// Publish an artifact at `path` so `embedded_artifact`'s `artifact!($name)`
+/// Publish an artifact at `path` so `bundled_artifact`'s `artifact!($name)`
 /// macro can embed it.
 ///
 /// Emits three `cargo::…` directives:
 /// `rerun-if-changed={path}`,
-/// `rustc-env=EMBEDDED_ARTIFACT_{name}_PATH={path}`, and
-/// `rustc-env=EMBEDDED_ARTIFACT_{name}_HASH={hex}`. The runtime resolves these
+/// `rustc-env=BUNDLED_ARTIFACT_{name}_PATH={path}`, and
+/// `rustc-env=BUNDLED_ARTIFACT_{name}_HASH={hex}`. The runtime resolves these
 /// at compile time via `include_bytes!(env!(…))` and `env!(…)`.
 ///
 /// `name` is used both as the env-var key and as the on-disk filename prefix
-/// (in `Artifact::write_to`), so it must be a valid identifier-like string
+/// (in `Artifact::ensure_in`), so it must be a valid identifier-like string
 /// that matches the one passed to `artifact!`.
 ///
 /// # Panics
