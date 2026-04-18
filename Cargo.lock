@@ -339,7 +339,7 @@ dependencies = [
 name = "bundled_artifact"
 version = "0.0.0"
 dependencies = [
- "rand 0.9.2",
+ "tempfile",
 ]
 
 [[package]]

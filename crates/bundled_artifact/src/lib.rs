@@ -1,10 +1,37 @@
+//! Bundle a file into the executable and materialize it to disk on demand.
+//!
+//! Some APIs need a file on disk — `LoadLibrary` and `LD_PRELOAD` take a
+//! path, and helper binaries have to exist as actual files to be spawned —
+//! but we want to ship a single executable. `bundled_artifact` embeds the
+//! file content as a `&'static [u8]` at compile time via the [`artifact!`]
+//! macro, and [`Artifact::ensure_in`] writes it out to disk when first
+//! needed.
+//!
+//! Materialized files are named `{name}_{hash}{suffix}` in the caller-chosen
+//! directory. The hash (computed at build time by
+//! `bundled_artifact_build::register`) gives three properties without any
+//! coordination between processes:
+//!
+//! - **No repeated writes.** [`Artifact::ensure_in`] returns the existing
+//!   path if the file is already there; repeated calls and re-runs skip I/O.
+//! - **Correctness.** Two binaries with different embedded content produce
+//!   different filenames, so a stale file from an older build is never
+//!   mistaken for the current one.
+//! - **Coexistence.** Multiple versions of a bundled artifact (e.g. from
+//!   different builds of the host program on the same machine) share `dir`
+//!   without overwriting each other.
+
 use std::{
-    fs::{self, OpenOptions},
+    fs,
     io::{self, Write},
     path::{Path, PathBuf},
 };
 
-/// An artifact (e.g., a DLL or shared library) whose content is embedded and needs to be written to disk.
+/// A file bundled into the executable. Construct with [`artifact!`];
+/// materialize to disk with [`Artifact::ensure_in`]. See the [crate docs]
+/// for the design rationale.
+///
+/// [crate docs]: crate
 pub struct Artifact {
     name: &'static str,
     content: &'static [u8],
@@ -37,36 +64,85 @@ impl Artifact {
     }
 
     /// Ensure the artifact is materialized in `dir` under a content-addressed
-    /// filename, writing it if missing.
+    /// filename, writing it if missing. `executable` picks the Unix mode
+    /// (`0o755` vs `0o644`) for newly created files, and reconciles an
+    /// existing file's mode if it drifted. On non-Unix targets `executable`
+    /// has no effect.
     ///
-    /// Returns the final path. If a file with the same hash already exists at
-    /// the target path, it is reused without rewriting.
+    /// Returns the final path. If the target already exists and its mode
+    /// already matches `executable`, no I/O beyond the stat is performed.
+    ///
+    /// # Preconditions
+    ///
+    /// `dir` must already exist — this method does not create it.
     ///
     /// # Errors
     ///
-    /// Returns an error if the directory can't be read/written, or if the
-    /// temp-file rename fails and the destination still doesn't exist.
-    pub fn ensure_in(&self, dir: impl AsRef<Path>, suffix: &str) -> io::Result<PathBuf> {
+    /// Returns an error if the directory can't be read/written, the stat
+    /// fails for any reason other than not-found, or the temp-file rename
+    /// fails and the destination still doesn't exist.
+    pub fn ensure_in(
+        &self,
+        dir: impl AsRef<Path>,
+        suffix: &str,
+        executable: bool,
+    ) -> io::Result<PathBuf> {
         let dir = dir.as_ref();
         let path = dir.join(format!("{}_{}{}", self.name, self.hash, suffix));
 
-        if fs::exists(&path)? {
-            return Ok(path);
-        }
-        let tmp_path = dir.join(format!("{:x}", rand::random::<u128>()));
-        let mut tmp_file_open_options = OpenOptions::new();
-        tmp_file_open_options.write(true).create_new(true);
         #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut tmp_file_open_options, 0o755); // executable
-        let mut tmp_file = tmp_file_open_options.open(&tmp_path)?;
-        tmp_file.write_all(self.content)?;
-        drop(tmp_file);
+        let want_mode: u32 = if executable { 0o755 } else { 0o644 };
+        #[cfg(not(unix))]
+        let _ = executable; // Unix-mode concept; no-op on Windows.
 
-        if let Err(err) = fs::rename(&tmp_path, &path) {
-            if !fs::exists(&path)? {
-                return Err(err);
+        // Fast path: one stat tells us both whether the file exists and,
+        // on Unix, what its permission bits are. The content is assumed
+        // correct because the hash is in the filename, so there is nothing
+        // else to verify.
+        match fs::metadata(&path) {
+            #[cfg(unix)]
+            Ok(meta) => {
+                use std::os::unix::fs::PermissionsExt;
+                // Reconcile a drifted mode (e.g. someone chmod'd it away)
+                // but skip the syscall when it already matches.
+                if meta.permissions().mode() & 0o777 != want_mode {
+                    fs::set_permissions(&path, fs::Permissions::from_mode(want_mode))?;
+                }
+                return Ok(path);
             }
-            fs::remove_file(&tmp_path)?;
+            // On non-Unix there is no mode to reconcile; existence alone is
+            // enough to declare success.
+            #[cfg(not(unix))]
+            Ok(_) => return Ok(path),
+            // Not found: fall through to the create-and-rename path.
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            // Any other stat failure (permission denied, I/O error, etc.)
+            // propagates — we can't reason about what's on disk.
+            Err(err) => return Err(err),
+        }
+
+        // Slow path: write to a unique temp file in the same directory, then
+        // rename into place atomically. `NamedTempFile`'s `Drop` removes the
+        // temp if we bail before `persist_noclobber`, avoiding orphaned files
+        // on errors.
+        #[cfg(unix)]
+        let mut tmp = {
+            use std::os::unix::fs::PermissionsExt;
+            tempfile::Builder::new()
+                .permissions(fs::Permissions::from_mode(want_mode))
+                .tempfile_in(dir)?
+        };
+        #[cfg(not(unix))]
+        let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+        tmp.as_file_mut().write_all(self.content)?;
+
+        if let Err(err) = tmp.persist_noclobber(&path) {
+            // If another process won the race and the destination now exists,
+            // treat that as success; `err.file` drops here, cleaning up our
+            // temp. Otherwise propagate the original error.
+            if !fs::exists(&path)? {
+                return Err(err.error);
+            }
         }
         Ok(path)
     }
