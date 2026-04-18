@@ -6,53 +6,33 @@ use std::{
 
 /// An artifact (e.g., a DLL or shared library) whose content is embedded and needs to be written to disk.
 pub struct Artifact {
-    pub name: &'static str,
-    pub content: &'static [u8],
-    pub hash: &'static str,
+    name: &'static str,
+    content: &'static [u8],
+    hash: &'static str,
 }
 
-/// Construct an [`Artifact`] from a `&'static [u8]` expression; the hash is
-/// computed from the bytes at compile time.
-///
-/// Only use this for small artifacts — const-time hashing of large payloads
-/// significantly slows compilation. For large artifacts, pre-compute the hash
-/// in a build script and use [`artifact!`].
-#[macro_export]
-macro_rules! artifact_of {
-    ($name: literal, $content: expr) => {
-        $crate::Artifact::new(
-            $name,
-            $content,
-            $crate::__private::formatcp!("{:x}", $crate::__private::xxh3_128($content)),
-        )
-    };
-}
-
-/// Construct an [`Artifact`] from a file in the caller's `OUT_DIR`.
-///
-/// The build script is expected to have written `$OUT_DIR/{name}` (the raw
-/// bytes) and `$OUT_DIR/{name}.hash` (the hex hash) — see the
-/// `embedded_artifact_build` crate for a helper that does both in one call.
+/// Construct an [`Artifact`] from the env vars published by a build script
+/// via `embedded_artifact_build::register`. Must match the `ENV_PREFIX`
+/// constant in `embedded_artifact_build`.
 #[macro_export]
 macro_rules! artifact {
-    ($name: literal) => {
-        $crate::Artifact::new(
+    ($name:literal) => {
+        $crate::Artifact::__new(
             $name,
-            ::core::include_bytes!(::core::concat!(::core::env!("OUT_DIR"), "/", $name)),
-            ::core::include_str!(::core::concat!(::core::env!("OUT_DIR"), "/", $name, ".hash")),
+            ::core::include_bytes!(::core::env!(::core::concat!(
+                "EMBEDDED_ARTIFACT_",
+                $name,
+                "_PATH"
+            ))),
+            ::core::env!(::core::concat!("EMBEDDED_ARTIFACT_", $name, "_HASH")),
         )
     };
-}
-
-#[doc(hidden)]
-pub mod __private {
-    pub use const_format::formatcp;
-    pub use xxhash_rust::const_xxh3::xxh3_128;
 }
 
 impl Artifact {
+    #[doc(hidden)]
     #[must_use]
-    pub const fn new(name: &'static str, content: &'static [u8], hash: &'static str) -> Self {
+    pub const fn __new(name: &'static str, content: &'static [u8], hash: &'static str) -> Self {
         Self { name, content, hash }
     }
 

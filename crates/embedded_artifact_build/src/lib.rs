@@ -1,21 +1,37 @@
-use std::{fs, io, path::Path};
+use std::{fs, path::Path};
 
-/// Write an artifact produced by a build script so `embedded_artifact`'s
-/// `artifact!` macro can load it from `OUT_DIR` at compile time.
-///
-/// Creates two files in `out_dir`: `{name}` holding `bytes`, and
-/// `{name}.hash` holding the hex-formatted hash used by `artifact!` to
-/// content-address the extracted file at runtime.
-///
-/// # Errors
-///
-/// Returns the first I/O error from either write.
-pub fn write_artifact(out_dir: &Path, name: &str, bytes: &[u8]) -> io::Result<()> {
-    fs::write(out_dir.join(name), bytes)?;
-    fs::write(out_dir.join(format!("{name}.hash")), format!("{:x}", hash(bytes)))?;
-    Ok(())
-}
+/// Namespace prefix for the env vars set by [`register`] and consumed by
+/// `embedded_artifact`'s `artifact!` macro. Exported so both crates agree on
+/// the same prefix.
+pub const ENV_PREFIX: &str = "EMBEDDED_ARTIFACT_";
 
-fn hash(bytes: &[u8]) -> u128 {
-    xxhash_rust::xxh3::xxh3_128(bytes)
+/// Publish an artifact at `path` so `embedded_artifact`'s `artifact!($name)`
+/// macro can embed it.
+///
+/// Emits three `cargo::…` directives:
+/// `rerun-if-changed={path}`,
+/// `rustc-env=EMBEDDED_ARTIFACT_{name}_PATH={path}`, and
+/// `rustc-env=EMBEDDED_ARTIFACT_{name}_HASH={hex}`. The runtime resolves these
+/// at compile time via `include_bytes!(env!(…))` and `env!(…)`.
+///
+/// `name` is used both as the env-var key and as the on-disk filename prefix
+/// (in `Artifact::write_to`), so it must be a valid identifier-like string
+/// that matches the one passed to `artifact!`.
+///
+/// # Panics
+///
+/// Panics if `path` is not valid UTF-8 or cannot be read.
+pub fn register(name: &str, path: &Path) {
+    let path_str = path.to_str().expect("artifact path must be valid UTF-8");
+    #[expect(clippy::print_stdout, reason = "cargo build-script directives")]
+    {
+        // Emit rerun-if-changed before reading so cargo still sees it even if
+        // reading the file below panics.
+        println!("cargo::rerun-if-changed={path_str}");
+        let bytes =
+            fs::read(path).unwrap_or_else(|e| panic!("failed to read artifact at {path_str}: {e}"));
+        let hash = format!("{:x}", xxhash_rust::xxh3::xxh3_128(&bytes));
+        println!("cargo::rustc-env={ENV_PREFIX}{name}_PATH={path_str}");
+        println!("cargo::rustc-env={ENV_PREFIX}{name}_HASH={hash}");
+    }
 }

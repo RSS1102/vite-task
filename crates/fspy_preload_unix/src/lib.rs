@@ -1,6 +1,7 @@
-// On musl targets, fspy_preload_unix is not needed since we can track accesses via seccomp-only.
-// Compile as an empty crate to avoid build failures from missing libc symbols.
-#![cfg_attr(not(target_env = "musl"), feature(c_variadic))]
+// Compile as an empty crate on non-unix targets and on musl (where seccomp
+// alone handles access tracking). Guarding the feature gate keeps rustc from
+// warning about unused features on those targets.
+#![cfg_attr(all(unix, not(target_env = "musl")), feature(c_variadic))]
 
 #[cfg(all(unix, not(target_env = "musl")))]
 mod client;

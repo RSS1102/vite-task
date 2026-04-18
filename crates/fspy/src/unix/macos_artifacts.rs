@@ -1,7 +1,7 @@
 use embedded_artifact::{Artifact, artifact};
 
 pub const COREUTILS_BINARY: Artifact = artifact!("coreutils");
-pub const OILS_BINARY: Artifact = artifact!("oils-for-unix");
+pub const OILS_BINARY: Artifact = artifact!("oils_for_unix");
 
 #[cfg(test)]
 mod tests {

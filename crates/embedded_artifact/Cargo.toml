@@ -7,9 +7,7 @@ publish = false
 rust-version.workspace = true
 
 [dependencies]
-const_format = { workspace = true, features = ["fmt"] }
 rand = { workspace = true }
-xxhash-rust = { workspace = true, features = ["const_xxh3"] }
 
 [lints]
 workspace = true

@@ -37,9 +37,6 @@ pub struct SpyImpl {
     preload_path: Box<NativeStr>,
 }
 
-#[cfg(not(target_env = "musl"))]
-const PRELOAD_CDYLIB_BINARY: &[u8] = include_bytes!(env!("CARGO_CDYLIB_FILE_FSPY_PRELOAD_UNIX"));
-
 impl SpyImpl {
     /// Initialize the fs access spy by writing the preload library on disk.
     ///
@@ -48,9 +45,9 @@ impl SpyImpl {
     pub fn init_in(#[cfg_attr(target_env = "musl", allow(unused))] dir: &Path) -> io::Result<Self> {
         #[cfg(not(target_env = "musl"))]
         let preload_path = {
-            use embedded_artifact::{Artifact, artifact_of};
+            use embedded_artifact::{Artifact, artifact};
 
-            const PRELOAD_CDYLIB: Artifact = artifact_of!("fspy_preload", PRELOAD_CDYLIB_BINARY);
+            const PRELOAD_CDYLIB: Artifact = artifact!("fspy_preload");
 
             let preload_cdylib_path = PRELOAD_CDYLIB.write_to(dir, ".dylib")?;
             preload_cdylib_path.as_path().into()

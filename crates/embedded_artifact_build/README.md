@@ -1,3 +1,3 @@
 # embedded_artifact_build
 
-Build-script helpers for producing artifacts consumed by the `embedded_artifact` crate's `artifact!` macro.
+Build-script helper for publishing artifacts consumed by `embedded_artifact`'s `artifact!` macro.

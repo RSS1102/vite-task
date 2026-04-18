@@ -28,16 +28,12 @@ fspy_seccomp_unotify = { workspace = true, features = ["supervisor"] }
 nix = { workspace = true, features = ["uio"] }
 tokio = { workspace = true, features = ["bytes"] }
 
-[target.'cfg(all(unix, not(target_env = "musl")))'.dependencies]
-fspy_preload_unix = { workspace = true }
-
 [target.'cfg(unix)'.dependencies]
 fspy_shared_unix = { workspace = true }
 nix = { workspace = true, features = ["fs", "process", "socket", "feature"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 fspy_detours_sys = { workspace = true }
-fspy_preload_windows = { workspace = true }
 winapi = { workspace = true, features = ["winbase", "securitybaseapi", "handleapi"] }
 winsafe = { workspace = true }
 
@@ -58,10 +54,17 @@ fspy_test_bin = { path = "../fspy_test_bin", artifact = "bin", target = "aarch64
 [target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dev-dependencies]
 fspy_test_bin = { path = "../fspy_test_bin", artifact = "bin", target = "x86_64-unknown-linux-musl" }
 
+# Artifact build-deps must be unconditional: cargo's resolver panics when
+# `artifact = "cdylib"` deps live under a `[target.cfg.build-dependencies]`
+# block on cross-compile. Each preload crate's source is cfg-gated to compile
+# as an empty cdylib on non-applicable targets, so the unused cross-target
+# builds are cheap.
 [build-dependencies]
 anyhow = { workspace = true }
 embedded_artifact_build = { workspace = true }
 flate2 = { workspace = true }
+fspy_preload_unix = { path = "../fspy_preload_unix", artifact = "cdylib", target = "target" }
+fspy_preload_windows = { path = "../fspy_preload_windows", artifact = "cdylib", target = "target" }
 sha2 = { workspace = true }
 tar = { workspace = true }
 
@@ -72,4 +75,4 @@ workspace = true
 doctest = false
 
 [package.metadata.cargo-shear]
-ignored = ["ctor", "fspy_test_bin"]
+ignored = ["ctor", "fspy_test_bin", "fspy_preload_unix", "fspy_preload_windows"]
