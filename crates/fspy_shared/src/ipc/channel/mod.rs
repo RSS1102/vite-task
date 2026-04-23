@@ -378,7 +378,7 @@ mod tests {
              page allocation failed on a write to the shm-backed mapping.",
             status.code(),
             status.signal(),
-            sigbus = libc::SIGBUS,
+            sigbus = nix::sys::signal::Signal::SIGBUS as i32,
         );
     }
 
@@ -397,32 +397,22 @@ mod tests {
     /// before any threads are spawned in the current process.
     #[cfg(target_os = "linux")]
     fn enter_userns_with_small_dev_shm() -> Result<(), String> {
-        use std::ffi::CStr;
         use std::io;
 
-        let syscall_step = |name: &str, rc: libc::c_int| -> Result<(), String> {
-            if rc == 0 {
-                Ok(())
-            } else {
-                Err(std::format!("{name}: {}", io::Error::last_os_error()))
-            }
-        };
+        use nix::mount::{MsFlags, mount};
+        use nix::sched::{CloneFlags, unshare};
+        use nix::unistd::{Gid, Uid};
 
-        let write_procfs_step = |path: &str, content: &str| -> Result<(), String> {
-            write_procfs(path, content).map_err(|err| std::format!("write {path}: {err}"))
-        };
+        let uid = Uid::current().as_raw();
+        let gid = Gid::current().as_raw();
 
-        // SAFETY: getuid/getgid are always safe and have no preconditions.
-        let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
-
-        // SAFETY: unshare takes a flags bitmask; no memory preconditions.
-        syscall_step("unshare(CLONE_NEWUSER|CLONE_NEWNS)", unsafe {
-            libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNS)
-        })?;
+        unshare(CloneFlags::CLONE_NEWUSER | CloneFlags::CLONE_NEWNS)
+            .map_err(|err| std::format!("unshare(CLONE_NEWUSER|CLONE_NEWNS): {err}"))?;
 
         // Inside the new user namespace the current process starts as
         // "nobody" until the id maps are written.
-        write_procfs_step("/proc/self/uid_map", &std::format!("0 {uid} 1\n"))?;
+        write_procfs("/proc/self/uid_map", &std::format!("0 {uid} 1\n"))
+            .map_err(|err| std::format!("write /proc/self/uid_map: {err}"))?;
         // setgroups must be denied before gid_map can be written by an
         // unprivileged process (see user_namespaces(7)). On some hosts the
         // file is absent (older kernels, or a parent userns with setgroups
@@ -432,40 +422,31 @@ mod tests {
             Err(err) if err.kind() == io::ErrorKind::NotFound => {}
             Err(err) => return Err(std::format!("write /proc/self/setgroups: {err}")),
         }
-        write_procfs_step("/proc/self/gid_map", &std::format!("0 {gid} 1\n"))?;
+        write_procfs("/proc/self/gid_map", &std::format!("0 {gid} 1\n"))
+            .map_err(|err| std::format!("write /proc/self/gid_map: {err}"))?;
 
         // Make the root mount private recursively so tmpfs mounts inside
         // this namespace don't propagate back to the host.
-        let none: &CStr = c"none";
-        let root: &CStr = c"/";
-        // SAFETY: arguments are valid C strings; other pointers are null
-        // which is explicitly allowed by mount(2) for these parameters.
-        syscall_step("mount --make-rprivate /", unsafe {
-            libc::mount(
-                none.as_ptr(),
-                root.as_ptr(),
-                std::ptr::null(),
-                libc::MS_REC | libc::MS_PRIVATE,
-                std::ptr::null(),
-            )
-        })?;
+        mount(
+            None::<&str>,
+            "/",
+            None::<&str>,
+            MsFlags::MS_REC | MsFlags::MS_PRIVATE,
+            None::<&str>,
+        )
+        .map_err(|err| std::format!("mount --make-rprivate /: {err}"))?;
 
         // Remount /dev/shm as a 1 MiB tmpfs. The size= option is honored by
         // tmpfs and enforced at page-fault time: accesses to pages the
         // tmpfs can't back raise SIGBUS.
-        let tmpfs: &CStr = c"tmpfs";
-        let target: &CStr = c"/dev/shm";
-        let opts: &CStr = c"size=1m";
-        // SAFETY: all pointers reference valid NUL-terminated C strings.
-        syscall_step("mount tmpfs size=1m at /dev/shm", unsafe {
-            libc::mount(
-                tmpfs.as_ptr(),
-                target.as_ptr(),
-                tmpfs.as_ptr(),
-                0,
-                opts.as_ptr().cast(),
-            )
-        })?;
+        mount(
+            Some("tmpfs"),
+            "/dev/shm",
+            Some("tmpfs"),
+            MsFlags::empty(),
+            Some("size=1m"),
+        )
+        .map_err(|err| std::format!("mount tmpfs size=1m at /dev/shm: {err}"))?;
 
         Ok(())
     }

@@ -30,7 +30,7 @@ shared_memory = { workspace = true, features = ["logging"] }
 subprocess_test = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-libc = { workspace = true }
+nix = { workspace = true, features = ["mount", "sched", "user"] }
 
 [lints]
 workspace = true
