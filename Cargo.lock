@@ -1295,6 +1295,7 @@ dependencies = [
  "bstr",
  "bytemuck",
  "ctor",
+ "libc",
  "native_str",
  "os_str_bytes",
  "rustc-hash",

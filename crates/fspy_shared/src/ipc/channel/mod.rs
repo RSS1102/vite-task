@@ -299,4 +299,174 @@ mod tests {
         received_values.sort_unstable();
         assert_eq!(received_values, (0u16..200).collect::<Vec<u16>>());
     }
+
+    /// Regression test for <https://github.com/voidzero-dev/vite-plus/issues/1453>.
+    ///
+    /// The current implementation backs the channel with POSIX shared memory
+    /// (`shm_open`), which stores its file under `/dev/shm`. On hosts where
+    /// `/dev/shm` is size-capped (e.g. Docker's 64 MiB default) a workload
+    /// whose path-access stream exceeds that cap triggers `SIGBUS` in the
+    /// sender when tmpfs can't allocate the next page. `cache: false` works
+    /// around it by skipping fspy entirely.
+    ///
+    /// This test reproduces the crash without `sudo` and without needing the
+    /// test environment itself to have a small `/dev/shm`: it enters an
+    /// unprivileged user+mount namespace in a subprocess and remounts
+    /// `/dev/shm` as a 1 MiB tmpfs, then writes past the cap via the real
+    /// `channel()` API. The test asserts the subprocess completes cleanly;
+    /// today it dies from `SIGBUS`. Switching the backing store to
+    /// `memfd_create` (which is sized against RAM + overcommit, not
+    /// `/dev/shm`) will let this test pass unchanged — the subprocess's
+    /// `/dev/shm` constraint becomes irrelevant.
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore = "miri can't mmap or unshare")]
+    #[expect(clippy::print_stderr, reason = "test diagnostics")]
+    fn channel_survives_constrained_dev_shm() {
+        use std::os::unix::process::ExitStatusExt;
+
+        // Capacity chosen to comfortably exceed the 1 MiB tmpfs cap. The
+        // `ftruncate` inside `shared_memory` is lazy on tmpfs, so this
+        // allocation itself succeeds; the crash happens when the sender
+        // later writes into pages that tmpfs can no longer back.
+        const CAPACITY: usize = 16 * 1024 * 1024;
+
+        let cmd = command_for_fn!((), |(): ()| {
+            if let Err(err) = enter_userns_with_small_dev_shm() {
+                // Skip when unprivileged user namespaces aren't supported or
+                // are disabled on this host. Exit code 77 is the common
+                // "skipped" convention.
+                eprintln!("skipping: {err}");
+                std::process::exit(77);
+            }
+
+            let (conf, _receiver) = super::channel(CAPACITY).expect("channel creation");
+            let sender = conf.sender().expect("sender creation");
+
+            // Write ~4 MiB of 4 KiB frames. First ~256 succeed within the
+            // 1 MiB tmpfs quota (minus header + alignment overhead); the
+            // next write faults on an un-backed page -> SIGBUS.
+            let frame_size = NonZeroUsize::new(4096).unwrap();
+            let payload = [0xABu8; 4096];
+            for i in 0..1024 {
+                let Some(mut frame) = sender.claim_frame(frame_size) else {
+                    // Logical channel capacity exhausted before hitting the
+                    // tmpfs cap — shouldn't happen with the sizes chosen
+                    // here, but if it does the run is clean.
+                    eprintln!("claim_frame returned None at iter {i}");
+                    break;
+                };
+                frame.copy_from_slice(&payload);
+            }
+        });
+
+        let status = std::process::Command::from(cmd).status().unwrap();
+
+        if status.code() == Some(77) {
+            eprintln!(
+                "test channel_survives_constrained_dev_shm skipped: \
+                 unprivileged user namespaces unavailable"
+            );
+            return;
+        }
+
+        assert!(
+            status.success(),
+            "channel writes should survive a constrained /dev/shm, but the \
+             subprocess exited abnormally: code={:?} signal={:?}. \
+             SIGBUS ({sigbus}) indicates the issue #1453 reproduction: tmpfs \
+             page allocation failed on a write to the shm-backed mapping.",
+            status.code(),
+            status.signal(),
+            sigbus = libc::SIGBUS,
+        );
+    }
+
+    /// Procfs files must be opened without `O_CREAT` — synthetic inodes
+    /// reject the create bit on some hosts with `EACCES`. `std::fs::write`
+    /// uses `File::create` (which sets `O_CREAT`), so we can't use it here.
+    #[cfg(target_os = "linux")]
+    fn write_procfs(path: &str, content: &str) -> std::io::Result<()> {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().write(true).open(path)?;
+        f.write_all(content.as_bytes())
+    }
+
+    /// Enter a fresh user + mount namespace in which the current uid is
+    /// mapped to 0, then remount `/dev/shm` as a 1 MiB tmpfs. Must be called
+    /// before any threads are spawned in the current process.
+    #[cfg(target_os = "linux")]
+    fn enter_userns_with_small_dev_shm() -> Result<(), String> {
+        use std::ffi::CStr;
+        use std::io;
+
+        let syscall_step = |name: &str, rc: libc::c_int| -> Result<(), String> {
+            if rc == 0 {
+                Ok(())
+            } else {
+                Err(std::format!("{name}: {}", io::Error::last_os_error()))
+            }
+        };
+
+        let write_procfs_step = |path: &str, content: &str| -> Result<(), String> {
+            write_procfs(path, content).map_err(|err| std::format!("write {path}: {err}"))
+        };
+
+        // SAFETY: getuid/getgid are always safe and have no preconditions.
+        let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
+
+        // SAFETY: unshare takes a flags bitmask; no memory preconditions.
+        syscall_step("unshare(CLONE_NEWUSER|CLONE_NEWNS)", unsafe {
+            libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNS)
+        })?;
+
+        // Inside the new user namespace the current process starts as
+        // "nobody" until the id maps are written.
+        write_procfs_step("/proc/self/uid_map", &std::format!("0 {uid} 1\n"))?;
+        // setgroups must be denied before gid_map can be written by an
+        // unprivileged process (see user_namespaces(7)). On some hosts the
+        // file is absent (older kernels, or a parent userns with setgroups
+        // permanently denied and not re-exposed); treat ENOENT as a no-op.
+        match write_procfs("/proc/self/setgroups", "deny") {
+            Ok(()) => {}
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => return Err(std::format!("write /proc/self/setgroups: {err}")),
+        }
+        write_procfs_step("/proc/self/gid_map", &std::format!("0 {gid} 1\n"))?;
+
+        // Make the root mount private recursively so tmpfs mounts inside
+        // this namespace don't propagate back to the host.
+        let none: &CStr = c"none";
+        let root: &CStr = c"/";
+        // SAFETY: arguments are valid C strings; other pointers are null
+        // which is explicitly allowed by mount(2) for these parameters.
+        syscall_step("mount --make-rprivate /", unsafe {
+            libc::mount(
+                none.as_ptr(),
+                root.as_ptr(),
+                std::ptr::null(),
+                libc::MS_REC | libc::MS_PRIVATE,
+                std::ptr::null(),
+            )
+        })?;
+
+        // Remount /dev/shm as a 1 MiB tmpfs. The size= option is honored by
+        // tmpfs and enforced at page-fault time: accesses to pages the
+        // tmpfs can't back raise SIGBUS.
+        let tmpfs: &CStr = c"tmpfs";
+        let target: &CStr = c"/dev/shm";
+        let opts: &CStr = c"size=1m";
+        // SAFETY: all pointers reference valid NUL-terminated C strings.
+        syscall_step("mount tmpfs size=1m at /dev/shm", unsafe {
+            libc::mount(
+                tmpfs.as_ptr(),
+                target.as_ptr(),
+                tmpfs.as_ptr(),
+                0,
+                opts.as_ptr().cast(),
+            )
+        })?;
+
+        Ok(())
+    }
 }
