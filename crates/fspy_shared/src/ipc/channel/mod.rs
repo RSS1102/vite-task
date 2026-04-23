@@ -321,7 +321,6 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     #[cfg_attr(miri, ignore = "miri can't mmap or unshare")]
-    #[expect(clippy::print_stderr, reason = "test diagnostics")]
     fn channel_survives_constrained_dev_shm() {
         use std::os::unix::process::ExitStatusExt;
 
@@ -332,13 +331,7 @@ mod tests {
         const CAPACITY: usize = 16 * 1024 * 1024;
 
         let cmd = command_for_fn!((), |(): ()| {
-            if let Err(err) = enter_userns_with_small_dev_shm() {
-                // Skip when unprivileged user namespaces aren't supported or
-                // are disabled on this host. Exit code 77 is the common
-                // "skipped" convention.
-                eprintln!("skipping: {err}");
-                std::process::exit(77);
-            }
+            enter_userns_with_small_dev_shm();
 
             let (conf, _receiver) = super::channel(CAPACITY).expect("channel creation");
             let sender = conf.sender().expect("sender creation");
@@ -352,14 +345,6 @@ mod tests {
         });
 
         let status = std::process::Command::from(cmd).status().unwrap();
-
-        if status.code() == Some(77) {
-            eprintln!(
-                "test channel_survives_constrained_dev_shm skipped: \
-                 unprivileged user namespaces unavailable"
-            );
-            return;
-        }
 
         assert!(
             status.success(),
@@ -385,11 +370,11 @@ mod tests {
 
     /// Enter a fresh user + mount namespace in which the current uid is
     /// mapped to 0, then remount `/dev/shm` as a 1 MiB tmpfs. Must be called
-    /// before any threads are spawned in the current process.
+    /// before any threads are spawned in the current process. Panics on any
+    /// failure — unprivileged user namespace support is a hard requirement
+    /// for this reproduction.
     #[cfg(target_os = "linux")]
-    fn enter_userns_with_small_dev_shm() -> Result<(), String> {
-        use std::io;
-
+    fn enter_userns_with_small_dev_shm() {
         use nix::mount::{MsFlags, mount};
         use nix::sched::{CloneFlags, unshare};
         use nix::unistd::{Gid, Uid};
@@ -398,23 +383,17 @@ mod tests {
         let gid = Gid::current().as_raw();
 
         unshare(CloneFlags::CLONE_NEWUSER | CloneFlags::CLONE_NEWNS)
-            .map_err(|err| std::format!("unshare(CLONE_NEWUSER|CLONE_NEWNS): {err}"))?;
+            .expect("unshare(CLONE_NEWUSER|CLONE_NEWNS)");
 
         // Inside the new user namespace the current process starts as
         // "nobody" until the id maps are written.
         write_procfs("/proc/self/uid_map", &std::format!("0 {uid} 1\n"))
-            .map_err(|err| std::format!("write /proc/self/uid_map: {err}"))?;
+            .expect("write /proc/self/uid_map");
         // setgroups must be denied before gid_map can be written by an
-        // unprivileged process (see user_namespaces(7)). On some hosts the
-        // file is absent (older kernels, or a parent userns with setgroups
-        // permanently denied and not re-exposed); treat ENOENT as a no-op.
-        match write_procfs("/proc/self/setgroups", "deny") {
-            Ok(()) => {}
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-            Err(err) => return Err(std::format!("write /proc/self/setgroups: {err}")),
-        }
+        // unprivileged process (see user_namespaces(7)).
+        write_procfs("/proc/self/setgroups", "deny").expect("write /proc/self/setgroups");
         write_procfs("/proc/self/gid_map", &std::format!("0 {gid} 1\n"))
-            .map_err(|err| std::format!("write /proc/self/gid_map: {err}"))?;
+            .expect("write /proc/self/gid_map");
 
         // Make the root mount private recursively so tmpfs mounts inside
         // this namespace don't propagate back to the host.
@@ -425,7 +404,7 @@ mod tests {
             MsFlags::MS_REC | MsFlags::MS_PRIVATE,
             None::<&str>,
         )
-        .map_err(|err| std::format!("mount --make-rprivate /: {err}"))?;
+        .expect("mount --make-rprivate /");
 
         // Remount /dev/shm as a 1 MiB tmpfs. The size= option is honored by
         // tmpfs and enforced at page-fault time: accesses to pages the
@@ -437,8 +416,6 @@ mod tests {
             MsFlags::empty(),
             Some("size=1m"),
         )
-        .map_err(|err| std::format!("mount tmpfs size=1m at /dev/shm: {err}"))?;
-
-        Ok(())
+        .expect("mount tmpfs size=1m at /dev/shm");
     }
 }
