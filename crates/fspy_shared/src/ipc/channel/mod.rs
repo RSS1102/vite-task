@@ -389,9 +389,16 @@ mod tests {
         // "nobody" until the id maps are written.
         write_procfs("/proc/self/uid_map", &std::format!("0 {uid} 1\n"))
             .expect("write /proc/self/uid_map");
-        // setgroups must be denied before gid_map can be written by an
-        // unprivileged process (see user_namespaces(7)).
-        write_procfs("/proc/self/setgroups", "deny").expect("write /proc/self/setgroups");
+        // setgroups must be denied before an unprivileged gid_map write
+        // will be accepted (user_namespaces(7)). An absent
+        // /proc/self/setgroups means setgroups(2) is already permanently
+        // denied in an ancestor user namespace, so the gid_map
+        // precondition is already satisfied — not an environment skip.
+        match write_procfs("/proc/self/setgroups", "deny") {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => panic!("write /proc/self/setgroups: {err}"),
+        }
         write_procfs("/proc/self/gid_map", &std::format!("0 {gid} 1\n"))
             .expect("write /proc/self/gid_map");
 
