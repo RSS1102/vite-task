@@ -343,21 +343,12 @@ mod tests {
             let (conf, _receiver) = super::channel(CAPACITY).expect("channel creation");
             let sender = conf.sender().expect("sender creation");
 
-            // Write ~4 MiB of 4 KiB frames. First ~256 succeed within the
-            // 1 MiB tmpfs quota (minus header + alignment overhead); the
-            // next write faults on an un-backed page -> SIGBUS.
-            let frame_size = NonZeroUsize::new(4096).unwrap();
-            let payload = [0xABu8; 4096];
-            for i in 0..1024 {
-                let Some(mut frame) = sender.claim_frame(frame_size) else {
-                    // Logical channel capacity exhausted before hitting the
-                    // tmpfs cap — shouldn't happen with the sizes chosen
-                    // here, but if it does the run is clean.
-                    eprintln!("claim_frame returned None at iter {i}");
-                    break;
-                };
-                frame.copy_from_slice(&payload);
-            }
+            // Claim a single 4 MiB frame and fill it byte-by-byte. The
+            // first ~1 MiB of writes fit within the tmpfs quota; the next
+            // byte faults on an un-backed page -> SIGBUS.
+            let frame_size = NonZeroUsize::new(4 * 1024 * 1024).unwrap();
+            let mut frame = sender.claim_frame(frame_size).expect("claim_frame");
+            frame.fill(0xAB);
         });
 
         let status = std::process::Command::from(cmd).status().unwrap();
