@@ -64,9 +64,26 @@ pub fn redact_e2e_output(mut output: String, workspace_root: &str) -> String {
 
     redact_string(&mut output, &redactions);
 
-    // Redact durations like "0ns", "123ms" or "1.23s" to "<duration>"
-    let duration_regex = regex::Regex::new(r"\d+(\.\d+)?(ns|ms|s)").unwrap();
+    // Redact durations like "0ns", "123ms" or "1.23s" to "<duration>".
+    // The number and unit may be split by SGR escape sequences in the
+    // "Raw output (ANSI escapes visible)" block (vitest sometimes styles
+    // the unit dimly: `2\e[2mms`), so allow zero-or-more `\e[…m` sequences
+    // between them.
+    let duration_regex = regex::Regex::new(r"\d+(\.\d+)?(?:\\e\[[\d;]*m)*(ns|ms|s)").unwrap();
     output = duration_regex.replace_all(&output, "<duration>").into_owned();
+
+    // Redact vitest's "RUN  vX.Y.Z" version banner so snapshots survive dep
+    // bumps in `packages/tools`. The leading `v` may follow an SGR escape
+    // (`\e[36m`) in the formatted block, so a leading `\b` would fail to
+    // match — anchor only on a trailing word boundary instead. vitest is the
+    // only producer of such a pattern in e2e fixture output.
+    let semver_regex = regex::Regex::new(r"v\d+\.\d+\.\d+\b").unwrap();
+    output = semver_regex.replace_all(&output, "v<vitest_version>").into_owned();
+
+    // Redact `HH:MM:SS` (vitest's "Start at" timestamp). Run after the
+    // duration regex so we don't accidentally double-process numeric runs.
+    let clock_regex = regex::Regex::new(r"\d{2}:\d{2}:\d{2}").unwrap();
+    output = clock_regex.replace_all(&output, "<start_at>").into_owned();
 
     // Normalize the ", <duration> saved" suffix in cache hit summaries.
     // When tools are fast (e.g., Rust binaries), saved time may be 0ns and the

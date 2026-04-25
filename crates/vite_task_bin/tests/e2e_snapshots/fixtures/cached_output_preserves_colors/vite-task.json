@@ -2,11 +2,12 @@
   "cache": true,
   "tasks": {
     "test": {
-      "command": "node ./emit-colors.mjs",
+      "command": "vitest run",
+      "input": ["example.test.ts"],
       "cache": true
     },
     "test-uncached": {
-      "command": "node ./emit-colors.mjs",
+      "command": "vitest run",
       "cache": false
     }
   }

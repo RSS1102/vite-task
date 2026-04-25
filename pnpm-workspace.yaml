@@ -9,5 +9,6 @@ catalog:
   oxfmt: 0.42.0
   oxlint: ^1.55.0
   oxlint-tsgolint: ^0.18.0
+  vitest: ^3.2.4
 
 catalogMode: prefer

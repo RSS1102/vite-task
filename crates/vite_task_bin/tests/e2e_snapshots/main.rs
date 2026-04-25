@@ -387,14 +387,23 @@ fn run_case(
         "folder '{fixture_name}' should be a workspace root"
     );
 
-    // Prepare PATH for e2e tests: include vt and vtt binary directories.
+    // Prepare PATH for e2e tests: include vt and vtt binary directories,
+    // plus `packages/tools/node_modules/.bin` so fixtures can run npm CLIs
+    // (vitest, oxlint, …) installed at the repo root via `pnpm install`.
     let bin_dirs: [Arc<OsStr>; 2] = ["CARGO_BIN_EXE_vt", "CARGO_BIN_EXE_vtt"].map(|var| {
         let bin_path = env::var_os(var).unwrap_or_else(|| panic!("{var} not set"));
         let bin = AbsolutePathBuf::new(std::path::PathBuf::from(bin_path)).unwrap();
         Arc::<OsStr>::from(bin.parent().unwrap().as_path().as_os_str())
     });
+    let manifest_dir = std::path::PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
+    let tools_bin_dir = manifest_dir
+        .parent()
+        .and_then(std::path::Path::parent)
+        .unwrap()
+        .join("packages/tools/node_modules/.bin");
+    let tools_bin_dir: Arc<OsStr> = Arc::<OsStr>::from(tools_bin_dir.into_os_string());
     let e2e_env_path = join_paths(
-        bin_dirs.iter().cloned().chain(
+        bin_dirs.iter().cloned().chain(std::iter::once(tools_bin_dir)).chain(
             // the existing PATH
             split_paths(&env::var_os("PATH").unwrap())
                 .map(|path| Arc::<OsStr>::from(path.into_os_string())),

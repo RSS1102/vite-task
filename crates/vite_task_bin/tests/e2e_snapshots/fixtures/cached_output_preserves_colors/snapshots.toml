@@ -1,31 +1,27 @@
 # Reproduces voidzero-dev/vite-task#358: cached output should preserve colors.
 #
-# The fixture stands in for the vitest scenario from the issue. `emit-colors.mjs`
-# applies the same rules vitest's color library does (NO_COLOR / FORCE_COLOR /
-# `process.stdout.isTTY`), so its output reacts to whatever the runner does
-# with the child's stdio and env.
+# Vitest emits ANSI color codes only when its stdout looks like a TTY or
+# `FORCE_COLOR` is set. When caching is enabled the runner pipes the child's
+# stdio so it can capture the bytes for replay — that's not a TTY, so vitest's
+# color output depends entirely on whether the runner forwards `FORCE_COLOR`.
+# When it doesn't, the cache stores plain bytes and every cache hit replays
+# plain bytes, losing the colors the user sees from the equivalent uncached
+# run.
 #
-# The bug: when caching is enabled, the runner pipes the child's stdio so it
-# can capture for replay. Pipes are not TTYs, so vitest only emits colors if
-# the runner explicitly sets `FORCE_COLOR` for the child. When that doesn't
-# happen the child writes plain bytes, the cache stores plain bytes, and
-# every subsequent cache hit replays plain bytes — losing the colors the
-# user got from the equivalent uncached run.
-#
-# The harness's per-step defaults are `NO_COLOR=1`, `TERM=dumb`. Each step
-# here sets `NO_COLOR=<UNSET>` so the runner's auto-`FORCE_COLOR` logic has
-# a chance to fire. With `TERM=dumb` still in place (matching what users in
-# minimal CI environments — or with terminal-aware TTYs that vt's color
-# detection doesn't recognize — encounter), the auto-add logic finds no
-# detected color support and skips `FORCE_COLOR`. The fixture shows the
-# resulting plain cached output diverging from the colorful uncached run.
+# `vitest` resolves through `packages/tools/node_modules/.bin`, which the e2e
+# harness puts on PATH after `pnpm install` at the repo root. The harness's
+# per-step defaults are `NO_COLOR=1`, `TERM=dumb`. Each step here sets
+# `NO_COLOR=<UNSET>` so the runner's auto-`FORCE_COLOR` logic has a chance to
+# fire. The snapshot's "Raw output (ANSI escapes visible)" block makes the
+# divergence between the uncached baseline and the cached run unmistakable.
 
 [[e2e]]
 name = "cache_disabled_emits_colors"
 comment = """
-Baseline: with `cache: false`, stdio is inherited so the child sees the PTY
-as a TTY and unconditionally emits colors. This is the "good" output the
-cache-hit replay should match.
+Baseline: with `cache: false`, stdio is inherited so vitest sees the PTY as
+a TTY and emits its full color output (cyan `RUN` banner, green checkmarks,
+bold green `passed`). This is the "good" output the cache-hit replay is
+expected to match.
 """
 show_ansi = true
 ignore = true
@@ -39,19 +35,23 @@ steps = [
       "NO_COLOR",
       "<UNSET>",
     ],
+    [
+      "TERM",
+      "xterm-256color",
+    ],
   ] },
 ]
 
 [[e2e]]
 name = "cached_run_drops_colors_on_replay"
 comment = """
-Run the cached task twice. The first run is a cache miss with piped stdio —
-the child no longer sees a TTY, and (for the reasons described at the top of
-this file) the runner doesn't forward `FORCE_COLOR` either, so the child
-writes plain text. The second run replays whatever was cached, so it's also
-plain. Compare the snapshot's "Raw output (ANSI escapes visible)" blocks
-against `cache_disabled_emits_colors.md`: every SGR code that appears in the
-uncached baseline is missing here, demonstrating issue #358.
+Run the cached `vitest run` task twice. The first run is a cache miss with
+piped stdio — vitest no longer sees a TTY, and (under the harness's default
+`TERM=dumb`) the runner doesn't auto-add `FORCE_COLOR` either, so vitest
+writes plain bytes. The second run replays whatever the first one cached, so
+it's plain too. Compare the snapshot's "Raw output (ANSI escapes visible)"
+blocks against `cache_disabled_emits_colors.md`: every SGR code that appears
+in the uncached baseline is missing here, demonstrating issue #358.
 """
 show_ansi = true
 ignore = true
@@ -60,7 +60,7 @@ steps = [
     "vt",
     "run",
     "test",
-  ], comment = "cache miss — child runs with piped stdio, emits no colors", envs = [
+  ], comment = "cache miss — vitest runs with piped stdio, emits no colors", envs = [
     [
       "NO_COLOR",
       "<UNSET>",
