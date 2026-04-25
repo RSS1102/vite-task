@@ -52,6 +52,14 @@ impl Reader {
         contents
     }
 
+    /// Returns the formatted terminal screen contents (with styling preserved
+    /// as inline SGR escape sequences) as bytes. Intended for tests that need
+    /// to assert text attributes such as colors.
+    #[must_use]
+    pub fn screen_contents_formatted(&self) -> Vec<u8> {
+        self.pty.get_ref().screen_contents_formatted()
+    }
+
     /// Reads from the PTY until a milestone with the given name is encountered.
     ///
     /// Returns the terminal screen contents at the moment the milestone is detected.

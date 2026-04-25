@@ -198,6 +198,13 @@ struct E2e {
     /// (skipped by default, runnable with `cargo test -- --ignored`).
     #[serde(default)]
     pub ignore: bool,
+    /// When true, after each step's screen-contents fenced block, also emit a
+    /// "raw output (ANSI escapes visible)" block containing the formatted
+    /// terminal contents (with SGR escape sequences) — `\x1b` is rendered as
+    /// `\e` so the snapshot stays human-readable. Used by tests that need to
+    /// assert text styling such as colors are preserved.
+    #[serde(default)]
+    pub show_ansi: bool,
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -252,6 +259,90 @@ fn resolve_env_placeholder(raw: &str) -> std::borrow::Cow<'_, OsStr> {
     } else {
         std::borrow::Cow::Borrowed(OsStr::new(raw))
     }
+}
+
+/// Filter `bytes` (a `vt100` `contents_formatted` rendering) down to
+/// printable text plus SGR escape sequences (`\e[...m`), then escape it for
+/// snapshot inclusion: `\x1B` becomes `\e`, TAB becomes `\t`, newlines are
+/// kept, and remaining non-printable bytes become `\xHH`.
+///
+/// Non-SGR CSI sequences (cursor positioning, mode changes, etc.) and
+/// non-CSI escape sequences are stripped because they're noise for the
+/// "did styling survive?" question, and their exact form can vary between
+/// runs (e.g. the trailing cursor position emitted by `contents_formatted`
+/// shifts depending on when the parser sees the final byte). Trailing
+/// whitespace on each line — including `\r` — is also trimmed for the same
+/// reason; carriage returns appear inconsistently between runs as the
+/// emulator decides whether to advance via `\r\n` or absolute positioning.
+#[expect(clippy::disallowed_types, reason = "String/Vec required by accumulation")]
+fn escape_ansi(bytes: &[u8]) -> String {
+    let filtered = keep_text_and_sgr(bytes);
+    let mut out = String::with_capacity(filtered.len());
+    for &b in &filtered {
+        match b {
+            0x1B => out.push_str("\\e"),
+            b'\t' => out.push_str("\\t"),
+            b'\n' => out.push('\n'),
+            b'\r' => out.push('\r'),
+            0x20..=0x7E => out.push(b as char),
+            _ => {
+                use std::fmt::Write as _;
+                let _ = write!(&mut out, "\\x{b:02x}");
+            }
+        }
+    }
+    // Trim trailing whitespace (incl. `\r`) on each line for stability.
+    let trimmed: Vec<&str> = out.split('\n').map(str::trim_end).collect();
+    trimmed.join("\n")
+}
+
+/// Keep printable text and SGR (`CSI ... m`) escape sequences; strip
+/// everything else (other CSI sequences and other escape forms).
+fn keep_text_and_sgr(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != 0x1B {
+            out.push(bytes[i]);
+            i += 1;
+            continue;
+        }
+        // Escape sequence: try to recognize CSI (`ESC [ ... <final>`).
+        let Some(&next) = bytes.get(i + 1) else {
+            // Lone ESC at end of buffer — drop it.
+            i += 1;
+            continue;
+        };
+        if next == b'[' {
+            let start = i;
+            let mut j = i + 2;
+            // Parameter bytes (0x30..=0x3F)
+            while j < bytes.len() && (0x30..=0x3F).contains(&bytes[j]) {
+                j += 1;
+            }
+            // Intermediate bytes (0x20..=0x2F)
+            while j < bytes.len() && (0x20..=0x2F).contains(&bytes[j]) {
+                j += 1;
+            }
+            // Final byte (0x40..=0x7E)
+            if let Some(&final_byte) = bytes.get(j) {
+                if final_byte == b'm' {
+                    // SGR — keep verbatim.
+                    out.extend_from_slice(&bytes[start..=j]);
+                }
+                i = j + 1;
+                continue;
+            }
+            // Truncated CSI — drop the rest.
+            i = bytes.len();
+        } else {
+            // Non-CSI escape (e.g. ESC ] ... ST, ESC = , ESC > , two-byte forms):
+            // skip the ESC and its single follow-up; OSC / DCS strings are rare in
+            // `contents_formatted` output, so a heuristic is sufficient here.
+            i += 2;
+        }
+    }
+    out
 }
 
 /// Append a fenced markdown block containing `body`. The opening and closing
@@ -359,8 +450,12 @@ fn run_case(
                 cmd.env("PATHEXT", ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC");
             }
             for (k, v) in step.envs() {
-                let resolved = resolve_env_placeholder(v.as_str());
-                cmd.env(k.as_str(), AsRef::<OsStr>::as_ref(&resolved));
+                if v.as_str() == "<UNSET>" {
+                    cmd.env_remove(k.as_str());
+                } else {
+                    let resolved = resolve_env_placeholder(v.as_str());
+                    cmd.env(k.as_str(), AsRef::<OsStr>::as_ref(&resolved));
+                }
             }
             cmd.cwd(e2e_stage_path.join(&e2e.cwd).as_path());
 
@@ -369,6 +464,7 @@ fn run_case(
             let interactions = step.interactions().to_vec();
             let output = Arc::new(Mutex::new(String::new()));
             let output_for_thread = Arc::clone(&output);
+            let show_ansi = e2e.show_ansi;
             let (tx, rx) = mpsc::channel();
             std::thread::spawn(move || {
                 let mut terminal = terminal;
@@ -422,11 +518,19 @@ fn run_case(
 
                 let status = terminal.reader.wait_for_exit().unwrap();
                 let screen = terminal.reader.screen_contents();
+                let formatted_screen = if show_ansi {
+                    Some(escape_ansi(&terminal.reader.screen_contents_formatted()))
+                } else {
+                    None
+                };
 
-                {
-                    let mut output = output_for_thread.lock().unwrap();
-                    push_fenced_block(&mut output, &screen);
+                let mut block = String::new();
+                push_fenced_block(&mut block, &screen);
+                if let Some(formatted) = formatted_screen {
+                    block.push_str("\n**Raw output (ANSI escapes visible):**\n\n");
+                    push_fenced_block(&mut block, &formatted);
                 }
+                output_for_thread.lock().unwrap().push_str(&block);
 
                 let _ = tx.send(i64::from(status.exit_code()));
             });

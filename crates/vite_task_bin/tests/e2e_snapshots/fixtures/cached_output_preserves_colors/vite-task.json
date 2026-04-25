@@ -1,0 +1,9 @@
+{
+  "cache": true,
+  "tasks": {
+    "test": {
+      "command": "vtt print-file vitest_output.txt",
+      "cache": true
+    }
+  }
+}

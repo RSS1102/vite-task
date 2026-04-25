@@ -1,0 +1,77 @@
+# Reproduces voidzero-dev/vite-task#358: cached output should preserve colors.
+#
+# A real vitest run would emit ANSI-colored output (PASS/FAIL summaries,
+# durations, etc.). To exercise the same byte path through the task cache
+# without taking on a `pnpm install vitest` dependency in the e2e harness,
+# the fixture replays a captured chunk of vitest output via `vtt print-file`.
+# The contents of `vitest_output.txt` are the literal bytes vitest would
+# produce, including SGR escape sequences for colors and bold/dim attributes.
+
+[[e2e]]
+name = "ansi_colors_preserved_across_cache_hit"
+comment = """
+Running the same cached task twice should yield byte-identical user-visible
+output on the cache hit. The "Raw output (ANSI escapes visible)" block lets
+the snapshot show whether SGR sequences survived the cache write/read cycle —
+issue #358 reports they are dropped on cache hit.
+"""
+show_ansi = true
+steps = [
+  { argv = [
+    "vt",
+    "run",
+    "test",
+  ], comment = "cache miss — original colored output is captured" },
+  { argv = [
+    "vt",
+    "run",
+    "test",
+  ], comment = "cache hit — colored output should be replayed verbatim" },
+]
+
+[[e2e]]
+name = "ansi_colors_preserved_across_cache_hit_grouped"
+comment = """
+Same scenario as above, but with `--log=grouped` so output flows through
+`GroupedWriter` (which buffers all bytes for a task and replays them as one
+block). The grouped block on the cache hit must contain the same SGR escape
+sequences as the original run.
+"""
+show_ansi = true
+steps = [
+  { argv = [
+    "vt",
+    "run",
+    "--log=grouped",
+    "test",
+  ], comment = "cache miss — grouped block built from live stdout" },
+  { argv = [
+    "vt",
+    "run",
+    "--log=grouped",
+    "test",
+  ], comment = "cache hit — grouped block built from cached stdout" },
+]
+
+[[e2e]]
+name = "ansi_colors_preserved_across_cache_hit_labeled"
+comment = """
+Same scenario as above, but with `--log=labeled` so output flows through
+`LabeledWriter` (which prefixes each line with the task label). The label
+prefix must not strip or corrupt SGR escape sequences inside the line.
+"""
+show_ansi = true
+steps = [
+  { argv = [
+    "vt",
+    "run",
+    "--log=labeled",
+    "test",
+  ], comment = "cache miss — labeled lines from live stdout" },
+  { argv = [
+    "vt",
+    "run",
+    "--log=labeled",
+    "test",
+  ], comment = "cache hit — labeled lines from cached stdout" },
+]

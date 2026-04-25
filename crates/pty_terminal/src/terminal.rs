@@ -128,6 +128,19 @@ impl PtyReader {
         self.parser.lock().unwrap().screen().contents()
     }
 
+    /// Returns the current terminal screen contents with text styling preserved
+    /// as inline escape sequences (SGR codes for colors and attributes). The
+    /// result is what a fresh terminal would need to recreate the visible
+    /// screen, including non-default cell attributes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parser lock is poisoned.
+    #[must_use]
+    pub fn screen_contents_formatted(&self) -> Vec<u8> {
+        self.parser.lock().unwrap().screen().contents_formatted()
+    }
+
     /// Drains and returns all unhandled OSC sequences received since the last call.
     ///
     /// Each entry is a list of byte-vector parameters from a single OSC sequence
