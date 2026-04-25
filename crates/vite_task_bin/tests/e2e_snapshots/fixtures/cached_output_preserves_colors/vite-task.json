@@ -2,8 +2,12 @@
   "cache": true,
   "tasks": {
     "test": {
-      "command": "vtt print-file vitest_output.txt",
+      "command": "node ./emit-colors.mjs",
       "cache": true
+    },
+    "test-uncached": {
+      "command": "node ./emit-colors.mjs",
+      "cache": false
     }
   }
 }

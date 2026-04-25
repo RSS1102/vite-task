@@ -1,8 +1,0 @@
-[1m[36m DEV [22m[39m  [34mv3.2.4[39m  [90m/tmp/vitest-fixture[39m
-
- [32m✓[39m [2mexample.test.ts[22m [90m(2 tests)[39m
-
- [2mTest Files[22m  [1m[32m1 passed[39m[22m [90m(1)[39m
-      [2mTests[22m  [1m[32m2 passed[39m[22m [90m(2)[39m
-   [2mStart at[22m  10:24:18
-   [2mDuration[22m  142ms

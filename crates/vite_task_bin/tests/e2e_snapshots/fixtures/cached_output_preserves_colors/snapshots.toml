@@ -1,77 +1,79 @@
 # Reproduces voidzero-dev/vite-task#358: cached output should preserve colors.
 #
-# A real vitest run would emit ANSI-colored output (PASS/FAIL summaries,
-# durations, etc.). To exercise the same byte path through the task cache
-# without taking on a `pnpm install vitest` dependency in the e2e harness,
-# the fixture replays a captured chunk of vitest output via `vtt print-file`.
-# The contents of `vitest_output.txt` are the literal bytes vitest would
-# produce, including SGR escape sequences for colors and bold/dim attributes.
+# The fixture stands in for the vitest scenario from the issue. `emit-colors.mjs`
+# applies the same rules vitest's color library does (NO_COLOR / FORCE_COLOR /
+# `process.stdout.isTTY`), so its output reacts to whatever the runner does
+# with the child's stdio and env.
+#
+# The bug: when caching is enabled, the runner pipes the child's stdio so it
+# can capture for replay. Pipes are not TTYs, so vitest only emits colors if
+# the runner explicitly sets `FORCE_COLOR` for the child. When that doesn't
+# happen the child writes plain bytes, the cache stores plain bytes, and
+# every subsequent cache hit replays plain bytes — losing the colors the
+# user got from the equivalent uncached run.
+#
+# The harness's per-step defaults are `NO_COLOR=1`, `TERM=dumb`. Each step
+# here sets `NO_COLOR=<UNSET>` so the runner's auto-`FORCE_COLOR` logic has
+# a chance to fire. With `TERM=dumb` still in place (matching what users in
+# minimal CI environments — or with terminal-aware TTYs that vt's color
+# detection doesn't recognize — encounter), the auto-add logic finds no
+# detected color support and skips `FORCE_COLOR`. The fixture shows the
+# resulting plain cached output diverging from the colorful uncached run.
 
 [[e2e]]
-name = "ansi_colors_preserved_across_cache_hit"
+name = "cache_disabled_emits_colors"
 comment = """
-Running the same cached task twice should yield byte-identical user-visible
-output on the cache hit. The "Raw output (ANSI escapes visible)" block lets
-the snapshot show whether SGR sequences survived the cache write/read cycle —
-issue #358 reports they are dropped on cache hit.
+Baseline: with `cache: false`, stdio is inherited so the child sees the PTY
+as a TTY and unconditionally emits colors. This is the "good" output the
+cache-hit replay should match.
 """
 show_ansi = true
+ignore = true
 steps = [
   { argv = [
     "vt",
     "run",
-    "test",
-  ], comment = "cache miss — original colored output is captured" },
-  { argv = [
-    "vt",
-    "run",
-    "test",
-  ], comment = "cache hit — colored output should be replayed verbatim" },
+    "test-uncached",
+  ], envs = [
+    [
+      "NO_COLOR",
+      "<UNSET>",
+    ],
+  ] },
 ]
 
 [[e2e]]
-name = "ansi_colors_preserved_across_cache_hit_grouped"
+name = "cached_run_drops_colors_on_replay"
 comment = """
-Same scenario as above, but with `--log=grouped` so output flows through
-`GroupedWriter` (which buffers all bytes for a task and replays them as one
-block). The grouped block on the cache hit must contain the same SGR escape
-sequences as the original run.
+Run the cached task twice. The first run is a cache miss with piped stdio —
+the child no longer sees a TTY, and (for the reasons described at the top of
+this file) the runner doesn't forward `FORCE_COLOR` either, so the child
+writes plain text. The second run replays whatever was cached, so it's also
+plain. Compare the snapshot's "Raw output (ANSI escapes visible)" blocks
+against `cache_disabled_emits_colors.md`: every SGR code that appears in the
+uncached baseline is missing here, demonstrating issue #358.
 """
 show_ansi = true
+ignore = true
 steps = [
   { argv = [
     "vt",
     "run",
-    "--log=grouped",
     "test",
-  ], comment = "cache miss — grouped block built from live stdout" },
+  ], comment = "cache miss — child runs with piped stdio, emits no colors", envs = [
+    [
+      "NO_COLOR",
+      "<UNSET>",
+    ],
+  ] },
   { argv = [
     "vt",
     "run",
-    "--log=grouped",
     "test",
-  ], comment = "cache hit — grouped block built from cached stdout" },
-]
-
-[[e2e]]
-name = "ansi_colors_preserved_across_cache_hit_labeled"
-comment = """
-Same scenario as above, but with `--log=labeled` so output flows through
-`LabeledWriter` (which prefixes each line with the task label). The label
-prefix must not strip or corrupt SGR escape sequences inside the line.
-"""
-show_ansi = true
-steps = [
-  { argv = [
-    "vt",
-    "run",
-    "--log=labeled",
-    "test",
-  ], comment = "cache miss — labeled lines from live stdout" },
-  { argv = [
-    "vt",
-    "run",
-    "--log=labeled",
-    "test",
-  ], comment = "cache hit — labeled lines from cached stdout" },
+  ], comment = "cache hit — replays the plain bytes captured above", envs = [
+    [
+      "NO_COLOR",
+      "<UNSET>",
+    ],
+  ] },
 ]
