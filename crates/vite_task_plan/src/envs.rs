@@ -92,22 +92,35 @@ impl EnvFingerprints {
                     .collect::<Vec<&str>>(),
             )?;
 
-            // Automatically add FORCE_COLOR environment variable if not already set
-            // This enables color output in subprocesses when color is supported
-            // TODO: will remove this temporarily until we have a better solution
+            // Force color output for child processes when our stdout looks
+            // like a terminal — even if `supports_color` can't classify it
+            // (e.g. when the user's `TERM` is `dumb` or unset, or on terminal
+            // emulators it doesn't recognise). Children launched under cache
+            // (always with piped stdio so the runner can capture for replay)
+            // default to monochrome without `FORCE_COLOR`, so without this
+            // the cache would store plain bytes and every cache hit would
+            // replay them — losing the colors the user sees on an uncached
+            // run. See voidzero-dev/vite-task#358.
             if !all_envs.contains_key(OsStr::new("FORCE_COLOR"))
                 && !all_envs.contains_key(OsStr::new("NO_COLOR"))
-                && let Some(support) = on(Stream::Stdout)
+                && std::io::IsTerminal::is_terminal(&std::io::stdout())
             {
-                let force_color_value = if support.has_16m {
-                    "3" // True color (16 million colors)
-                } else if support.has_256 {
-                    "2" // 256 colors
-                } else if support.has_basic {
-                    "1" // Basic ANSI colors
-                } else {
-                    "0" // No color support
-                };
+                let force_color_value = on(Stream::Stdout).map_or(
+                    // `supports_color` declined to classify the terminal —
+                    // fall back to 256 colors as a safe modern default.
+                    "2",
+                    |support| {
+                        if support.has_16m {
+                            "3" // True color (16 million colors)
+                        } else if support.has_256 {
+                            "2" // 256 colors
+                        } else if support.has_basic {
+                            "1" // Basic ANSI colors
+                        } else {
+                            "2"
+                        }
+                    },
+                );
                 new_all_envs.insert(
                     OsStr::new("FORCE_COLOR").into(),
                     Arc::<OsStr>::from(OsStr::new(force_color_value)),

@@ -1,5 +1,6 @@
 # Changelog
 
+- **Fixed** Cached task output now preserves ANSI colors. `FORCE_COLOR` is forwarded to subprocesses whenever `vp`'s own stdout is a terminal, so tools like vitest emit colors even when caching forces piped stdio — and the cached bytes (and every replay) keep them ([#358](https://github.com/voidzero-dev/vite-task/issues/358))
 - **Added** Platform support for targets without `input` auto-inference (e.g. Android). Tasks still run; those relying on auto-inference run uncached, with the summary noting that `input` must be configured manually to enable caching ([#352](https://github.com/voidzero-dev/vite-task/pull/352))
 - **Fixed** `vp run` no longer aborts with `failed to prepare the command for injection: Invalid argument` when the user environment already has `LD_PRELOAD` (Linux) or `DYLD_INSERT_LIBRARIES` (macOS) set. The tracer shim is now appended to any existing value and placed last, so user preloads keep their symbol-interposition precedence ([#340](https://github.com/voidzero-dev/vite-task/issues/340))
 - **Changed** Arguments passed after a task name (e.g. `vp run test some-filter`) are now forwarded only to that task. Tasks pulled in via `dependsOn` no longer receive them ([#324](https://github.com/voidzero-dev/vite-task/issues/324))

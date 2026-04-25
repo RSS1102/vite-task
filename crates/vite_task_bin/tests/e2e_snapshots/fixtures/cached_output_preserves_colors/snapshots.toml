@@ -1,19 +1,21 @@
-# Reproduces voidzero-dev/vite-task#358: cached output should preserve colors.
+# Regression test for voidzero-dev/vite-task#358: cached output should
+# preserve colors.
 #
 # Vitest emits ANSI color codes only when its stdout looks like a TTY or
 # `FORCE_COLOR` is set. When caching is enabled the runner pipes the child's
-# stdio so it can capture the bytes for replay — that's not a TTY, so vitest's
-# color output depends entirely on whether the runner forwards `FORCE_COLOR`.
-# When it doesn't, the cache stores plain bytes and every cache hit replays
-# plain bytes, losing the colors the user sees from the equivalent uncached
-# run.
+# stdio so it can capture the bytes for replay — that's not a TTY, so the
+# cached colors depend entirely on the runner forwarding `FORCE_COLOR`. The
+# fix in `vite_task_plan/envs.rs` does that whenever vt's own stdout is a
+# terminal (independent of `supports_color`'s opinion of the level), so the
+# cache stores colored bytes and every cache hit replays them verbatim.
 #
-# `vitest` resolves through `packages/tools/node_modules/.bin`, which the e2e
-# harness puts on PATH after `pnpm install` at the repo root. The harness's
-# per-step defaults are `NO_COLOR=1`, `TERM=dumb`. Each step here sets
-# `NO_COLOR=<UNSET>` so the runner's auto-`FORCE_COLOR` logic has a chance to
-# fire. The snapshot's "Raw output (ANSI escapes visible)" block makes the
-# divergence between the uncached baseline and the cached run unmistakable.
+# `vitest` resolves through `packages/tools/node_modules/.bin`, which the
+# e2e harness puts on PATH after `pnpm install` at the repo root. The
+# harness's per-step defaults are `NO_COLOR=1`, `TERM=dumb`; each step
+# below sets `NO_COLOR=<UNSET>` so the auto-`FORCE_COLOR` path can engage.
+# The snapshot's "Raw output (ANSI escapes visible)" blocks make the
+# colors visible in the markdown file so a future regression that drops
+# them would show up as missing SGR sequences.
 
 [[e2e]]
 name = "cache_disabled_emits_colors"
@@ -43,15 +45,17 @@ steps = [
 ]
 
 [[e2e]]
-name = "cached_run_drops_colors_on_replay"
+name = "cached_run_preserves_colors_on_replay"
 comment = """
 Run the cached `vitest run` task twice. The first run is a cache miss with
-piped stdio — vitest no longer sees a TTY, and (under the harness's default
-`TERM=dumb`) the runner doesn't auto-add `FORCE_COLOR` either, so vitest
-writes plain bytes. The second run replays whatever the first one cached, so
-it's plain too. Compare the snapshot's "Raw output (ANSI escapes visible)"
-blocks against `cache_disabled_emits_colors.md`: every SGR code that appears
-in the uncached baseline is missing here, demonstrating issue #358.
+piped stdio — vitest no longer sees a TTY, so colors only survive if the
+runner forwards `FORCE_COLOR` to the child. The second run replays the
+captured bytes; the colors recorded above must reappear. Compare the
+snapshot's "Raw output (ANSI escapes visible)" blocks against
+`cache_disabled_emits_colors.md`: every SGR code in the uncached baseline
+should also appear here. The repro of issue #358 is the inverse of this
+assertion — a regression that drops colors would show as missing SGR
+sequences.
 """
 show_ansi = true
 ignore = true
@@ -60,7 +64,7 @@ steps = [
     "vt",
     "run",
     "test",
-  ], comment = "cache miss — vitest runs with piped stdio, emits no colors", envs = [
+  ], comment = "cache miss — vitest runs with piped stdio, FORCE_COLOR forwarded so colors are captured", envs = [
     [
       "NO_COLOR",
       "<UNSET>",
@@ -70,7 +74,7 @@ steps = [
     "vt",
     "run",
     "test",
-  ], comment = "cache hit — replays the plain bytes captured above", envs = [
+  ], comment = "cache hit — replays the colored bytes captured above", envs = [
     [
       "NO_COLOR",
       "<UNSET>",
