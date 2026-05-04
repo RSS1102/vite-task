@@ -39,9 +39,9 @@ multiple_crate_versions = "allow"
 future_not_send = "allow"
 
 [workspace.dependencies]
-allocator-api2 = { version = "0.2.21", default-features = false, features = ["alloc", "std"] }
+allocator-api2 = { version = "0.4.0", default-features = false, features = ["alloc", "std"] }
 anyhow = "1.0.98"
-assert2 = "0.3.16"
+assert2 = "0.4.0"
 assertables = "9.8.1"
 async-trait = "0.1.89"
 base64 = "0.22.1"
@@ -64,7 +64,7 @@ cow-utils = "0.1.3"
 cp_r = "0.5.2"
 crossterm = { version = "0.29.0", features = ["event-stream"] }
 csv-async = { version = "1.3.1", features = ["tokio"] }
-ctor = "0.6"
+ctor = "0.13"
 ctrlc = "3.5.2"
 derive_more = "2.0.1"
 diff-struct = "0.5.3"
@@ -82,7 +82,7 @@ fspy_shared = { path = "crates/fspy_shared" }
 fspy_shared_unix = { path = "crates/fspy_shared_unix" }
 futures = "0.3.31"
 futures-util = "0.3.31"
-jsonc-parser = { version = "0.29.0", features = ["serde"] }
+jsonc-parser = { version = "0.32.0", features = ["serde"] }
 libc = "0.2.185"
 libtest-mimic = "0.8.2"
 memmap2 = "0.9.7"
@@ -100,7 +100,7 @@ notify = "8.0.0"
 path-clean = "1.0.1"
 pathdiff = "0.2.3"
 petgraph = "0.8.2"
-phf = { version = "0.11.3", features = ["macros"] }
+phf = { version = "0.13.0", features = ["macros"] }
 portable-pty = "0.9.0"
 pretty_assertions = "1.4.1"
 pty_terminal = { path = "crates/pty_terminal" }
@@ -110,14 +110,14 @@ ratatui = "0.30.0"
 rayon = "1.10.0"
 ref-cast = "1.0.24"
 regex = "1.11.3"
-rusqlite = "0.37.0"
+rusqlite = "0.39.0"
 rustc-hash = "2.1.1"
 # SeccompAction::UserNotif (SECCOMP_RET_USER_NOTIF) was added after the latest published release (v0.5.0)
 seccompiler = { git = "https://github.com/rust-vmm/seccompiler", rev = "08587106340b8e3cb361c7561411510039436857" }
 serde = "1.0.219"
 serde_json = "1.0.140"
 serde_norway = "0.9.42"
-sha2 = "0.10.9"
+sha2 = "0.11.0"
 shared_memory = "0.12.4"
 shell-escape = "0.1.5"
 similar = "2.7.0"
@@ -126,7 +126,7 @@ snapshot_test = { path = "crates/snapshot_test" }
 stackalloc = "1.2.1"
 subprocess_test = { path = "crates/subprocess_test" }
 supports-color = "3.0.1"
-syscalls = { version = "0.6.18", default-features = false }
+syscalls = { version = "0.8.0", default-features = false }
 tar = "0.4.45"
 tempfile = "3.14.0"
 test-log = { version = "0.2.18", features = ["trace"] }
@@ -159,7 +159,7 @@ wax = "0.7.0"
 which = "8.0.0"
 widestring = "1.2.0"
 winapi = "0.3.9"
-winsafe = { version = "0.0.24", features = ["kernel"] }
+winsafe = { version = "0.0.27", features = ["kernel"] }
 xxhash-rust = { version = "0.8.15", features = ["const_xxh3"] }
 ntest = "0.9.5"
 terminal_size = "0.4"

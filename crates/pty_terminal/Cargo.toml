@@ -21,7 +21,7 @@ terminal_size = { workspace = true }
 
 [target.'cfg(unix)'.dev-dependencies]
 nix = { workspace = true }
-signal-hook = "0.3"
+signal-hook = "0.4"
 
 [lints]
 workspace = true
