@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, ffi::OsStr, mem::MaybeUninit, sync::Arc};
+use std::{collections::BTreeMap, ffi::OsStr, fmt::Write as _, mem::MaybeUninit, sync::Arc};
 
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
@@ -140,11 +140,17 @@ impl EnvFingerprints {
                 let value: Arc<str> = if sensitive_patterns.is_match(name) {
                     let mut hasher = Sha256::new();
                     hasher.update(value.as_bytes());
+                    let digest = hasher.finalize();
                     #[expect(
-                        clippy::disallowed_macros,
+                        clippy::disallowed_types,
                         reason = "result is converted to Arc<str>, not Str"
                     )]
-                    format!("sha256:{:x}", hasher.finalize()).into()
+                    let mut hex = std::string::String::with_capacity(7 + digest.len() * 2);
+                    hex.push_str("sha256:");
+                    for b in digest {
+                        write!(&mut hex, "{b:02x}").unwrap();
+                    }
+                    hex.into()
                 } else {
                     value.into()
                 };

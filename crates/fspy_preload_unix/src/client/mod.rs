@@ -137,7 +137,7 @@ pub unsafe fn handle_open(path: impl ToAbsolutePath, mode: impl ToAccessMode) {
 }
 
 #[cfg(not(test))]
-#[ctor::ctor]
+#[ctor::ctor(unsafe)]
 fn init_client() {
     CLIENT.set(Client::from_env()).unwrap();
 }

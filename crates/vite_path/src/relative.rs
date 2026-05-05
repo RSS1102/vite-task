@@ -338,14 +338,14 @@ mod tests {
     #[cfg(windows)]
     use std::os::windows::ffi::OsStringExt as _;
 
-    use assert2::let_assert;
+    use assert2::assert;
 
     use super::*;
 
     #[test]
     fn non_relative() {
-        let_assert!(
-            Err(FromPathError::NonRelative) =
+        assert!(
+            let Err(FromPathError::NonRelative) =
                 RelativePathBuf::new(if cfg!(windows) { "C:\\Users" } else { "/home" })
         );
     }
@@ -356,8 +356,8 @@ mod tests {
         use std::{ffi::OsStr, os::unix::ffi::OsStrExt as _};
 
         let non_utf8_os_str = OsStr::from_bytes(&[0xC0]);
-        let_assert!(
-            Err(FromPathError::InvalidPathData(InvalidPathDataError::NonUtf8)) =
+        assert!(
+            let Err(FromPathError::InvalidPathData(InvalidPathDataError::NonUtf8)) =
                 RelativePathBuf::new(non_utf8_os_str),
         );
     }
@@ -368,8 +368,8 @@ mod tests {
         use std::ffi::OsString;
         // ill-formed UTF-16: X<high surrogate>Y
         let non_utf8_path = OsString::from_wide(&[0x0058, 0xD800, 0x0059]);
-        let_assert!(
-            Err(FromPathError::InvalidPathData(InvalidPathDataError::NonUtf8)) =
+        assert!(
+            let Err(FromPathError::InvalidPathData(InvalidPathDataError::NonUtf8)) =
                 RelativePathBuf::new(non_utf8_path),
         );
     }
@@ -377,8 +377,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn backslash_in_component() {
-        let_assert!(
-            Err(FromPathError::InvalidPathData(InvalidPathDataError::BackslashInComponent)) =
+        assert!(
+            let Err(FromPathError::InvalidPathData(InvalidPathDataError::BackslashInComponent)) =
                 RelativePathBuf::new("foo\\bar")
         );
     }
@@ -386,7 +386,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn backslash_in_component() {
-        let_assert!(Ok(path) = RelativePathBuf::new("foo\\bar"));
+        assert!(let Ok(path) = RelativePathBuf::new("foo\\bar"));
         assert_eq!(path.as_str(), "foo/bar");
     }
 
@@ -453,7 +453,7 @@ mod tests {
     #[test]
     fn clean_malformed_drive_path() {
         let rel_path = RelativePathBuf::new(r"foo\C:\bar").unwrap();
-        let_assert!(Err(FromPathError::NonRelative) = rel_path.clean());
+        assert!(let Err(FromPathError::NonRelative) = rel_path.clean());
     }
 
     #[test]

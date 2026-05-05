@@ -402,17 +402,17 @@ mod tests {
     fn strip_prefix_invalid_relative() {
         use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
 
-        use assert2::let_assert;
+        use assert2::assert;
 
         let mut abs_path = b"/home/".to_vec();
         abs_path.push(0xC0);
         let abs_path = AbsolutePath::new(Path::new(OsStr::from_bytes(&abs_path))).unwrap();
 
         let prefix = AbsolutePath::new(Path::new("/home")).unwrap();
-        let_assert!(Err(err) = abs_path.strip_prefix(prefix));
+        assert!(let Err(err) = abs_path.strip_prefix(prefix));
 
         assert_eq!(err.stripped_path.as_os_str().as_bytes(), &[0xC0]);
-        let_assert!(InvalidPathDataError::NonUtf8 = err.invalid_path_data_error);
+        assert!(let InvalidPathDataError::NonUtf8 = err.invalid_path_data_error);
     }
 
     #[test]

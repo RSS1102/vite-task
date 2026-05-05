@@ -127,12 +127,12 @@ impl vite_task::loader::UserConfigLoader for JsonUserConfigLoader {
             }
             Err(err) => return Err(err.into()),
         };
-        let json_value = jsonc_parser::parse_to_serde_value(
+        let json_value: Option<serde_json::Value> = jsonc_parser::parse_to_serde_value(
             &config_content,
             &jsonc_parser::ParseOptions::default(),
-        )?
-        .unwrap_or_default();
-        let user_config: vite_task::config::UserRunConfig = serde_json::from_value(json_value)?;
+        )?;
+        let user_config: vite_task::config::UserRunConfig =
+            serde_json::from_value(json_value.unwrap_or_default())?;
         Ok(Some(user_config))
     }
 }
