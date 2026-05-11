@@ -1,5 +1,6 @@
 # Changelog
 
+- **Fixed** `vp run` no longer crashes with `SIGBUS` when fspy's path-access stream exceeds the size of `/dev/shm` (e.g. Docker's 64 MiB default). The shared-memory IPC channel now backs its mapping with a regular file in `temp_dir()` on Linux, which is bounded by the overlay/host filesystem (typically gigabytes) rather than the small `/dev/shm` tmpfs cap. macOS and Windows are unaffected ([#1453](https://github.com/voidzero-dev/vite-plus/issues/1453))
 - **Fixed** `vp run` no longer aborts with `failed to prepare the command for injection: Invalid argument` when the user environment already has `LD_PRELOAD` (Linux) or `DYLD_INSERT_LIBRARIES` (macOS) set. The tracer shim is now appended to any existing value and placed last, so user preloads keep their symbol-interposition precedence ([#340](https://github.com/voidzero-dev/vite-task/issues/340))
 - **Changed** Arguments passed after a task name (e.g. `vp run test some-filter`) are now forwarded only to that task. Tasks pulled in via `dependsOn` no longer receive them ([#324](https://github.com/voidzero-dev/vite-task/issues/324))
 - **Fixed** Windows file access tracking no longer panics when a task touches malformed paths that cannot be represented as workspace-relative inputs ([#330](https://github.com/voidzero-dev/vite-task/pull/330))

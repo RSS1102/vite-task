@@ -1295,17 +1295,29 @@ dependencies = [
  "bstr",
  "bytemuck",
  "ctor",
+ "fspy_shared_memory",
  "native_str",
  "nix 0.30.1",
  "os_str_bytes",
  "rustc-hash",
- "shared_memory",
  "subprocess_test",
  "thiserror 2.0.18",
  "tracing",
  "uuid",
  "winapi",
  "wincode",
+]
+
+[[package]]
+name = "fspy_shared_memory"
+version = "0.0.0"
+dependencies = [
+ "assert2",
+ "ctor",
+ "nix 0.30.1",
+ "shared_memory",
+ "subprocess_test",
+ "uuid",
 ]
 
 [[package]]
@@ -3145,7 +3157,6 @@ checksum = "ba8593196da75d9dc4f69349682bd4c2099f8cde114257d1ef7ef1b33d1aba54"
 dependencies = [
  "cfg-if",
  "libc",
- "log",
  "nix 0.23.2",
  "rand 0.8.5",
  "win-sys",
