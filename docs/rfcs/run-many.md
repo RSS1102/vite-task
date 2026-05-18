@@ -1,5 +1,31 @@
 # RFC: `run-many`
 
+## What `run-many` does
+
+`vp run-many <task1> <task2> ...` builds one graph with multiple requested tasks. All `run` flags apply. The graph is the union of the per-task graphs, deduped by node.
+
+`vp run-many vite#build vite#build-types @voidzero-dev/vite-plus-test#build`, where all three depend on `rolldown#build-node`:
+
+```mermaid
+flowchart TD
+  subgraph G["ExecutionGraph"]
+    direction TB
+    rn[rolldown#build-node] --> vb[vite#build]
+    rn --> vbt[vite#build-types]
+    rn --> vpt["@voidzero-dev/vite-plus-test#build"]
+  end
+```
+
+- **In sequence:** `rolldown#build-node` runs first.
+- **In parallel:** once it's done, all three vite tasks run together (up to the concurrency limit).
+
+This is the schedule you can't get from existing primitives:
+
+- `["vp run vite#build", "vp run vite#build-types", "vp run @voidzero-dev/vite-plus-test#build"]` serializes the three.
+- `vp run --parallel ...` only takes one task and would drop the dependency edges entirely.
+
+The rest of this RFC explains where `run-many` fits in the existing scheduling model.
+
 ## Two scheduling structures
 
 vite-task schedules work using two structures nested inside each other: a **graph** (what the scheduler runs) and a **tree** (recursion of graphs).
@@ -8,7 +34,7 @@ vite-task schedules work using two structures nested inside each other: a **grap
 
 An `ExecutionGraph` is a DAG of tasks. The scheduler walks it: a task starts once all of its dependencies have finished, and the number of tasks running at the same time is capped by the concurrency limit (default 4).
 
-`vp run-many vite#build vite#build-types`, where both depend on `rolldown#build-node`:
+`vp run vite-plus#build`, where `vite-plus#build` depends on `vite#build` and `vite#build-types`, both of which depend on `rolldown#build-node`:
 
 ```mermaid
 flowchart TD
@@ -16,15 +42,17 @@ flowchart TD
     direction TB
     rn[rolldown#build-node] --> vb[vite#build]
     rn --> vbt[vite#build-types]
+    vb --> vp[vite-plus#build]
+    vbt --> vp
   end
 ```
 
 Arrows mean "runs before".
 
-- **In sequence:** `rolldown#build-node` runs first.
-- **In parallel:** once it's done, `vite#build` and `vite#build-types` run together.
+- **In sequence:** `rolldown#build-node` first, then the vite tasks, then `vite-plus#build`.
+- **In parallel:** `vite#build` and `vite#build-types` run together after `rolldown#build-node`.
 
-The two vite tasks are independent of each other, but the scheduler still honors their shared dependency on `rolldown#build-node`.
+`run-many` widens this kind of graph by letting several tasks be the requested roots instead of one.
 
 ### Tree
 
@@ -63,38 +91,6 @@ flowchart TD
 
 (Cache will spare you the repeated `rolldown#build-node` work, but the two vite tasks themselves still wait for each other.)
 
-## What's missing
-
-You can get dependency-aware parallelism inside one graph. You can sequence siblings in the tree. What you can't say today is:
-
-> Run several tasks plus their dependencies as one graph. Run them at the same time where they're independent, in order where they actually depend on each other.
-
-Each `vp run` only takes one task, so you can't fan out inside a tree node. `&&` makes siblings sequential, so you can't fan out across tree nodes either. `--parallel` works around it by ignoring every dependency edge, which is too blunt when some of those edges matter.
-
-## `run-many`
-
-`vp run-many <task1> <task2> ...` builds one graph with multiple requested tasks. All `run` flags apply. The graph is the union of the per-task graphs, deduped by node.
-
-`vp run-many vite#build vite#build-types @voidzero-dev/vite-plus-test#build`:
-
-```mermaid
-flowchart TD
-  subgraph G["ExecutionGraph"]
-    direction TB
-    rn[rolldown#build-node] --> vb[vite#build]
-    rn --> vbt[vite#build-types]
-    rn --> vpt["@voidzero-dev/vite-plus-test#build"]
-  end
-```
-
-- **In sequence:** `rolldown#build-node` runs first.
-- **In parallel:** once it's done, all three of `vite#build`, `vite#build-types`, `@voidzero-dev/vite-plus-test#build` run together (up to the concurrency limit).
-
-For comparison:
-
-- `["vp run vite#build", "vp run vite#build-types", "vp run @voidzero-dev/vite-plus-test#build"]` would serialize the three.
-- `vp run --parallel ...` only takes one task and would drop dependency edges entirely.
-
 ## Composition
 
 `string[]` for sequencing, `run-many` for fan-out:
@@ -114,7 +110,7 @@ For comparison:
 ```
 
 ```mermaid
-flowchart TD
+flowchart LR
   bs["build:source · items run one at a time"]
   bs -. 1 .-> S1
   bs -. 2 .-> S2
