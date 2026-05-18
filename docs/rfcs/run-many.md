@@ -6,88 +6,108 @@ vite-task schedules work using two structures nested inside each other: a **grap
 
 ### Graph
 
-An `ExecutionGraph` is a DAG of tasks with its own concurrency limit and its own semaphore. The scheduler runs nodes whose dependencies have finished, up to the limit. Dependency-aware parallelism lives here.
+An `ExecutionGraph` is a DAG of tasks. The scheduler walks it: a task starts once all of its dependencies have finished, and the number of tasks running at the same time is capped by the concurrency limit (default 4).
 
-`vp run -r build` when `app` depends on `lib1` and `lib2`:
+`vp run-many vite#build vite#build-types`, where both depend on `rolldown#build-node`:
 
 ```mermaid
 flowchart TD
-  subgraph G["ExecutionGraph · one semaphore"]
+  subgraph G["ExecutionGraph"]
     direction TB
-    L1[lib1#build] --> A[app#build]
-    L2[lib2#build] --> A
+    rn[rolldown#build-node] --> vb[vite#build]
+    rn --> vbt[vite#build-types]
   end
 ```
 
-Arrows mean "runs before". `lib1#build` and `lib2#build` run in parallel; `app#build` waits for both.
+Arrows mean "runs before".
+
+- **In sequence:** `rolldown#build-node` runs first.
+- **In parallel:** once it's done, `vite#build` and `vite#build-types` run together.
+
+The two vite tasks are independent of each other, but the scheduler still honors their shared dependency on `rolldown#build-node`.
 
 ### Tree
 
-A task's `command` splits on `&&` into **items** that run in order. An item is either a leaf process or `Expanded`: a nested `ExecutionGraph` built from a `vp run` inside the command. Every `Expanded` item gets its own graph with its own semaphore.
+A task's `command` splits on `&&` into **items** that run one after another. An item is either a leaf process, or `Expanded`: a nested `ExecutionGraph` built from a `vp run` inside the command. Every `Expanded` item is its own independent scheduling unit.
 
-After #381, `command: ["vp run build", "vp run test"]` is shorthand for `"vp run build && vp run test"`. So `string[]` is how you sequence siblings in the tree.
+After #381, `command: ["vp run a", "vp run b"]` is shorthand for `"vp run a && vp run b"`. So `string[]` is how you sequence siblings in the tree.
 
-`"ci": { "command": ["vp run build", "vp run test"] }`:
+```jsonc
+"build-vite": {
+  "command": [
+    "vp run vite#build",
+    "vp run vite#build-types"
+  ]
+}
+```
 
 ```mermaid
 flowchart TD
-  root["ci · items run sequentially"]
+  root["build-vite · items run one at a time"]
   root -. item 1 .-> G1
   root -. item 2 .-> G2
 
-  subgraph G1["ExecutionGraph · vp run build"]
+  subgraph G1["ExecutionGraph · vp run vite#build"]
     direction TB
-    b1[lib1#build] --> ba[app#build]
-    b2[lib2#build] --> ba
+    rn1[rolldown#build-node] --> vb[vite#build]
   end
 
-  subgraph G2["ExecutionGraph · vp run test"]
+  subgraph G2["ExecutionGraph · vp run vite#build-types"]
     direction TB
-    t1[lib1#test] --> ta[app#test]
-    t2[lib2#test] --> ta
+    rn2[rolldown#build-node] --> vbt[vite#build-types]
   end
 ```
 
-`G1` finishes before `G2` starts. The two graphs are isolated: separate semaphores, nothing connects them.
+- **In sequence:** item 1 finishes completely, then item 2 starts.
+- **In parallel:** nothing. `vite#build` and `vite#build-types` are independent, but `&&` walls them off from each other.
+
+(Cache will spare you the repeated `rolldown#build-node` work, but the two vite tasks themselves still wait for each other.)
 
 ## What's missing
 
-You can get dependency-aware parallelism inside one graph, and you can sequence siblings in the tree. What you can't say today is:
+You can get dependency-aware parallelism inside one graph. You can sequence siblings in the tree. What you can't say today is:
 
-> Run several tasks plus their dependencies as one DAG. Fan out where they're independent, serialize where they actually depend on each other.
+> Run several tasks plus their dependencies as one graph. Run them at the same time where they're independent, in order where they actually depend on each other.
 
-Each `vp run` produces a graph with a single requested root, so this can't happen inside one tree node. Siblings under `items` run sequentially, so it can't happen across tree nodes either. `--parallel` works around it by dropping every dependency edge, which is too blunt when some deps are real.
+Each `vp run` only takes one task, so you can't fan out inside a tree node. `&&` makes siblings sequential, so you can't fan out across tree nodes either. `--parallel` works around it by ignoring every dependency edge, which is too blunt when some of those edges matter.
 
 ## `run-many`
 
-`vp run-many <task1> <task2> ...` builds one graph with multiple requested roots. All `run` flags apply. The graph is the union of the per-task graphs, dedup'd by node.
+`vp run-many <task1> <task2> ...` builds one graph with multiple requested tasks. All `run` flags apply. The graph is the union of the per-task graphs, deduped by node.
 
-`vp run-many build test` where `test` depends on `build`:
+`vp run-many vite#build vite#build-types @voidzero-dev/vite-plus-test#build`:
 
 ```mermaid
 flowchart TD
-  subgraph G["ExecutionGraph · vp run-many build test"]
+  subgraph G["ExecutionGraph"]
     direction TB
-    lb[lib1#build] --> la[app#build]
-    lb --> lt[lib1#test]
-    la --> at[app#test]
-    lt --> at
+    rn[rolldown#build-node] --> vb[vite#build]
+    rn --> vbt[vite#build-types]
+    rn --> vpt["@voidzero-dev/vite-plus-test#build"]
   end
 ```
 
-`lib1#test` starts the moment `lib1#build` finishes. It doesn't wait for `app#build`. `--parallel` can't give you this schedule because it would drop the `test → build` edge entirely. `["vp run build", "vp run test"]` can't either, because no test starts until every build is done.
+- **In sequence:** `rolldown#build-node` runs first.
+- **In parallel:** once it's done, all three of `vite#build`, `vite#build-types`, `@voidzero-dev/vite-plus-test#build` run together (up to the concurrency limit).
+
+For comparison:
+
+- `["vp run vite#build", "vp run vite#build-types", "vp run @voidzero-dev/vite-plus-test#build"]` would serialize the three.
+- `vp run --parallel ...` only takes one task and would drop dependency edges entirely.
 
 ## Composition
 
-`string[]` for sequencing and `run-many` for fan-out compose cleanly:
+`string[]` for sequencing, `run-many` for fan-out:
 
 ```jsonc
 {
-  "ci": {
+  "build:source": {
     "command": [
-      "vp run prepare",
-      "vp run-many lint test build typecheck",
-      "vp run publish"
+      "vp run-many @rolldown/pluginutils#build rolldown#build-binding:release",
+      "vp run rolldown#build-node",
+      "vp run-many vite#build vite#build-types @voidzero-dev/vite-plus-test#build",
+      "vp run @voidzero-dev/vite-plus-core#build",
+      "vp run-many vite-plus#build vite-plus-cli#build"
     ]
   }
 }
@@ -95,32 +115,52 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  ci["ci · items run sequentially"]
-  ci -. 1 .-> P
-  ci -. 2 .-> M
-  ci -. 3 .-> Pub
+  bs["build:source · items run one at a time"]
+  bs -. 1 .-> S1
+  bs -. 2 .-> S2
+  bs -. 3 .-> S3
+  bs -. 4 .-> S4
+  bs -. 5 .-> S5
 
-  subgraph P["ExecutionGraph · prepare"]
-    p1[prepare]
-  end
-
-  subgraph M["ExecutionGraph · run-many (wide)"]
+  subgraph S1["1 · run-many"]
     direction TB
-    b[build] --> t[test]
-    b --> l[lint]
-    b --> ty[typecheck]
+    a1["@rolldown/pluginutils#build"]
+    a2["rolldown#build-binding:release"]
   end
 
-  subgraph Pub["ExecutionGraph · publish"]
-    pub[publish]
+  subgraph S2["2 · run"]
+    b1[rolldown#build-node]
+  end
+
+  subgraph S3["3 · run-many"]
+    direction TB
+    c1[vite#build]
+    c2[vite#build-types]
+    c3["@voidzero-dev/vite-plus-test#build"]
+  end
+
+  subgraph S4["4 · run"]
+    d1["@voidzero-dev/vite-plus-core#build"]
+  end
+
+  subgraph S5["5 · run-many"]
+    direction TB
+    e1[vite-plus#build]
+    e2[vite-plus-cli#build]
   end
 ```
 
-`prepare` runs alone. Then the wide graph: `lint`, `test`, `typecheck` start the moment `build` finishes, all sharing one semaphore. Then `publish`.
+- **In sequence:** stages 1 → 2 → 3 → 4 → 5. Each stage finishes completely before the next begins.
+- **In parallel within each stage:**
+  - Stage 1: `@rolldown/pluginutils#build` and `rolldown#build-binding:release` run together.
+  - Stage 2: one task on its own.
+  - Stage 3: `vite#build`, `vite#build-types`, and `@voidzero-dev/vite-plus-test#build` run together.
+  - Stage 4: one task on its own.
+  - Stage 5: `vite-plus#build` and `vite-plus-cli#build` run together.
 
-| Primitive         | Effect                                            |
-| ----------------- | ------------------------------------------------- |
-| `ExecutionGraph`  | Dependency-aware parallelism within one semaphore |
-| `command: [...]`  | Sequence sibling graphs in the tree               |
-| `vp run`          | Spawn one child graph                             |
-| `vp run-many`     | Spawn one wide child graph (multiple roots)       |
+| Primitive         | Effect                                                 |
+| ----------------- | ------------------------------------------------------ |
+| `ExecutionGraph`  | Dependency-aware parallelism within one scheduler      |
+| `command: [...]`  | Sequence sibling graphs in the tree                    |
+| `vp run`          | Spawn one child graph                                  |
+| `vp run-many`     | Spawn one wide child graph (multiple requested tasks)  |
