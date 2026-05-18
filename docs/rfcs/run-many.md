@@ -2,7 +2,7 @@
 
 ## What `run-many` does
 
-`vp run-many <task1> <task2> ...` builds one graph with multiple requested tasks. All `run` flags apply. The graph is the union of the per-task graphs, deduped by node.
+`vp run-many <task1> <task2> ...` builds one graph with multiple requested tasks. Which `run` flags are accepted is TBD. The graph is the union of the per-task graphs, deduped by node.
 
 `vp run-many vite#build vite#build-types @voidzero-dev/vite-plus-test#build`, where all three depend on `rolldown#build-node`:
 
