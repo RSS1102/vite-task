@@ -58,7 +58,7 @@ Arrows mean "runs before".
 
 A task's `command` splits on `&&` into **items** that run one after another. An item is either a leaf process, or `Expanded`: a nested `ExecutionGraph` built from a `vp run` inside the command. Every `Expanded` item is its own independent scheduling unit.
 
-After #381, `command: ["vp run a", "vp run b"]` is shorthand for `"vp run a && vp run b"`. So `string[]` is how you sequence siblings in the tree.
+After [#381](https://github.com/voidzero-dev/vite-task/issues/381), `command: ["vp run a", "vp run b"]` is shorthand for `"vp run a && vp run b"`. So `string[]` is how you sequence siblings in the tree.
 
 ```jsonc
 "build-vite": {
@@ -130,9 +130,9 @@ flowchart LR
 
   subgraph S3["3 · run-many"]
     direction TB
-    c1[vite#build]
-    c2[vite#build-types]
-    c3["@voidzero-dev/vite-plus-test#build"]
+    rn3[rolldown#build-node] --> c1[vite#build]
+    rn3 --> c2[vite#build-types]
+    rn3 --> c3["@voidzero-dev/vite-plus-test#build"]
   end
 
   subgraph S4["4 · run"]
@@ -150,9 +150,11 @@ flowchart LR
 - **In parallel within each stage:**
   - Stage 1: `@rolldown/pluginutils#build` and `rolldown#build-binding:release` run together.
   - Stage 2: one task on its own.
-  - Stage 3: `vite#build`, `vite#build-types`, and `@voidzero-dev/vite-plus-test#build` run together.
+  - Stage 3: `rolldown#build-node` gets pulled in as a dep first (a cache hit, since stage 2 already ran it), then `vite#build`, `vite#build-types`, and `@voidzero-dev/vite-plus-test#build` run together.
   - Stage 4: one task on its own.
   - Stage 5: `vite-plus#build` and `vite-plus-cli#build` run together.
+
+Notice that `rolldown#build-node` shows up in both stage 2 and stage 3. Each `vp run` / `vp run-many` builds its own isolated graph and pulls in whatever dependencies its requested tasks declare. The same task can appear in many graphs; cache makes sure the duplicate appearance doesn't mean duplicate work.
 
 | Primitive         | Effect                                                 |
 | ----------------- | ------------------------------------------------------ |
