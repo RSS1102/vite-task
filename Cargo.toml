@@ -80,6 +80,7 @@ fspy_shared = { path = "crates/fspy_shared" }
 fspy_shared_unix = { path = "crates/fspy_shared_unix" }
 futures = "0.3.31"
 futures-util = "0.3.31"
+interprocess = "2"
 jsonc-parser = { version = "0.32.0", features = ["serde"] }
 libc = "0.2.185"
 libtest-mimic = "0.8.2"
@@ -159,8 +160,15 @@ widestring = "1.2.0"
 winapi = "0.3.9"
 winsafe = { version = "0.0.27", features = ["kernel"] }
 xxhash-rust = { version = "0.8.15", features = ["const_xxh3"] }
+napi = "3"
+napi-build = "2"
+napi-derive = "3"
 ntest = "0.9.5"
 terminal_size = "0.4"
+vite_task_client = { path = "crates/vite_task_client" }
+vite_task_client_napi = { path = "crates/vite_task_client_napi", artifact = "cdylib", target = "target" }
+vite_task_ipc_shared = { path = "crates/vite_task_ipc_shared" }
+vite_task_server = { path = "crates/vite_task_server" }
 zstd = "0.13"
 
 [workspace.metadata.cargo-shear]
@@ -168,6 +176,7 @@ ignored = [
   # These are artifact dependencies. They are not directly `use`d in Rust code.
   "fspy_preload_unix",
   "fspy_preload_windows",
+  "vite_task_client_napi",
 ]
 
 [profile.dev]

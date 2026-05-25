@@ -148,6 +148,10 @@ All code must work on both Unix and Windows without platform skipping:
 - Platform differences should be handled gracefully, not skipped
 - After major changes to `fspy*` or platform-specific crates, run `just lint-linux` and `just lint-windows`
 
+## New Crates and Packages
+
+When creating a new Rust crate or npm package, add a concise `README.md` stating its goal in one or two sentences. Do not include implementation details, API docs, or links to other docs — those belong in source comments or the design docs.
+
 ## Changelog
 
 When a change is user-facing (new feature, changed behavior, bug fix, removal, or perf improvement), run `/update-changelog` to add an entry to `CHANGELOG.md`. Do not add entries for internal refactors, CI, dep bumps, test fixes, or docs changes.

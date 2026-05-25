@@ -1,2 +1,7 @@
 packages:
   - packages/*
+
+catalog:
+  # Track the vite PR #22453 build until @voidzero-dev/vite-task-client is
+  # published to npm and the integration ships in a real vite release.
+  vite: https://pkg.pr.new/vite@22453

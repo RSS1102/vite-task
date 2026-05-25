@@ -467,7 +467,7 @@ checksum = "0b023947811758c97c59bf9d1c188fd619ad4718dcaa767947df1cadb14f39f4"
 dependencies = [
  "glob",
  "libc",
- "libloading",
+ "libloading 0.8.9",
 ]
 
 [[package]]
@@ -606,6 +606,15 @@ name = "convert_case"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "633458d4ef8c78b72454de2d54fd6ab2e60f9e02be22f3c6104cdc8a4e0fceb9"
+dependencies = [
+ "unicode-segmentation",
+]
+
+[[package]]
+name = "convert_case"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "affbf0190ed2caf063e3def54ff444b449371d55c58e513a95ab98eca50adb49"
 dependencies = [
  "unicode-segmentation",
 ]
@@ -770,6 +779,12 @@ dependencies = [
 
 [[package]]
 name = "ctor"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "400a21f1014a968ec518c7ccdf9b4a4ed0cac8c56ccb6d604f8b91f00110501e"
+
+[[package]]
+name = "ctor"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f7335955a5f85f95f3188623240e081e7b2059a8ad1bae68944b7cfdd718fb10"
@@ -923,7 +938,7 @@ version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "799a97264921d8623a957f6c3b9011f3b5492f557bbb7a5a19b7fa6d06ba8dcb"
 dependencies = [
- "convert_case",
+ "convert_case 0.10.0",
  "proc-macro2",
  "quote",
  "rustc_version 0.4.1",
@@ -1012,6 +1027,12 @@ dependencies = [
  "libc",
  "objc2",
 ]
+
+[[package]]
+name = "doctest-file"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2db04e74f0a9a93103b50e90b96024c9b2bdca8bce6a632ec71b88736d3d359"
 
 [[package]]
 name = "document-features"
@@ -1233,7 +1254,7 @@ dependencies = [
  "bstr",
  "bumpalo",
  "csv-async",
- "ctor",
+ "ctor 1.0.1",
  "derive_more",
  "flate2",
  "fspy_detours_sys",
@@ -1292,7 +1313,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "bstr",
- "ctor",
+ "ctor 1.0.1",
  "fspy_shared",
  "fspy_shared_unix",
  "libc",
@@ -1343,7 +1364,7 @@ dependencies = [
  "bstr",
  "bumpalo",
  "bytemuck",
- "ctor",
+ "ctor 1.0.1",
  "native_str",
  "os_str_bytes",
  "rustc-hash",
@@ -1679,6 +1700,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "interprocess"
+version = "2.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "069323743400cb7ab06a8fe5c1ed911d36b6919ec531661d034c89083629595b"
+dependencies = [
+ "doctest-file",
+ "futures-core",
+ "libc",
+ "recvmsg",
+ "tokio",
+ "widestring",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "is-terminal"
 version = "0.4.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1814,6 +1850,16 @@ name = "libloading"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
+dependencies = [
+ "cfg-if",
+ "windows-link",
+]
+
+[[package]]
+name = "libloading"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "754ca22de805bb5744484a5b151a9e1a8e837d5dc232c2d7d8c2e3492edc8b60"
 dependencies = [
  "cfg-if",
  "windows-link",
@@ -2033,6 +2079,63 @@ dependencies = [
 ]
 
 [[package]]
+name = "napi"
+version = "3.8.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e55037284865448ecf329baa86a4d05401f647ebde99f5747b640d32c2c5226"
+dependencies = [
+ "bitflags 2.10.0",
+ "ctor 0.11.1",
+ "futures",
+ "napi-build",
+ "napi-sys",
+ "nohash-hasher",
+ "rustc-hash",
+]
+
+[[package]]
+name = "napi-build"
+version = "2.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d376940fd5b723c6893cd1ee3f33abbfd86acb1cd1ec079f3ab04a2a3bc4d3b1"
+
+[[package]]
+name = "napi-derive"
+version = "3.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4ba740fe4c9524d86fd90798fd8ccdb23402b3eef7e7c30897a8a369b529fcf"
+dependencies = [
+ "convert_case 0.11.0",
+ "ctor 0.11.1",
+ "napi-derive-backend",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "napi-derive-backend"
+version = "5.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d5af30503edf933ce7377cf6d4c877a62b0f1107ea05585f1b5e430e88d5baf"
+dependencies = [
+ "convert_case 0.11.0",
+ "proc-macro2",
+ "quote",
+ "semver 1.0.27",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "napi-sys"
+version = "3.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8eb602b84d7c1edae45e50bbf1374696548f36ae179dfa667f577e384bb90c2b"
+dependencies = [
+ "libloading 0.9.0",
+]
+
+[[package]]
 name = "native_str"
 version = "0.0.0"
 dependencies = [
@@ -2091,6 +2194,12 @@ dependencies = [
  "libc",
  "memoffset 0.9.1",
 ]
+
+[[package]]
+name = "nohash-hasher"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2bf50223579dc7cdcfb3bfcacf7069ff68243f8c363f62ffa99cf000a6b9c451"
 
 [[package]]
 name = "nom"
@@ -2744,7 +2853,7 @@ name = "pty_terminal"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "ctor",
+ "ctor 1.0.1",
  "ctrlc",
  "nix 0.31.2",
  "ntest",
@@ -2761,7 +2870,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "crossterm",
- "ctor",
+ "ctor 1.0.1",
  "ntest",
  "portable-pty",
  "pty_terminal",
@@ -2957,6 +3066,12 @@ dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
 ]
+
+[[package]]
+name = "recvmsg"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3edd4d5d42c92f0a659926464d4cce56b562761267ecf0f469d85b7de384175"
 
 [[package]]
 name = "redox_syscall"
@@ -3475,7 +3590,7 @@ name = "subprocess_test"
 version = "0.0.0"
 dependencies = [
  "base64",
- "ctor",
+ "ctor 1.0.1",
  "fspy",
  "portable-pty",
  "rustc-hash",
@@ -4150,6 +4265,8 @@ dependencies = [
  "derive_more",
  "fspy",
  "futures-util",
+ "materialized_artifact",
+ "materialized_artifact_build",
  "nix 0.31.2",
  "once_cell",
  "owo-colors",
@@ -4169,11 +4286,15 @@ dependencies = [
  "tracing",
  "twox-hash",
  "uuid",
+ "vite_glob",
  "vite_path",
  "vite_select",
  "vite_str",
+ "vite_task_client_napi",
  "vite_task_graph",
+ "vite_task_ipc_shared",
  "vite_task_plan",
+ "vite_task_server",
  "vite_workspace",
  "wax",
  "winapi",
@@ -4216,6 +4337,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "vite_task_client"
+version = "0.0.0"
+dependencies = [
+ "interprocess",
+ "native_str",
+ "vite_path",
+ "vite_task_ipc_shared",
+ "wincode",
+]
+
+[[package]]
+name = "vite_task_client_napi"
+version = "0.1.0"
+dependencies = [
+ "napi",
+ "napi-build",
+ "napi-derive",
+ "vite_str",
+ "vite_task_client",
+]
+
+[[package]]
 name = "vite_task_graph"
 version = "0.1.0"
 dependencies = [
@@ -4235,6 +4378,14 @@ dependencies = [
  "vite_str",
  "vite_workspace",
  "wax",
+ "wincode",
+]
+
+[[package]]
+name = "vite_task_ipc_shared"
+version = "0.0.0"
+dependencies = [
+ "native_str",
  "wincode",
 ]
 
@@ -4273,6 +4424,27 @@ dependencies = [
  "vite_task_graph",
  "vite_workspace",
  "which",
+ "wincode",
+]
+
+[[package]]
+name = "vite_task_server"
+version = "0.0.0"
+dependencies = [
+ "futures",
+ "interprocess",
+ "native_str",
+ "rustc-hash",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+ "vite_glob",
+ "vite_path",
+ "vite_task_client",
+ "vite_task_ipc_shared",
  "wincode",
 ]
 

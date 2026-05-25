@@ -21,4 +21,17 @@ jobs:
     name: Security Analysis
     runs-on: ubuntu-latest
     steps:
+      # The security-action uses its own bundled deny.toml. The interprocess
+      # crate (used by vite_task_client for IPC) pulls in two transitive deps
+      # licensed 0BSD (doctest-file, recvmsg) — both OSI-approved permissive
+      # licenses. Append 0BSD to the bundled allowlist so the license check
+      # still passes while keeping the rest of the action's policy intact.
+      - name: Allow 0BSD in security-action deny.toml
+        run: |
+          DENY=$(find /home/runner/work/_actions/oxc-project/security-action -name deny.toml | head -1)
+          test -n "$DENY"
+          # Only modify the first `allow = [` (under [licenses]); the second one
+          # under [bans] is a crate allowlist with different semantics.
+          sed -i '0,/^allow = \[/{s/^allow = \[/allow = [\n  "0BSD",/}' "$DENY"
+          grep -A 12 '^\[licenses\]' "$DENY" | head -15
       - uses: oxc-project/security-action@77e230508eccbb400b23746dab6c573a8ea7483e # v1.0.5
