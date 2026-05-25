@@ -28,25 +28,9 @@ The rest of this RFC explains where `run-many` fits in the existing scheduling m
 
 ## Requests this addresses
 
-- **[vite-plus discussions#1523](https://github.com/voidzero-dev/vite-plus/discussions/1523) — "How to run tasks in parallel"**. The user wants a `verify` script that runs `check`, `lint`, and `typecheck` together. The current answer is to declare a wrapper task `verify` with `dependsOn: ["check", "lint", "typecheck"]`. With `run-many` the wrapper isn't needed:
+- [vite-plus discussions#1523](https://github.com/voidzero-dev/vite-plus/discussions/1523) — run `check`, `lint`, and `typecheck` together. Today the workaround is a wrapper task whose `dependsOn` lists all three. With `run-many`: `vp run-many check lint typecheck`.
 
-  ```sh
-  vp run-many check lint typecheck
-  ```
-
-- **[vite-task#323](https://github.com/voidzero-dev/vite-task/issues/323) — "vp run can execute the same dependency task in parallel via nested vp run"**. The reporter wanted `unit:a` and `unit:b` (both depending on a shared task) to run in parallel and built wrapper tasks `parallel:a` / `parallel:b` that each call `vp run unit:X`. Each nested run produced its own isolated graph, so the shared dependency was scheduled twice and started concurrently, racing on its outputs. `run-many` collapses everything into one graph, so the shared task is deduped:
-
-  ```sh
-  vp run-many unit:a unit:b
-  ```
-
-Related but a different shape — *same* task across packages rather than multiple distinct tasks — are already covered by `vp run -r --parallel`:
-
-- [vite-task#258](https://github.com/voidzero-dev/vite-task/issues/258) — `vp run --filter pkg-a --filter pkg-b dev` blocks on the first watch task.
-- [vite-plus#1228](https://github.com/voidzero-dev/vite-plus/issues/1228) — `vp run -r dev` doesn't start multiple long-running dev servers from the workspace root.
-- [vite-plus discussions#1216](https://github.com/voidzero-dev/vite-plus/discussions/1216) — migrating from Turborepo, looking for the equivalent of `pnpm --parallel`.
-
-`run-many` extends the same idea to distinct task names per package — e.g. `vp run-many client#dev backend#dev api#dev` to start three different dev scripts in one graph.
+- [vite-task#323](https://github.com/voidzero-dev/vite-task/issues/323) — wanted `unit:a` and `unit:b` (both depending on a shared task) in parallel; the workaround was wrapper tasks each calling `vp run unit:X`, which produced two isolated graphs and raced on the shared dep. With `run-many`: `vp run-many unit:a unit:b` — one graph, shared task deduped.
 
 ## Two scheduling structures
 
