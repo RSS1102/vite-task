@@ -43,6 +43,7 @@ The rest of this RFC explains where `run-many` fits in the existing scheduling m
 Related but a different shape — *same* task across packages rather than multiple distinct tasks — are already covered by `vp run -r --parallel`:
 
 - [vite-task#258](https://github.com/voidzero-dev/vite-task/issues/258) — `vp run --filter pkg-a --filter pkg-b dev` blocks on the first watch task.
+- [vite-plus#1228](https://github.com/voidzero-dev/vite-plus/issues/1228) — `vp run -r dev` doesn't start multiple long-running dev servers from the workspace root.
 - [vite-plus discussions#1216](https://github.com/voidzero-dev/vite-plus/discussions/1216) — migrating from Turborepo, looking for the equivalent of `pnpm --parallel`.
 
 `run-many` extends the same idea to distinct task names per package — e.g. `vp run-many client#dev backend#dev api#dev` to start three different dev scripts in one graph.
