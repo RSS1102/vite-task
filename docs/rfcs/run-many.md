@@ -26,6 +26,27 @@ This is the schedule you can't get from existing primitives:
 
 The rest of this RFC explains where `run-many` fits in the existing scheduling model.
 
+## Requests this addresses
+
+- **[vite-plus discussions#1523](https://github.com/voidzero-dev/vite-plus/discussions/1523) — "How to run tasks in parallel"**. The user wants a `verify` script that runs `check`, `lint`, and `typecheck` together. The current answer is to declare a wrapper task `verify` with `dependsOn: ["check", "lint", "typecheck"]`. With `run-many` the wrapper isn't needed:
+
+  ```sh
+  vp run-many check lint typecheck
+  ```
+
+- **[vite-task#323](https://github.com/voidzero-dev/vite-task/issues/323) — "vp run can execute the same dependency task in parallel via nested vp run"**. The reporter wanted `unit:a` and `unit:b` (both depending on a shared task) to run in parallel and built wrapper tasks `parallel:a` / `parallel:b` that each call `vp run unit:X`. Each nested run produced its own isolated graph, so the shared dependency was scheduled twice and started concurrently, racing on its outputs. `run-many` collapses everything into one graph, so the shared task is deduped:
+
+  ```sh
+  vp run-many unit:a unit:b
+  ```
+
+Related but a different shape — *same* task across packages rather than multiple distinct tasks — are already covered by `vp run -r --parallel`:
+
+- [vite-task#258](https://github.com/voidzero-dev/vite-task/issues/258) — `vp run --filter pkg-a --filter pkg-b dev` blocks on the first watch task.
+- [vite-plus discussions#1216](https://github.com/voidzero-dev/vite-plus/discussions/1216) — migrating from Turborepo, looking for the equivalent of `pnpm --parallel`.
+
+`run-many` extends the same idea to distinct task names per package — e.g. `vp run-many client#dev backend#dev api#dev` to start three different dev scripts in one graph.
+
 ## Two scheduling structures
 
 vite-task schedules work using two structures nested inside each other: a **graph** (what the scheduler runs) and a **tree** (recursion of graphs).
