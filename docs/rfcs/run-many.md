@@ -4,6 +4,8 @@
 
 `vp run-many <task1> <task2> ...` builds one graph with multiple requested tasks. Which `run` flags are accepted is TBD. The graph is the union of the per-task graphs, deduped by node.
 
+An alternative spelling, `vp run --many <task1> <task2> ...`, is also on the table — same semantics, just a flag on the existing `run` subcommand instead of a new one. This RFC uses `run-many` throughout for clarity.
+
 `vp run-many vite#build vite#build-types @voidzero-dev/vite-plus-test#build`, where all three depend on `rolldown#build-node`:
 
 ```mermaid
