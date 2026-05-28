@@ -5,7 +5,9 @@
 //! opened and right before a file is closed. The callback receives a file
 //! descriptor / handle that is usable inside the supervisor's own process.
 
-#[cfg(unix)]
+// The Unix-domain-socket supervisor is only used by the preload backend, which
+// itself is excluded on musl targets (those use seccomp instead).
+#[cfg(all(unix, not(target_env = "musl")))]
 pub mod unix;
 #[cfg(windows)]
 pub mod windows;

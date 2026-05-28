@@ -64,7 +64,7 @@ impl Command {
     /// traced process right after a file is opened and right before a file is
     /// closed.
     ///
-    /// The callback receives a [`FileEvent`](crate::FileEvent) whose
+    /// The callback receives a [`FileEvent`] whose
     /// file descriptor / handle is valid and usable inside the supervisor's
     /// own process (it may `seek`/`read` it). The callback is observe-only:
     /// the traced process resumes once it returns.

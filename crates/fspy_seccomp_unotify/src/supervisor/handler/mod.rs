@@ -34,9 +34,9 @@ pub enum NotifyResponse {
 
 /// Lets a handler override the supervisor's reply for the last notification.
 ///
-/// Kept separate from [`SeccompNotifyHandler`] so the [`impl_handler`] macro
-/// does not need to know about it: handlers that always continue rely on the
-/// default implementation.
+/// Kept separate from [`SeccompNotifyHandler`] so the [`impl_handler!`](crate::impl_handler)
+/// macro does not need to know about it: handlers that always continue rely on
+/// the default implementation.
 pub trait HandlerResponse {
     /// Take the response for the notification just processed by
     /// [`SeccompNotifyHandler::handle_notify`]. Defaults to
