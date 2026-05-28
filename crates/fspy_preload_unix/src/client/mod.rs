@@ -218,24 +218,40 @@ pub unsafe fn handle_open(path: impl ToAbsolutePath, mode: impl ToAccessMode) {
 /// real `open`/`openat`/`fopen` returns, so `fd` is the resulting descriptor
 /// (negative / -1 when the open failed).
 pub unsafe fn handle_open_callback(fd: c_int, path: impl ToAbsolutePath, mode: impl ToAccessMode) {
-    if fd < 0 || callback::is_reentrant() {
+    if fd < 0 {
         return;
     }
-    if let Some(client) = global_client() {
-        // SAFETY: path and mode are forwarded valid pointers/values from the caller.
-        unsafe { client.run_open_callback(fd, path, mode) };
+    // Check `global_client()` before the thread-local reentrancy guard: until
+    // the ctor has run, no callback can be active anyway, and skipping the
+    // thread-local access keeps this path infallible during very early
+    // (libdyld / pre-ctor) opens.
+    let Some(client) = global_client() else {
+        return;
+    };
+    if client.callback.is_none() || callback::is_reentrant() {
+        return;
     }
+    // SAFETY: path and mode are forwarded valid pointers/values from the caller.
+    unsafe { client.run_open_callback(fd, path, mode) };
 }
 
 /// Run the pre-close blocking callback, if one is registered. Called before
 /// the real `close`/`fclose`, so `fd` is still valid.
 pub fn handle_close(fd: c_int) {
-    if fd < 0 || callback::is_reentrant() {
+    if fd < 0 {
         return;
     }
-    if let Some(client) = global_client() {
-        client.run_close_callback(fd);
+    // Check `global_client()` before the thread-local reentrancy guard: until
+    // the ctor has run, no callback can be active anyway, and skipping the
+    // thread-local access keeps this path infallible during very early
+    // (libdyld / pre-ctor) closes.
+    let Some(client) = global_client() else {
+        return;
+    };
+    if client.callback.is_none() || callback::is_reentrant() {
+        return;
     }
+    client.run_close_callback(fd);
 }
 
 #[cfg(not(test))]
