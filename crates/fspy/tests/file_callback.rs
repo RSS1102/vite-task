@@ -85,7 +85,7 @@ async fn callback_blocks_until_supervisor_resumes() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     std::fs::write(dir.path().join("file_a"), b"a")?;
     std::fs::write(dir.path().join("file_b"), b"b")?;
-    let dir_path = dir.path().to_path_buf();
+    let dir_path = std::fs::canonicalize(dir.path())?;
 
     let opened: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
     let entered = Arc::new(Latch::default());
@@ -156,7 +156,7 @@ async fn callback_can_read_fd() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let content = b"hello fspy callback";
     std::fs::write(dir.path().join("content"), content)?;
-    let dir_path = dir.path().to_path_buf();
+    let dir_path = std::fs::canonicalize(dir.path())?;
 
     let seen: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
     let callback = {
@@ -200,7 +200,7 @@ async fn callback_can_read_fd() -> anyhow::Result<()> {
 async fn close_callback_fires_before_close() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     std::fs::write(dir.path().join("closeme"), b"data")?;
-    let dir_path = dir.path().to_path_buf();
+    let dir_path = std::fs::canonicalize(dir.path())?;
 
     let kinds: Arc<Mutex<Vec<FileEventKind>>> = Arc::new(Mutex::new(Vec::new()));
     let close_readable = Arc::new(AtomicBool::new(false));
@@ -251,7 +251,7 @@ async fn mask_filters_events() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     std::fs::write(dir.path().join("read_file"), b"r")?;
     std::fs::write(dir.path().join("write_file"), b"w")?;
-    let dir_path = dir.path().to_path_buf();
+    let dir_path = std::fs::canonicalize(dir.path())?;
 
     let modes: Arc<Mutex<Vec<AccessMode>>> = Arc::new(Mutex::new(Vec::new()));
     let callback = {
