@@ -12,5 +12,14 @@ catalog:
   oxlint: ^1.55.0
   oxlint-tsgolint: ^0.18.0
   typescript: ^6.0.3
+  # Track the vite PR #22453 build until @voidzero-dev/vite-task-client is
+  # published to npm and the integration ships in a real vite release. Pinned
+  # to a commit-specific pkg.pr.new URL so bumps require updating this line.
+  vite: https://pkg.pr.new/vite@23ded7bb458062c028d7a52019133c9cfd51b105
 
 catalogMode: prefer
+
+# Vite's `@voidzero-dev/vite-task-client` dep is a github-spec while the
+# package isn't published to npm. pnpm 11 blocks exotic transitive specs
+# by default; opt out for as long as the integration ships via git.
+blockExoticSubdeps: false
