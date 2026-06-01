@@ -1,8 +1,8 @@
 //! Run a program under fspy, snapshotting its file writes and terminal output.
 //!
 //! Transport is chosen automatically: an interactive Unix terminal gets a real
-//! PTY (see [`pty_unix`]); everything else (non-interactive stdio, and all of
-//! Windows) uses pipes (see [`pipe`]).
+//! PTY (see the `pty_unix` module); everything else (non-interactive stdio, and
+//! all of Windows) uses pipes (see the `pipe` module).
 
 mod pipe;
 #[cfg(unix)]

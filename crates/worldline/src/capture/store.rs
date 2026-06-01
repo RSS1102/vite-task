@@ -230,7 +230,7 @@ fn serialize_frontiers(frontiers: &loro::Frontiers) -> Vec<OpId> {
 }
 
 /// Rebuild a Loro frontier from serialized `{peer, counter}` pairs (the inverse
-/// of [`serialize_frontiers`]). Pairs with an unparseable peer are skipped.
+/// of `serialize_frontiers`). Pairs with an unparseable peer are skipped.
 #[must_use]
 pub fn rebuild_frontier(ops: &[OpId]) -> loro::Frontiers {
     let mut frontiers = loro::Frontiers::default();
