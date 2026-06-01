@@ -240,13 +240,15 @@ impl Snapshotter {
     ) {
         let path_key = Str::from(path);
         let mut guard = self.lock();
-        // The file's content before this close, for the fallback `before`.
-        let prior = serialize_frontiers(&guard.doc.state_frontiers());
+        // Pair with the matching open's snapshot. Only when no open was observed
+        // do we fall back to the file's current (pre-write) content — both taken
+        // before `set_content` commits this write's content.
+        let before = pop_open(&mut guard, pid, raw_fd, &path_key)
+            .unwrap_or_else(|| serialize_frontiers(&guard.doc.state_frontiers()));
         let after = set_content(&mut guard, path, content);
         if let Some(id) = id {
             guard.identity.insert(path_key.clone(), id);
         }
-        let before = pop_open(&mut guard, pid, raw_fd, &path_key).unwrap_or(prior);
         let seq = guard.next_seq;
         guard.next_seq += 1;
         let output_offset = guard.output.len();

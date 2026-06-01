@@ -39,11 +39,6 @@ function blobOf(id: string | undefined): Blob | null {
 const beforeBlob = computed(() => blobOf(write.value?.before));
 const afterBlob = computed(() => blobOf(write.value?.after));
 
-/** Whether a write changed the file's content. */
-function changed(w: ApiWrite): boolean {
-  return w.before !== w.after;
-}
-
 const isBinary = computed(() => {
   const a = afterBlob.value;
   const b = beforeBlob.value;
@@ -81,7 +76,7 @@ const diff = computed<DiffLine[] | null>(() => {
           v-for="(w, idx) in data.writes"
           :key="w.seq"
           class="event"
-          :class="{ selected: idx === selected, changed: changed(w) }"
+          :class="{ selected: idx === selected }"
           :title="w.path"
           @click="selected = idx"
         >

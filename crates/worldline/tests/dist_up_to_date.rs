@@ -2,8 +2,9 @@
 //!
 //! The embedded `ui/dist` is built by `just build-ui` and committed. CI has no
 //! Node/Vite step, so instead of rebuilding we hash the UI source and compare
-//! against `ui/dist/.source-hash` (written by the build). If the source changed
-//! without a rebuild, this fails. Toolchain-only, runs on every platform.
+//! against `ui/.source-hash` (written by the build, beside `dist` so Vite's
+//! `emptyOutDir` can't clobber it). If the source changed without a rebuild,
+//! this fails. Toolchain-only, runs on every platform.
 //!
 //! Update after changing UI source with `just build-ui`, or directly:
 //! `WORLDLINE_UPDATE_UI_HASH=1 cargo test -p worldline --test dist_up_to_date`.

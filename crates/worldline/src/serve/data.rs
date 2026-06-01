@@ -122,9 +122,12 @@ fn blob_at(
 }
 
 /// Read `path`'s content at the doc's current version as a `(blob id, blob)`.
+///
+/// Resolves just this one entry (`LoroMap::get` + `get_deep_value`) rather than
+/// materializing every tracked file's content via the whole map's deep value.
 fn read_content(doc: &LoroDoc, path: &str) -> (Str, Blob) {
-    if let LoroValue::Map(map) = doc.get_map("text_files").get_deep_value()
-        && let Some(LoroValue::String(text)) = map.get(path)
+    if let Some(value) = doc.get_map("text_files").get(path)
+        && let LoroValue::String(text) = value.get_deep_value()
     {
         let data = text.to_string();
         return (
@@ -132,8 +135,8 @@ fn read_content(doc: &LoroDoc, path: &str) -> (Str, Blob) {
             Blob { enc: BlobEncoding::Utf8, data: Str::from(data.as_str()) },
         );
     }
-    if let LoroValue::Map(map) = doc.get_map("bin_files").get_deep_value()
-        && let Some(LoroValue::Binary(bytes)) = map.get(path)
+    if let Some(value) = doc.get_map("bin_files").get(path)
+        && let LoroValue::Binary(bytes) = value.get_deep_value()
     {
         return (
             blob_id(bytes.as_slice()),

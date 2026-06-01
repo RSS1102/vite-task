@@ -142,35 +142,6 @@ body {
   flex: 1;
 }
 
-.file-list {
-  width: 280px;
-  border-right: 1px solid var(--border);
-  overflow-y: auto;
-}
-
-.file-row {
-  padding: 4px 10px;
-  cursor: pointer;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.file-row:hover {
-  background: var(--panel-2);
-}
-
-.file-row.selected {
-  background: var(--panel-2);
-  color: var(--accent);
-}
-
-.file-row.changed::before {
-  content: '●';
-  color: var(--add);
-  margin-right: 6px;
-}
-
 .viewer {
   flex: 1;
   overflow: auto;

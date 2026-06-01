@@ -50,22 +50,30 @@ pub fn install_callback(cmd: &mut fspy::Command, snap: Snapshotter, ignore: Arc<
             return;
         };
 
-        let Ok(content) = std::fs::read(&canonical) else {
+        // Open once and read both the content and the file's on-disk identity
+        // from the same handle — the traced process is blocked in the hook while
+        // we do this, so avoiding a second path walk + stat keeps it short.
+        let Ok(mut file) = std::fs::File::open(&canonical) else {
             return;
         };
-        // The file's on-disk identity, to tell an in-place rewrite from a
-        // replacement of the same path (rename-over / delete-and-recreate).
+        // The identity (used to tell an in-place rewrite from a replacement of
+        // the same path — rename-over / delete-and-recreate) comes from an
+        // `fstat` on the open handle, not a second path lookup.
         #[cfg(unix)]
-        let identity = std::fs::metadata(&canonical).ok().map(|meta| {
+        let identity = {
             use std::os::unix::fs::MetadataExt as _;
-            FileId::new(meta.dev(), meta.ino())
-        });
+            file.metadata().ok().map(|meta| FileId::new(meta.dev(), meta.ino()))
+        };
         // A stable on-disk identity isn't available off Unix without unstable
         // APIs (`windows_by_handle`), so replacement detection is skipped there:
         // a truncating rewrite keeps the prior content (correct for in-place
         // rewrites; a rename-over or delete-and-recreate may show stale content).
         #[cfg(not(unix))]
         let identity: Option<FileId> = None;
+        let mut content = Vec::new();
+        if std::io::Read::read_to_end(&mut file, &mut content).is_err() {
+            return;
+        }
         let (pid, fd) = (event.pid, event.raw_fd);
         match event.kind {
             FileEventKind::Opened => snap.record_open(pid, fd, path_str, &content, identity),
