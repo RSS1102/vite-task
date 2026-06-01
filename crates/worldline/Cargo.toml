@@ -41,9 +41,14 @@ libc = { workspace = true }
 nix = { workspace = true, features = ["dir", "signal", "term", "fs", "ioctl"] }
 
 [dev-dependencies]
+ctor = { workspace = true }
 snapshot_test = { workspace = true }
 subprocess_test = { workspace = true }
 tempfile = { workspace = true }
+
+[package.metadata.cargo-shear]
+# ctor is referenced only via the `command_for_fn!` macro expansion.
+ignored = ["ctor"]
 
 [lints]
 workspace = true

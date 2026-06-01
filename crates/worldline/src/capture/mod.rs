@@ -3,7 +3,7 @@
 
 mod store;
 
-use std::{fs::File, sync::Arc};
+use std::sync::Arc;
 
 use fspy::{AccessMode, FileEvent, FileEventKind};
 pub use store::{CapturedData, Event, EventKind, OpId, Snapshotter, rebuild_frontier};
@@ -18,6 +18,14 @@ use crate::ignore::IgnoreSet;
 /// cost. On a write-open we record the file's pre-write content; on a
 /// write-close we record its post-write content (the authoritative final
 /// state). Ignored paths and non-UTF-8 paths are skipped.
+///
+/// The descriptor handed to the supervisor is the traced process's own fd,
+/// which is write-only for a write open and therefore unreadable. We instead
+/// read the file's content by path: the supervisor process opens it `O_RDONLY`
+/// itself. The traced process is blocked in the open/close hook while we do
+/// this, so the content is a consistent point-in-time read. (For a truncating
+/// open the pre-write content reads as empty, which is the file's observable
+/// state at that instant — the post-write content arrives on the close event.)
 pub fn install_callback(cmd: &mut fspy::Command, snap: Snapshotter, ignore: Arc<IgnoreSet>) {
     cmd.on_file_event(AccessMode::WRITE, move |event: FileEvent<'_>| {
         let Some(path) = event.path.get() else {
@@ -39,61 +47,10 @@ pub fn install_callback(cmd: &mut fspy::Command, snap: Snapshotter, ignore: Arc<
             FileEventKind::Opened => EventKind::WriteOpen,
             FileEventKind::Closing => EventKind::WriteClose,
         };
-        // Right after a write-open the offset is 0; restore it afterwards so we
-        // don't disturb the offset the traced process will use. A closing file
-        // needs no restore.
-        let restore = matches!(event.kind, FileEventKind::Opened);
 
-        let mut file = event.fd.as_file();
-        let Ok(content) = read_full(&mut file, restore) else {
+        let Ok(content) = std::fs::read(path) else {
             return;
         };
         snap.record_write(path_str, &content, kind);
     });
-}
-
-/// Read a file's full content from offset 0 without disturbing the descriptor's
-/// shared file offset.
-///
-/// On Unix `pread` (`read_at`) is positional and never touches the offset. On
-/// Windows `seek_read` is positional too, but to be safe for write-opens we
-/// rewind the pointer to 0 when `restore` is set.
-#[cfg_attr(
-    not(windows),
-    expect(
-        clippy::needless_pass_by_ref_mut,
-        reason = "the descriptor needs a mutable borrow on Windows to rewind via seek"
-    )
-)]
-fn read_full(file: &mut File, restore: bool) -> std::io::Result<Vec<u8>> {
-    let mut buf = Vec::new();
-    let mut chunk = vec![0u8; 64 * 1024];
-    let mut offset: u64 = 0;
-    loop {
-        #[cfg(unix)]
-        let read = {
-            use std::os::unix::fs::FileExt as _;
-            file.read_at(&mut chunk, offset)?
-        };
-        #[cfg(windows)]
-        let read = {
-            use std::os::windows::fs::FileExt as _;
-            file.seek_read(&mut chunk, offset)?
-        };
-        if read == 0 {
-            break;
-        }
-        buf.extend_from_slice(&chunk[..read]);
-        offset += read as u64;
-    }
-
-    #[cfg(windows)]
-    if restore {
-        use std::io::{Seek as _, SeekFrom};
-        let _ = file.seek(SeekFrom::Start(0));
-    }
-    #[cfg(not(windows))]
-    let _ = restore;
-
-    Ok(buf)
 }
