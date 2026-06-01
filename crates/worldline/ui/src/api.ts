@@ -1,18 +1,17 @@
 // Types mirroring the Rust `serve::data::ApiData` payload, plus loaders.
 
-export type EventKind = 'write-open' | 'write-close' | 'final';
-
 export interface Blob {
   enc: 'utf8' | 'base64';
   data: string;
 }
 
-export interface ApiEvent {
+/** One write: the file's content before (open) and after (close), as blob ids. */
+export interface ApiWrite {
   seq: number;
-  kind: EventKind;
   path: string;
+  before: string;
+  after: string;
   output_offset: number;
-  files: Record<string, string>;
 }
 
 export interface ApiData {
@@ -20,7 +19,7 @@ export interface ApiData {
   cwd: string;
   exit_code: number | null;
   output_len: number;
-  events: ApiEvent[];
+  writes: ApiWrite[];
   blobs: Record<string, Blob>;
 }
 

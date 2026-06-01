@@ -94,10 +94,6 @@ pub async fn run(options: RunOptions) -> anyhow::Result<Captured> {
         pipe::run_piped(cmd, snap.clone(), cancel).await?
     };
 
-    // The program and its descendants have exited; capture the final on-disk
-    // state of every file we saw (catches writes with no observable close).
-    snap.finalize();
-
     let mut argv = Vec::with_capacity(args.len() + 1);
     argv.push(Str::from(program.to_string_lossy().as_ref()));
     for arg in &args {

@@ -2,8 +2,8 @@
 import { computed, onMounted, ref } from 'vue';
 import {
   type ApiData,
-  type ApiEvent,
-  type EventKind,
+  type ApiWrite,
+  type Blob,
   basename,
   blobIsBinary,
   blobText,
@@ -16,70 +16,46 @@ import TerminalView from './TerminalView.vue';
 const data = ref<ApiData | null>(null);
 const output = ref<Uint8Array>(new Uint8Array(0));
 const error = ref<string | null>(null);
-const selectedEvent = ref(0);
-const selectedPath = ref<string | null>(null);
+const selected = ref(0);
 
 onMounted(async () => {
   try {
     const [d, o] = await Promise.all([loadData(), loadOutput()]);
     data.value = d;
     output.value = o;
-    if (d.events.length > 0) selectEvent(d.events.length - 1);
+    if (d.writes.length > 0) selected.value = d.writes.length - 1;
   } catch (e) {
     error.value = String(e);
   }
 });
 
-function selectEvent(idx: number) {
-  selectedEvent.value = idx;
-  const ev = data.value?.events[idx];
-  // Default the file view to the file that changed at this event.
-  selectedPath.value = ev ? ev.path : null;
+const write = computed<ApiWrite | null>(() => data.value?.writes[selected.value] ?? null);
+
+function blobOf(id: string | undefined): Blob | null {
+  if (!id || !data.value) return null;
+  return data.value.blobs[id] ?? null;
 }
 
-function kindLabel(kind: EventKind): string {
-  if (kind === 'write-open') return 'open';
-  if (kind === 'write-close') return 'close';
-  return 'final';
+const beforeBlob = computed(() => blobOf(write.value?.before));
+const afterBlob = computed(() => blobOf(write.value?.after));
+
+/** Whether a write changed the file's content. */
+function changed(w: ApiWrite): boolean {
+  return w.before !== w.after;
 }
 
-const event = computed<ApiEvent | null>(() => data.value?.events[selectedEvent.value] ?? null);
-const prevEvent = computed<ApiEvent | null>(() =>
-  selectedEvent.value > 0 ? (data.value?.events[selectedEvent.value - 1] ?? null) : null,
-);
-
-const fileList = computed(() => {
-  const ev = event.value;
-  if (!ev) return [];
-  return Object.keys(ev.files)
-    .sort()
-    .map((path) => ({
-      path,
-      changed: ev.files[path] !== prevEvent.value?.files[path],
-    }));
+const isBinary = computed(() => {
+  const a = afterBlob.value;
+  const b = beforeBlob.value;
+  return (a !== null && blobIsBinary(a)) || (b !== null && blobIsBinary(b));
 });
-
-function blobOf(ev: ApiEvent | null, path: string | null) {
-  if (!ev || !path || !data.value) return null;
-  const id = ev.files[path];
-  return id ? data.value.blobs[id] : null;
-}
-
-const currentBlob = computed(() => blobOf(event.value, selectedPath.value));
-const prevBlob = computed(() => blobOf(prevEvent.value, selectedPath.value));
 
 const diff = computed<DiffLine[] | null>(() => {
-  const cur = currentBlob.value;
-  if (!cur || blobIsBinary(cur)) return null;
-  const prev = prevBlob.value;
-  // Only diff when the file actually changed from the previous event.
-  if (prev && !blobIsBinary(prev) && event.value?.files[selectedPath.value ?? ''] !== prevEvent.value?.files[selectedPath.value ?? '']) {
-    return lineDiff(blobText(prev), blobText(cur));
-  }
-  return null;
+  const a = afterBlob.value;
+  const b = beforeBlob.value;
+  if (!a || !b || isBinary.value) return null;
+  return lineDiff(blobText(b), blobText(a));
 });
-
-const plainText = computed(() => (currentBlob.value ? blobText(currentBlob.value) : ''));
 </script>
 
 <template>
@@ -95,58 +71,46 @@ const plainText = computed(() => (currentBlob.value ? blobText(currentBlob.value
 
     <div v-if="error" class="empty">{{ error }}</div>
     <div v-else-if="!data" class="empty">Loading…</div>
-    <div v-else-if="data.events.length === 0" class="empty">
+    <div v-else-if="data.writes.length === 0" class="empty">
       No file writes were captured for this run.
     </div>
 
     <div v-else class="body">
       <div class="timeline">
         <div
-          v-for="(ev, idx) in data.events"
-          :key="ev.seq"
+          v-for="(w, idx) in data.writes"
+          :key="w.seq"
           class="event"
-          :class="{ selected: idx === selectedEvent }"
-          @click="selectEvent(idx)"
+          :class="{ selected: idx === selected, changed: changed(w) }"
+          :title="w.path"
+          @click="selected = idx"
         >
-          <span class="seq">{{ ev.seq }}</span>
-          <span class="kind" :class="`kind-${ev.kind}`">{{ kindLabel(ev.kind) }}</span>
-          <span class="name" :title="ev.path">{{ basename(ev.path) }}</span>
+          <span class="seq">{{ w.seq }}</span>
+          <span class="kind">write</span>
+          <span class="name">{{ basename(w.path) }}</span>
         </div>
       </div>
 
       <div class="center">
         <div class="files">
-          <div class="file-list">
-            <div
-              v-for="f in fileList"
-              :key="f.path"
-              class="file-row"
-              :class="{ selected: f.path === selectedPath, changed: f.changed }"
-              :title="f.path"
-              @click="selectedPath = f.path"
-            >
-              {{ basename(f.path) }}
-            </div>
-          </div>
-
           <div class="viewer">
-            <div v-if="!currentBlob" class="empty">Select a file.</div>
-            <div v-else-if="blobIsBinary(currentBlob)" class="binary">
-              Binary file ({{ currentBlob.data.length }} base64 chars)
-            </div>
-            <pre v-else-if="diff"><span
-              v-for="(l, i) in diff"
-              :key="i"
-              class="line"
-              :class="{ add: l.type === 'add', del: l.type === 'del' }"
-            >{{ l.type === 'add' ? '+' : l.type === 'del' ? '-' : ' ' }}{{ l.text }}
+            <div v-if="!write" class="empty">Select a write.</div>
+            <div v-else>
+              <div class="path-bar">{{ write.path }}</div>
+              <div v-if="isBinary" class="binary">Binary file</div>
+              <pre v-else-if="diff"><span
+                v-for="(l, i) in diff"
+                :key="i"
+                class="line"
+                :class="{ add: l.type === 'add', del: l.type === 'del' }"
+              >{{ l.type === 'add' ? '+' : l.type === 'del' ? '-' : ' ' }}{{ l.text }}
 </span></pre>
-            <pre v-else>{{ plainText }}</pre>
+            </div>
           </div>
         </div>
 
         <div class="terminal-wrap">
-          <TerminalView :output="output" :offset="event?.output_offset ?? 0" />
+          <TerminalView :output="output" :offset="write?.output_offset ?? 0" />
         </div>
       </div>
     </div>

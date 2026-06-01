@@ -260,7 +260,6 @@ mod tests {
         let status = run_pty(fspy_cmd, snap.clone(), CancellationToken::new()).await.unwrap();
         assert!(status.success(), "child should exit cleanly");
 
-        snap.finalize();
         let data = snap.finish();
 
         assert!(
@@ -269,9 +268,9 @@ mod tests {
             std::str::from_utf8(&data.output).unwrap_or("<non-utf8>"),
         );
         assert!(
-            data.events.iter().any(|e| e.path.ends_with("pty.txt")),
+            data.writes.iter().any(|w| w.path.ends_with("pty.txt")),
             "pty.txt write not captured: {:?}",
-            data.events.iter().map(|e| e.path.as_str()).collect::<Vec<_>>(),
+            data.writes.iter().map(|w| w.path.as_str()).collect::<Vec<_>>(),
         );
     }
 }

@@ -11,7 +11,7 @@ mod data;
 
 use std::{net::Ipv4Addr, sync::Arc};
 
-pub use data::{ApiData, ApiEvent, Blob, BlobEncoding, reconstruct};
+pub use data::{ApiData, ApiWrite, Blob, BlobEncoding, reconstruct};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     net::{TcpListener, TcpStream},
@@ -158,7 +158,7 @@ mod tests {
 
     use super::{Payload, handle, reconstruct};
     use crate::{
-        capture::{EventKind, Snapshotter},
+        capture::Snapshotter,
         run::{Captured, Meta},
     };
 
@@ -183,7 +183,8 @@ mod tests {
     async fn serves_endpoints_and_assets() {
         let snap = Snapshotter::new();
         snap.append_output(b"hello-output");
-        snap.record_write("/w/a.txt", b"content", EventKind::WriteClose);
+        snap.record_open(1, 3, "/w/a.txt", b"");
+        snap.record_close(1, 3, "/w/a.txt", b"content");
         let captured = Captured {
             meta: Meta { argv: vec!["prog".into()], cwd: "/w".into(), exit_code: Some(0) },
             data: snap.finish(),

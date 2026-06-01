@@ -1,12 +1,13 @@
-//! The in-memory capture store: a Loro CRDT timeline of file versions plus a
-//! raw terminal-output byte log and an ordered event list.
+//! The in-memory capture store: a Loro CRDT of file contents over time, plus an
+//! ordered list of *writes* and a raw terminal-output byte log.
 //!
-//! Files are stored in two top-level [`LoroMap`]s keyed by absolute path:
-//! `text_files` holds a [`LoroText`] per UTF-8 file (delta-stored, so repeated
-//! near-identical writes are cheap), and `bin_files` holds the raw bytes of
-//! each non-UTF-8 file (full replace). Each recorded version commits the doc
-//! and snaps the current [`Frontiers`](loro::Frontiers); the server later
-//! `checkout`s those frontiers to reconstruct the filesystem at any point.
+//! A **write** is one open→…→close lifecycle of a descriptor opened for
+//! writing. Its *before* is the file's content snapshotted in the open
+//! callback; its *after* is the content snapshotted in the close callback of
+//! the same descriptor. Both are stored as points in the Loro history (per-path
+//! `LoroText`/binary, so repeated near-identical writes are delta-stored), and
+//! each write records the before/after [`Frontiers`](loro::Frontiers) the
+//! server later `checkout`s to render them.
 
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -14,24 +15,6 @@ use loro::{ExportMode, LoroDoc, LoroMap, LoroText, UpdateOptions};
 use rustc_hash::FxHashMap;
 use serde::Serialize;
 use vite_str::Str;
-use xxhash_rust::xxh3::xxh3_64;
-
-/// Whether a recorded version came from a write-open (pre-write content) or a
-/// write-close (post-write content).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum EventKind {
-    /// Content read from the descriptor right after it was opened for writing
-    /// (the file's state just before the program writes it).
-    WriteOpen,
-    /// Content read from the descriptor right before it is closed (the file's
-    /// state just after the program finished writing it).
-    WriteClose,
-    /// Content re-read from disk after the program (and its descendants) exited.
-    /// Captures the final state of writes that were flushed only when a child
-    /// process exited (e.g. shell redirections), where no `close` is observable.
-    Final,
-}
 
 /// A Loro operation id, serialized as a `{peer, counter}` pair so it can be
 /// round-tripped through JSON and rebuilt into a [`loro::Frontiers`].
@@ -43,29 +26,29 @@ pub struct OpId {
     pub counter: i32,
 }
 
-/// One point on the timeline: a file version was recorded.
+/// One write: a file's content just before it was opened for writing (`before`)
+/// and just after it was closed (`after`), as Loro history frontiers.
 #[derive(Clone, Debug, Serialize)]
-pub struct Event {
+pub struct Write {
     /// Monotonic sequence number, starting at 0.
     pub seq: u64,
-    /// Whether this is a pre-write or post-write capture.
-    pub kind: EventKind,
-    /// Absolute path of the file whose version was recorded.
+    /// Absolute path of the written file.
     pub path: Str,
-    /// Length of the raw output log at the instant this event was recorded;
-    /// the UI renders `output[0..output_offset]` for this event.
+    /// Frontier capturing the file's content at the matching open.
+    pub before: Vec<OpId>,
+    /// Frontier capturing the file's content at the close.
+    pub after: Vec<OpId>,
+    /// Length of the raw output log when this write was recorded; the UI renders
+    /// `output[0..output_offset]` for this write.
     pub output_offset: usize,
-    /// The Loro state frontier right after this version was committed. The
-    /// server `checkout`s to it to reconstruct the filesystem at this event.
-    pub frontier: Vec<OpId>,
 }
 
 /// The fully captured run, ready to be served or dumped.
 pub struct CapturedData {
-    /// A full Loro snapshot (history + state) of the file timeline.
+    /// A full Loro snapshot (history + state) of the file contents.
     pub snapshot: Vec<u8>,
-    /// The ordered timeline events.
-    pub events: Vec<Event>,
+    /// The ordered list of writes.
+    pub writes: Vec<Write>,
     /// The raw terminal-output byte log.
     pub output: Vec<u8>,
 }
@@ -76,23 +59,36 @@ enum Flavor {
     Binary,
 }
 
+/// Correlation key pairing an open with its close. Uses the descriptor when the
+/// backend reports it (`raw_fd >= 0`); otherwise falls back to the path (the
+/// seccomp backend can't report the target's fd).
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum FdKey {
+    Fd(u32, i64),
+    Path(u32, Str),
+}
+
+fn fd_key(pid: u32, raw_fd: i64, path: &Str) -> FdKey {
+    if raw_fd >= 0 { FdKey::Fd(pid, raw_fd) } else { FdKey::Path(pid, path.clone()) }
+}
+
 struct State {
     doc: LoroDoc,
     text_files: LoroMap,
     bin_files: LoroMap,
-    /// Per-path content hash of the last recorded version, to skip no-op writes.
-    last_seen: FxHashMap<Str, u64>,
     /// Per-path text/binary classification, to clean up the other map on a flip.
     flavor: FxHashMap<Str, Flavor>,
-    events: Vec<Event>,
+    /// Open descriptors awaiting their close: key -> the open's before-frontier.
+    open: FxHashMap<FdKey, Vec<OpId>>,
+    writes: Vec<Write>,
     output: Vec<u8>,
     next_seq: u64,
 }
 
 /// A cheap-to-clone handle to the shared capture state.
 ///
-/// Cloned into the fspy callback (write snapshots) and the output pump
-/// (terminal bytes); both lock the same mutex so the event list and output
+/// Cloned into the fspy callback (open/close snapshots) and the output pump
+/// (terminal bytes); both lock the same mutex so the write list and output
 /// offsets stay consistent.
 #[derive(Clone)]
 pub struct Snapshotter {
@@ -106,7 +102,7 @@ impl Default for Snapshotter {
 }
 
 impl Snapshotter {
-    /// Create an empty timeline.
+    /// Create an empty store.
     #[must_use]
     pub fn new() -> Self {
         let doc = LoroDoc::new();
@@ -117,9 +113,9 @@ impl Snapshotter {
                 doc,
                 text_files,
                 bin_files,
-                last_seen: FxHashMap::default(),
                 flavor: FxHashMap::default(),
-                events: Vec::new(),
+                open: FxHashMap::default(),
+                writes: Vec::new(),
                 output: Vec::new(),
                 next_seq: 0,
             })),
@@ -135,90 +131,80 @@ impl Snapshotter {
         self.lock().output.extend_from_slice(bytes);
     }
 
-    /// Record a file version. No-op if `content` is unchanged from the last
-    /// recorded version of `path` (so consecutive identical writes, and a
-    /// write-open immediately following a write-close with the same bytes, cost
-    /// nothing).
+    /// Record the pre-write snapshot taken when `path` was opened for writing on
+    /// descriptor `raw_fd` of process `pid`. Pairs with the matching
+    /// [`Self::record_close`].
     ///
     /// # Panics
     ///
-    /// Panics if a Loro container operation fails, which would indicate a
-    /// corrupted internal invariant rather than a recoverable error.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the guard must span the whole record so the doc commit, frontier, last_seen, output offset and event push stay consistent"
-    )]
-    pub fn record_write(&self, path: &str, content: &[u8], kind: EventKind) {
-        let hash = xxh3_64(content);
-        let key = Str::from(path);
-
+    /// Panics if a Loro container operation fails (a corrupted invariant).
+    pub fn record_open(&self, pid: u32, raw_fd: i64, path: &str, content: &[u8]) {
         let mut guard = self.lock();
-        if guard.last_seen.get(&key) == Some(&hash) {
-            return;
-        }
-
-        let state = &mut *guard;
-        if let Ok(text) = std::str::from_utf8(content) {
-            if state.flavor.get(&key) == Some(&Flavor::Binary) {
-                let _ = state.bin_files.delete(path);
-            }
-            let container = state
-                .text_files
-                .get_or_create_container(path, LoroText::new())
-                .expect("get_or_create text container");
-            // `timeout_ms: None` (the default) means `update` never times out,
-            // so this only errors on a poisoned internal invariant.
-            container.update(text, UpdateOptions::default()).expect("loro text update");
-            state.flavor.insert(key.clone(), Flavor::Text);
-        } else {
-            if state.flavor.get(&key) == Some(&Flavor::Text) {
-                let _ = state.text_files.delete(path);
-            }
-            state.bin_files.insert(path, content.to_vec()).expect("loro binary insert");
-            state.flavor.insert(key.clone(), Flavor::Binary);
-        }
-
-        state.doc.commit();
-        let frontier = serialize_frontiers(&state.doc.state_frontiers());
-        state.last_seen.insert(key.clone(), hash);
-        let seq = state.next_seq;
-        state.next_seq += 1;
-        let output_offset = state.output.len();
-        state.events.push(Event { seq, kind, path: key, output_offset, frontier });
+        let before = set_content(&mut guard, path, content);
+        let key = fd_key(pid, raw_fd, &Str::from(path));
+        guard.open.insert(key, before);
     }
 
-    /// Re-read every file seen during the run and record its final content.
-    ///
-    /// Call once after the traced program and all its descendants have exited.
-    /// This captures writes whose `close` was never observable (e.g. a shell
-    /// redirection whose fd is closed implicitly when a child process exits).
-    /// Unchanged files are skipped by [`Self::record_write`]'s dedup.
-    pub fn finalize(&self) {
-        let paths: Vec<Str> = {
-            let guard = self.lock();
-            guard.last_seen.keys().cloned().collect()
-        };
-        for path in paths {
-            if let Ok(content) = std::fs::read(path.as_str()) {
-                self.record_write(path.as_str(), &content, EventKind::Final);
-            }
-        }
-    }
-
-    /// Export the captured timeline: a full Loro snapshot plus the event list
-    /// and raw output log.
+    /// Record the post-write snapshot taken just before `path` is closed on
+    /// descriptor `raw_fd` of process `pid`, emitting a [`Write`]. Its `before`
+    /// is the matching open's snapshot (or the file's prior content if the open
+    /// wasn't observed).
     ///
     /// # Panics
     ///
-    /// Panics if the Loro snapshot export fails, which should not happen for a
-    /// well-formed in-memory document.
+    /// Panics if a Loro container operation fails (a corrupted invariant).
+    pub fn record_close(&self, pid: u32, raw_fd: i64, path: &str, content: &[u8]) {
+        let path_key = Str::from(path);
+        let mut guard = self.lock();
+        // The file's content before this close, for the fallback `before`.
+        let prior = serialize_frontiers(&guard.doc.state_frontiers());
+        let after = set_content(&mut guard, path, content);
+        let before = guard.open.remove(&fd_key(pid, raw_fd, &path_key)).unwrap_or(prior);
+        let seq = guard.next_seq;
+        guard.next_seq += 1;
+        let output_offset = guard.output.len();
+        guard.writes.push(Write { seq, path: path_key, before, after, output_offset });
+    }
+
+    /// Export the captured run: a full Loro snapshot plus the write list and raw
+    /// output log.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the Loro snapshot export fails (should not happen for a
+    /// well-formed in-memory document).
     #[must_use]
     pub fn finish(&self) -> CapturedData {
         let guard = self.lock();
         let snapshot =
             guard.doc.export(ExportMode::snapshot()).expect("loro snapshot export should not fail");
-        CapturedData { snapshot, events: guard.events.clone(), output: guard.output.clone() }
+        CapturedData { snapshot, writes: guard.writes.clone(), output: guard.output.clone() }
     }
+}
+
+/// Set `path`'s content in the doc, committing, and return the new frontier.
+/// Identical content is a no-op (Loro dedups), so the frontier is unchanged.
+fn set_content(state: &mut State, path: &str, content: &[u8]) -> Vec<OpId> {
+    let key = Str::from(path);
+    if let Ok(text) = std::str::from_utf8(content) {
+        if state.flavor.get(&key) == Some(&Flavor::Binary) {
+            let _ = state.bin_files.delete(path);
+        }
+        let container = state
+            .text_files
+            .get_or_create_container(path, LoroText::new())
+            .expect("get_or_create text container");
+        container.update(text, UpdateOptions::default()).expect("loro text update");
+        state.flavor.insert(key, Flavor::Text);
+    } else {
+        if state.flavor.get(&key) == Some(&Flavor::Text) {
+            let _ = state.text_files.delete(path);
+        }
+        state.bin_files.insert(path, content.to_vec()).expect("loro binary insert");
+        state.flavor.insert(key, Flavor::Binary);
+    }
+    state.doc.commit();
+    serialize_frontiers(&state.doc.state_frontiers())
 }
 
 /// Serialize a Loro frontier into JSON-friendly `{peer, counter}` pairs.
@@ -240,61 +226,4 @@ pub fn rebuild_frontier(ops: &[OpId]) -> loro::Frontiers {
         }
     }
     frontiers
-}
-
-#[cfg(test)]
-mod tests {
-    use loro::{LoroDoc, LoroValue};
-
-    use super::{EventKind, Snapshotter, rebuild_frontier};
-
-    fn text_at(doc: &LoroDoc, path: &str) -> Option<vite_str::Str> {
-        match doc.get_map("text_files").get_deep_value() {
-            LoroValue::Map(map) => match map.get(path) {
-                Some(LoroValue::String(s)) => Some(vite_str::Str::from(s.to_string().as_str())),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    fn bin_len_at(doc: &LoroDoc, path: &str) -> Option<usize> {
-        match doc.get_map("bin_files").get_deep_value() {
-            LoroValue::Map(map) => match map.get(path) {
-                Some(LoroValue::Binary(b)) => Some(b.len()),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    #[test]
-    fn records_versions_dedups_and_round_trips() {
-        let snap = Snapshotter::new();
-        snap.record_write("/w/a.txt", b"v1", EventKind::WriteOpen);
-        // Identical content: must be skipped (no new event).
-        snap.record_write("/w/a.txt", b"v1", EventKind::WriteClose);
-        snap.record_write("/w/a.txt", b"v2", EventKind::WriteClose);
-        // A non-UTF-8 file goes to bin_files.
-        snap.record_write("/w/img.bin", &[0u8, 159, 146, 150], EventKind::WriteClose);
-
-        let data = snap.finish();
-        assert_eq!(data.events.len(), 3, "identical rewrite should be deduped");
-        assert_eq!(data.events[0].kind, EventKind::WriteOpen);
-
-        let doc = LoroDoc::new();
-        doc.import(&data.snapshot).expect("import snapshot");
-
-        // At the first event a.txt is "v1" and img.bin does not yet exist.
-        doc.checkout(&rebuild_frontier(&data.events[0].frontier)).expect("checkout v1");
-        assert_eq!(text_at(&doc, "/w/a.txt").as_deref(), Some("v1"));
-        assert_eq!(bin_len_at(&doc, "/w/img.bin"), None);
-
-        // At the last event a.txt is "v2" and img.bin is present with 4 bytes.
-        doc.checkout(&rebuild_frontier(&data.events[2].frontier)).expect("checkout latest");
-        assert_eq!(text_at(&doc, "/w/a.txt").as_deref(), Some("v2"));
-        assert_eq!(bin_len_at(&doc, "/w/img.bin"), Some(4));
-
-        doc.checkout_to_latest();
-    }
 }

@@ -1,9 +1,9 @@
-//! Reconstruct the served JSON payload from a captured Loro timeline.
+//! Reconstruct the served JSON payload from a captured run.
 //!
-//! For each timeline event we `checkout` the recorded frontier and read the
-//! file set at that version, deduplicating identical file contents into a
-//! content-addressed blob table. The browser renders straight from this — no
-//! Loro/WASM on the client side.
+//! For each write we `checkout` its before/after frontiers and read the file's
+//! content at each, deduplicating identical contents into a content-addressed
+//! blob table. The browser renders straight from this — no Loro/WASM on the
+//! client side.
 
 use std::collections::BTreeMap;
 
@@ -12,10 +12,7 @@ use loro::{LoroDoc, LoroValue};
 use serde::Serialize;
 use vite_str::Str;
 
-use crate::{
-    capture::{Event, EventKind, rebuild_frontier},
-    run::Captured,
-};
+use crate::{capture::rebuild_frontier, run::Captured};
 
 /// How a blob's bytes are encoded for transport.
 #[derive(Serialize, Clone, Copy)]
@@ -27,7 +24,7 @@ pub enum BlobEncoding {
     Base64,
 }
 
-/// One unique file content, shared by every event/path that references it.
+/// One unique file content, shared by every write that references it.
 #[derive(Serialize)]
 pub struct Blob {
     /// Encoding of `data`.
@@ -36,19 +33,20 @@ pub struct Blob {
     pub data: Str,
 }
 
-/// One timeline event as served to the UI.
+/// One write as served to the UI: the file's content before (open) and after
+/// (close), each a blob id into [`ApiData::blobs`].
 #[derive(Serialize)]
-pub struct ApiEvent {
+pub struct ApiWrite {
     /// Monotonic sequence number.
     pub seq: u64,
-    /// Whether this was a pre-write or post-write capture.
-    pub kind: EventKind,
-    /// The file whose version was recorded at this event.
+    /// The written file's path.
     pub path: Str,
-    /// Byte offset into the output log at this event (`output[0..offset]`).
+    /// Blob id of the content before the write (empty file if newly created).
+    pub before: Str,
+    /// Blob id of the content after the write.
+    pub after: Str,
+    /// Byte offset into the output log at this write (`output[0..offset]`).
     pub output_offset: usize,
-    /// The full filesystem state at this event: path -> blob id.
-    pub files: BTreeMap<Str, Str>,
 }
 
 /// The complete payload served at `/api/data`.
@@ -62,8 +60,8 @@ pub struct ApiData {
     pub exit_code: Option<i32>,
     /// Total length of the raw output log (served separately at `/api/output`).
     pub output_len: usize,
-    /// Ordered timeline events.
-    pub events: Vec<ApiEvent>,
+    /// Ordered writes.
+    pub writes: Vec<ApiWrite>,
     /// Content-addressed blob table: blob id -> content.
     pub blobs: BTreeMap<Str, Blob>,
 }
@@ -84,15 +82,18 @@ pub fn reconstruct(captured: &Captured) -> ApiData {
     doc.import(&captured.data.snapshot).expect("import worldline loro snapshot");
 
     let mut blobs: BTreeMap<Str, Blob> = BTreeMap::new();
-    let mut events = Vec::with_capacity(captured.data.events.len());
+    let mut writes = Vec::with_capacity(captured.data.writes.len());
 
-    for event in &captured.data.events {
-        // Reconstruct the filesystem at this event's version.
-        let _ = doc.checkout(&rebuild_frontier(&event.frontier));
-        let mut files: BTreeMap<Str, Str> = BTreeMap::new();
-        collect_text_files(&doc, &mut blobs, &mut files);
-        collect_binary_files(&doc, &mut blobs, &mut files);
-        events.push(api_event(event, files));
+    for write in &captured.data.writes {
+        let before = blob_at(&doc, &write.before, write.path.as_str(), &mut blobs);
+        let after = blob_at(&doc, &write.after, write.path.as_str(), &mut blobs);
+        writes.push(ApiWrite {
+            seq: write.seq,
+            path: write.path.clone(),
+            before,
+            after,
+            output_offset: write.output_offset,
+        });
     }
     doc.checkout_to_latest();
 
@@ -101,104 +102,87 @@ pub fn reconstruct(captured: &Captured) -> ApiData {
         cwd: captured.meta.cwd.clone(),
         exit_code: captured.meta.exit_code,
         output_len: captured.data.output.len(),
-        events,
+        writes,
         blobs,
     }
 }
 
-fn api_event(event: &Event, files: BTreeMap<Str, Str>) -> ApiEvent {
-    ApiEvent {
-        seq: event.seq,
-        kind: event.kind,
-        path: event.path.clone(),
-        output_offset: event.output_offset,
-        files,
-    }
+/// Checkout `frontier`, read `path`'s content there, intern it into `blobs`,
+/// and return its blob id. An absent file interns the empty blob.
+fn blob_at(
+    doc: &LoroDoc,
+    frontier: &[crate::capture::OpId],
+    path: &str,
+    blobs: &mut BTreeMap<Str, Blob>,
+) -> Str {
+    let _ = doc.checkout(&rebuild_frontier(frontier));
+    let (id, blob) = read_content(doc, path);
+    blobs.entry(id.clone()).or_insert(blob);
+    id
 }
 
-fn collect_text_files(
-    doc: &LoroDoc,
-    blobs: &mut BTreeMap<Str, Blob>,
-    files: &mut BTreeMap<Str, Str>,
-) {
-    let LoroValue::Map(map) = doc.get_map("text_files").get_deep_value() else {
-        return;
-    };
-    for (path, value) in map.iter() {
-        if let LoroValue::String(content) = value {
-            let id = blob_id(content.as_bytes());
-            blobs.entry(id.clone()).or_insert_with(|| Blob {
-                enc: BlobEncoding::Utf8,
-                data: Str::from(content.as_str()),
-            });
-            files.insert(Str::from(path.as_str()), id);
-        }
+/// Read `path`'s content at the doc's current version as a `(blob id, blob)`.
+fn read_content(doc: &LoroDoc, path: &str) -> (Str, Blob) {
+    if let LoroValue::Map(map) = doc.get_map("text_files").get_deep_value()
+        && let Some(LoroValue::String(text)) = map.get(path)
+    {
+        let data = text.to_string();
+        return (
+            blob_id(data.as_bytes()),
+            Blob { enc: BlobEncoding::Utf8, data: Str::from(data.as_str()) },
+        );
     }
-}
-
-fn collect_binary_files(
-    doc: &LoroDoc,
-    blobs: &mut BTreeMap<Str, Blob>,
-    files: &mut BTreeMap<Str, Str>,
-) {
-    let LoroValue::Map(map) = doc.get_map("bin_files").get_deep_value() else {
-        return;
-    };
-    for (path, value) in map.iter() {
-        if let LoroValue::Binary(bytes) = value {
-            let id = blob_id(bytes.as_slice());
-            blobs.entry(id.clone()).or_insert_with(|| Blob {
+    if let LoroValue::Map(map) = doc.get_map("bin_files").get_deep_value()
+        && let Some(LoroValue::Binary(bytes)) = map.get(path)
+    {
+        return (
+            blob_id(bytes.as_slice()),
+            Blob {
                 enc: BlobEncoding::Base64,
                 data: Str::from(BASE64.encode(bytes.as_slice()).as_str()),
-            });
-            files.insert(Str::from(path.as_str()), id);
-        }
+            },
+        );
     }
+    // Absent at this version (e.g. before a file was first created).
+    (blob_id(b""), Blob { enc: BlobEncoding::Utf8, data: Str::default() })
 }
 
 #[cfg(test)]
 mod tests {
     use super::reconstruct;
     use crate::{
-        capture::{EventKind, Snapshotter},
+        capture::Snapshotter,
         run::{Captured, Meta},
     };
 
     #[test]
-    fn reconstructs_deduped_timeline() {
+    fn reconstructs_writes_with_before_after() {
         let snap = Snapshotter::new();
-        snap.append_output(b"step1 ");
-        snap.record_write("/w/a.txt", b"v1", EventKind::WriteOpen);
-        snap.append_output(b"step2 ");
-        snap.record_write("/w/a.txt", b"v2", EventKind::WriteClose);
-        // A second file with the SAME content as a.txt v2 must share a blob.
-        snap.record_write("/w/b.txt", b"v2", EventKind::WriteClose);
+        snap.append_output(b"out");
+        // First write to a.txt: created empty, closed with "hello".
+        snap.record_open(1, 3, "/w/a.txt", b"");
+        snap.record_close(1, 3, "/w/a.txt", b"hello");
+        // Second write to a.txt: opened with "hello", closed with "hello world".
+        snap.record_open(1, 3, "/w/a.txt", b"hello");
+        snap.record_close(1, 3, "/w/a.txt", b"hello world");
 
         let captured = Captured {
-            meta: Meta {
-                argv: vec!["prog".into(), "arg".into()],
-                cwd: "/w".into(),
-                exit_code: Some(0),
-            },
+            meta: Meta { argv: vec!["p".into()], cwd: "/w".into(), exit_code: Some(0) },
             data: snap.finish(),
         };
-
         let api = reconstruct(&captured);
-        assert_eq!(api.events.len(), 3);
-        assert_eq!(api.output_len, 12);
 
-        // First event: only a.txt = v1.
-        let e0 = &api.events[0];
-        assert_eq!(e0.output_offset, 6);
-        assert_eq!(e0.files.len(), 1);
-        let a_v1 = &e0.files["/w/a.txt"];
-        assert_eq!(api.blobs[a_v1].data.as_str(), "v1");
+        assert_eq!(api.writes.len(), 2, "one write per close");
+        let blob = |id: &str| api.blobs[id].data.as_str().to_owned();
 
-        // Last event: a.txt = v2 and b.txt = v2 share one blob id.
-        let last = api.events.last().unwrap();
-        assert_eq!(last.files["/w/a.txt"], last.files["/w/b.txt"]);
-        assert_eq!(api.blobs[&last.files["/w/a.txt"]].data.as_str(), "v2");
-        // v1 and v2 are distinct blobs.
-        assert_ne!(a_v1, &last.files["/w/a.txt"]);
+        // Write 0: "" -> "hello".
+        assert_eq!(blob(api.writes[0].before.as_str()), "");
+        assert_eq!(blob(api.writes[0].after.as_str()), "hello");
+        // Write 1: "hello" -> "hello world".
+        assert_eq!(blob(api.writes[1].before.as_str()), "hello");
+        assert_eq!(blob(api.writes[1].after.as_str()), "hello world");
+
+        // "hello" is shared between write 0's after and write 1's before.
+        assert_eq!(api.writes[0].after.as_str(), api.writes[1].before.as_str());
     }
 }

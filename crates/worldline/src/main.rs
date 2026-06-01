@@ -73,8 +73,8 @@ fn dump(captured: &Captured, cwd: &AbsolutePathBuf, dir: &OsString) -> anyhow::R
 #[expect(clippy::print_stdout, reason = "worldline is a user-facing CLI")]
 fn summary(captured: &Captured) {
     println!(
-        "worldline: captured {} file-write event(s), {} byte(s) of output (exit {})",
-        captured.data.events.len(),
+        "worldline: captured {} write(s), {} byte(s) of output (exit {})",
+        captured.data.writes.len(),
         captured.data.output.len(),
         captured.meta.exit_code.map_or_else(|| "signal".to_owned(), |c| c.to_string()),
     );
