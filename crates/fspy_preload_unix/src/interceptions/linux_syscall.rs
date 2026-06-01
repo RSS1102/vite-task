@@ -2,7 +2,7 @@ use fspy_shared::ipc::AccessMode;
 use libc::{c_char, c_int, c_long};
 
 use crate::{
-    client::{convert::PathAt, handle_open},
+    client::{convert::PathAt, handle_close, handle_open},
     macros::intercept,
 };
 
@@ -22,7 +22,19 @@ unsafe extern "C" fn syscall(syscall_no: c_long, mut args: ...) -> c_long {
     // SAFETY: extracting variadic arguments matching the syscall ABI
     let a5 = unsafe { args.next_arg::<c_long>() };
 
-    if syscall_no == libc::SYS_statx {
+    if syscall_no == libc::SYS_close {
+        // libuv (and therefore Node) closes descriptors via `syscall(SYS_close,
+        // fd)` rather than the `close` libc symbol (see `uv__close_nocancel`),
+        // so the `close` interposition never sees them. Observe the close here
+        // instead, before the syscall runs while `fd` is still valid. (On macOS
+        // the equivalent path is the `close$NOCANCEL` symbol.)
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "a file descriptor always fits in c_int per the syscall ABI"
+        )]
+        let fd = a0 as c_int;
+        handle_close(fd);
+    } else if syscall_no == libc::SYS_statx {
         // c-style conversion is expected: (4294967196 -> -100 aka libc::AT_FDCWD)
         #[expect(
             clippy::cast_possible_truncation,
