@@ -5398,10 +5398,11 @@ name = "worldline"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "clap",
+ "ctor",
  "ctrlc",
  "fspy",
- "fspy_shared",
  "libc",
  "loro",
  "nix 0.31.2",
@@ -5416,6 +5417,7 @@ dependencies = [
  "vite_path",
  "vite_str",
  "wax",
+ "xxhash-rust",
 ]
 
 [[package]]

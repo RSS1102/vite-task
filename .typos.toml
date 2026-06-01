@@ -9,4 +9,7 @@ extend-exclude = [
   # Intentional typos for testing fuzzy matching and "did you mean" suggestions
   "crates/vite_select/src/fuzzy.rs",
   "crates/vite_task_bin/tests/e2e_snapshots/fixtures/task_select",
+  # Built UI bundle + lockfile contain minified/hashed identifiers.
+  "crates/worldline/ui/dist",
+  "crates/worldline/ui/pnpm-lock.yaml",
 ]

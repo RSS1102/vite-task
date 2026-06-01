@@ -27,6 +27,10 @@ pub enum EventKind {
     /// Content read from the descriptor right before it is closed (the file's
     /// state just after the program finished writing it).
     WriteClose,
+    /// Content re-read from disk after the program (and its descendants) exited.
+    /// Captures the final state of writes that were flushed only when a child
+    /// process exited (e.g. shell redirections), where no `close` is observable.
+    Final,
 }
 
 /// A Loro operation id, serialized as a `{peer, counter}` pair so it can be
@@ -181,6 +185,24 @@ impl Snapshotter {
         state.next_seq += 1;
         let output_offset = state.output.len();
         state.events.push(Event { seq, kind, path: key, output_offset, frontier });
+    }
+
+    /// Re-read every file seen during the run and record its final content.
+    ///
+    /// Call once after the traced program and all its descendants have exited.
+    /// This captures writes whose `close` was never observable (e.g. a shell
+    /// redirection whose fd is closed implicitly when a child process exits).
+    /// Unchanged files are skipped by [`Self::record_write`]'s dedup.
+    pub fn finalize(&self) {
+        let paths: Vec<Str> = {
+            let guard = self.lock();
+            guard.last_seen.keys().cloned().collect()
+        };
+        for path in paths {
+            if let Ok(content) = std::fs::read(path.as_str()) {
+                self.record_write(path.as_str(), &content, EventKind::Final);
+            }
+        }
     }
 
     /// Export the captured timeline: a full Loro snapshot plus the event list

@@ -1,0 +1,7 @@
+# Marks this directory as its own pnpm workspace root so installs here stay
+# isolated from the Rust monorepo's root pnpm workspace.
+packages: []
+# esbuild ships its native binary as a platform package; allow its install
+# script so `pnpm install` doesn't error on the gated build.
+allowBuilds:
+  esbuild: true

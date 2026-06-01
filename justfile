@@ -29,6 +29,11 @@ fmt:
   cargo fmt --all
   pnpm oxfmt
 
+# Rebuild the embedded worldline web UI and refresh its committed source hash.
+build-ui:
+  cd crates/worldline/ui && pnpm install && pnpm run build
+  WORLDLINE_UPDATE_UI_HASH=1 cargo test -p worldline --test dist_up_to_date
+
 check:
   cargo check --workspace --all-features --all-targets --locked
 
