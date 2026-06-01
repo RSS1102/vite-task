@@ -91,3 +91,41 @@ async fn captures_writes_with_before_and_after() {
         "non-UTF-8 img.bin should be served as a base64 blob"
     );
 }
+
+/// Regression for the user-facing `worldline node` scenario: Node's libuv closes
+/// descriptors via `close$NOCANCEL` on macOS — a distinct libc symbol from
+/// `close`. If fspy doesn't interpose it, the write-close is never observed, so
+/// `fs.writeFileSync` writes the file but worldline captures zero writes ("No
+/// file writes were captured"). Requires a real `node` on PATH; gated `#[ignore]`
+/// per the repo's Node-test convention and run in CI's `--ignored` step.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires node"]
+async fn captures_node_write_file_sync() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = AbsolutePathBuf::new(dir.path().to_path_buf()).unwrap();
+    let ignore = IgnoreSet::new(cwd.clone(), true, &[]).unwrap();
+
+    let captured = run(RunOptions {
+        program: "node".into(),
+        args: vec!["-e".into(), "require('fs').writeFileSync('node-out.txt', 'HELLO-NODE')".into()],
+        cwd,
+        ignore,
+    })
+    .await
+    .expect("run worldline under node");
+
+    assert_eq!(captured.meta.exit_code, Some(0), "node should exit cleanly");
+
+    let api = reconstruct(&captured);
+    let w = api
+        .writes
+        .iter()
+        .find(|w| w.path.ends_with("node-out.txt"))
+        .expect("a captured write to node-out.txt (close$NOCANCEL must be intercepted)");
+    assert_eq!(text(&api, w.before.as_str()).as_deref(), Some(""), "before = empty (new file)");
+    assert_eq!(
+        text(&api, w.after.as_str()).as_deref(),
+        Some("HELLO-NODE"),
+        "after = the content node wrote"
+    );
+}

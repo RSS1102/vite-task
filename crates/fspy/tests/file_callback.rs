@@ -245,6 +245,53 @@ async fn close_callback_fires_before_close() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Regression: Node's libuv closes descriptors via `close$NOCANCEL` on macOS, a
+/// distinct libc symbol from `close`. The preload must interpose it too, or the
+/// write-close is never observed. Asserts both `Opened` and `Closing` fire for a
+/// real `fs.writeFileSync`. (On Linux/Windows Node closes via plain `close`, so
+/// the test still validates the open/close pair there.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires node"]
+async fn close_callback_fires_for_node_write() -> anyhow::Result<()> {
+    use std::env::vars_os;
+
+    let dir = tempfile::tempdir()?;
+    let dir_path = std::fs::canonicalize(dir.path())?;
+    let out = dir_path.join("node-out.txt");
+
+    let kinds: Arc<Mutex<Vec<FileEventKind>>> = Arc::new(Mutex::new(Vec::new()));
+    let callback = {
+        let (dir_path, kinds) = (dir_path.clone(), Arc::clone(&kinds));
+        move |event: FileEvent<'_>| {
+            let Some(path) = event.path.get() else {
+                return;
+            };
+            if path.starts_with(&dir_path) {
+                kinds.lock().unwrap().push(event.kind);
+            }
+        }
+    };
+
+    let mut command = fspy::Command::new("node");
+    command
+        .arg("-e")
+        .arg("require('fs').writeFileSync(process.argv[1], 'x')")
+        .arg(out.as_os_str())
+        .envs(vars_os()); // https://github.com/jdx/mise/discussions/5968
+    command.on_file_event(AccessMode::WRITE, callback);
+    let child = command.spawn(CancellationToken::new()).await?;
+    let termination = child.wait_handle.await?;
+    assert!(termination.status.success());
+
+    let kinds = kinds.lock().unwrap().clone();
+    assert!(kinds.contains(&FileEventKind::Opened), "expected an Opened event, got {kinds:?}");
+    assert!(
+        kinds.contains(&FileEventKind::Closing),
+        "expected a Closing event for node's write (close$NOCANCEL must be intercepted), got {kinds:?}"
+    );
+    Ok(())
+}
+
 /// The access-mode mask filters which events reach the callback.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mask_filters_events() -> anyhow::Result<()> {
