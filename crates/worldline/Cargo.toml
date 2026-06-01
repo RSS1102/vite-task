@@ -16,7 +16,6 @@ anyhow = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 ctrlc = { workspace = true }
 fspy = { workspace = true }
-fspy_shared = { workspace = true }
 loro = { workspace = true }
 rustc-hash = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
@@ -35,6 +34,7 @@ tokio-util = { workspace = true }
 vite_path = { workspace = true }
 vite_str = { workspace = true }
 wax = { workspace = true }
+xxhash-rust = { workspace = true, features = ["xxh3"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
