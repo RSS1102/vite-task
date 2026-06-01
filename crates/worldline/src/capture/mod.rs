@@ -32,13 +32,19 @@ pub fn install_callback(cmd: &mut fspy::Command, snap: Snapshotter, ignore: Arc<
             // Closing events may have an unresolvable path (deleted/anonymous).
             return;
         };
-        let Some(abs) = AbsolutePath::new(path) else {
+        // Canonicalize so a file maps to a single key regardless of how fspy
+        // reported it: on macOS an open event carries the path as passed to
+        // `open` (e.g. `/tmp/x`) while a close event resolves it via `F_GETPATH`
+        // (e.g. `/private/tmp/x`). Falling back to the raw path keeps deleted
+        // files (whose canonicalization fails) addressable.
+        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let Some(abs) = AbsolutePath::new(&canonical) else {
             return;
         };
         if ignore.is_ignored(abs) {
             return;
         }
-        let Some(path_str) = path.to_str() else {
+        let Some(path_str) = canonical.to_str() else {
             // Loro keys must be UTF-8; skip the rare non-UTF-8 path.
             return;
         };
@@ -48,7 +54,7 @@ pub fn install_callback(cmd: &mut fspy::Command, snap: Snapshotter, ignore: Arc<
             FileEventKind::Closing => EventKind::WriteClose,
         };
 
-        let Ok(content) = std::fs::read(path) else {
+        let Ok(content) = std::fs::read(&canonical) else {
             return;
         };
         snap.record_write(path_str, &content, kind);

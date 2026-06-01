@@ -39,6 +39,10 @@ impl IgnoreSet {
     ///
     /// Returns an error if any user glob pattern fails to parse.
     pub fn new(cwd: AbsolutePathBuf, use_defaults: bool, patterns: &[Str]) -> anyhow::Result<Self> {
+        // Canonicalize the root so it matches the canonicalized paths the
+        // snapshotter records (see `capture::install_callback`). Keep the
+        // original if canonicalization fails (e.g. the directory was removed).
+        let cwd = std::fs::canonicalize(&cwd).ok().and_then(AbsolutePathBuf::new).unwrap_or(cwd);
         let globs = patterns
             .iter()
             .map(|pattern| Ok(wax::Glob::new(pattern.as_str())?.into_owned()))

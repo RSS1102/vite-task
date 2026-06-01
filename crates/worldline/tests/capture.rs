@@ -43,7 +43,8 @@ async fn captures_file_writes_and_round_trips() {
         out.flush().unwrap();
     });
 
-    let cwd = AbsolutePathBuf::new(cmd.cwd.clone()).unwrap();
+    // Root the run (and ignore set) at the tempdir the child writes into.
+    let cwd = AbsolutePathBuf::new(dir.path().to_path_buf()).unwrap();
     let ignore = IgnoreSet::new(cwd.clone(), true, &[]).unwrap();
     let captured = run(RunOptions { program: cmd.program, args: cmd.args, cwd, ignore })
         .await
