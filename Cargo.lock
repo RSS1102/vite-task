@@ -4752,6 +4752,7 @@ dependencies = [
  "vite_task",
  "vite_workspace",
  "which",
+ "worldline",
 ]
 
 [[package]]

@@ -52,8 +52,15 @@ vite_workspace = { workspace = true }
 # test harness via `CARGO_CDYLIB_FILE_PRELOAD_TEST_LIB` at test-runtime.
 preload_test_lib = { path = "../preload_test_lib", artifact = "cdylib" }
 
+[dev-dependencies.worldline]
+# Bin artifact dep: the e2e harness drives the `worldline` binary through a PTY
+# (resolved via `CARGO_BIN_FILE_WORLDLINE` at test-runtime) to validate its
+# interactive PTY redirection.
+path = "../worldline"
+artifact = "bin"
+
 [package.metadata.cargo-shear]
-ignored = ["preload_test_lib"]
+ignored = ["preload_test_lib", "worldline"]
 
 [lints]
 workspace = true

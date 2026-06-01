@@ -1,0 +1,15 @@
+# Drives the `worldline` binary through the harness PTY to validate that it
+# redirects a child program's terminal I/O. `--dump` captures the timeline to a
+# directory and exits without serving, so the only screen output is whatever the
+# child wrote — forwarded through worldline's own transport.
+
+[[e2e]]
+name = "redirects_child_output"
+comment = "worldline forwards the child's stdout to its own (PTY on glibc/macOS Unix, pipes on Windows/musl)"
+steps = [["worldline", "--dump", "dump", "--", "vtt", "print", "WORLDLINE-REDIRECT-OK"]]
+
+[[e2e]]
+name = "child_runs_on_a_pty"
+comment = "on an interactive terminal worldline runs the child on a real PTY, so the child sees a TTY on stdin/stdout/stderr"
+platform = "unix-non-musl"
+steps = [["worldline", "--dump", "dump", "--", "vtt", "check-tty"]]

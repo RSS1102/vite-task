@@ -366,15 +366,21 @@ fn run_case(
 
             let argv = step.argv();
 
-            // Only vt and vtt are allowed as step programs.
+            // vt and vtt are this crate's own binaries (CARGO_BIN_EXE_*);
+            // worldline comes from its bin artifact dependency, exposed as
+            // CARGO_BIN_FILE_WORLDLINE at test-runtime.
             let program = argv[0].as_str();
-            assert!(
-                program == "vt" || program == "vtt",
-                "step program must be 'vt' or 'vtt', got '{program}'"
-            );
-            let exe_env = vite_str::format!("CARGO_BIN_EXE_{program}");
-            let resolved =
-                env::var_os(exe_env.as_str()).unwrap_or_else(|| panic!("{exe_env} not set"));
+            let resolved = match program {
+                "vt" | "vtt" => {
+                    let exe_env = vite_str::format!("CARGO_BIN_EXE_{program}");
+                    env::var_os(exe_env.as_str()).unwrap_or_else(|| panic!("{exe_env} not set"))
+                }
+                "worldline" => env::var_os("CARGO_BIN_FILE_WORLDLINE")
+                    .unwrap_or_else(|| panic!("CARGO_BIN_FILE_WORLDLINE not set")),
+                other => {
+                    panic!("step program must be 'vt', 'vtt', or 'worldline', got '{other}'")
+                }
+            };
             let mut cmd = CommandBuilder::new(resolved);
             for arg in &argv[1..] {
                 cmd.arg(arg.as_str());
@@ -627,6 +633,9 @@ fn main() {
                             // spawned children, which breaks fixtures that
                             // depend on interposer ordering.
                             "linux-gnu" => cfg!(target_os = "linux") && !cfg!(target_env = "musl"),
+                            // glibc/macOS Unix: where worldline drives the child
+                            // on a real PTY (it falls back to pipes on musl).
+                            "unix-non-musl" => cfg!(unix) && !cfg!(target_env = "musl"),
                             other => panic!("Unknown platform '{}' in test '{}'", other, e2e.name),
                         };
                         if !should_run {

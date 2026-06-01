@@ -14,6 +14,7 @@ use worldline::{
     capture::rebuild_frontier,
     ignore::IgnoreSet,
     run::{RunOptions, run},
+    serve::{ApiData, ApiEvent, BlobEncoding, reconstruct},
 };
 
 fn text_at(doc: &LoroDoc, suffix: &str) -> Option<String> {
@@ -63,7 +64,7 @@ async fn captures_file_writes_and_round_trips() {
         "expected captured output to contain the child's stdout"
     );
 
-    // Reconstruct the final filesystem state from the Loro snapshot.
+    // Reconstruct the final filesystem state directly from the Loro snapshot.
     let doc = LoroDoc::new();
     doc.import(&captured.data.snapshot).expect("import snapshot");
     let last = captured.data.events.last().expect("at least one event");
@@ -74,4 +75,53 @@ async fn captures_file_writes_and_round_trips() {
         "final a.txt content should be the last write"
     );
     doc.checkout_to_latest();
+
+    // Validate the worldline result the web UI actually receives: the deduped,
+    // content-addressed timeline reconstructed server-side.
+    let api = reconstruct(&captured);
+    assert_eq!(api.exit_code, Some(0));
+    assert!(!api.events.is_empty(), "expected a non-empty timeline");
+
+    // The final event reflects the last write of each file.
+    let final_event = api.events.last().unwrap();
+    assert_eq!(
+        text_content(&api, final_event, "a.txt").as_deref(),
+        Some("hello world"),
+        "served final state of a.txt should be the last write"
+    );
+    let img_id = final_event
+        .files
+        .iter()
+        .find(|(path, _)| path.ends_with("img.bin"))
+        .map(|(_, id)| id)
+        .expect("img.bin present in the final state");
+    assert!(
+        matches!(api.blobs[img_id].enc, BlobEncoding::Base64),
+        "non-UTF-8 img.bin should be served as a base64 blob"
+    );
+
+    // The timeline preserves the intermediate state (a.txt was "hello" before
+    // becoming "hello world").
+    assert!(
+        api.events.iter().any(|e| text_content(&api, e, "a.txt").as_deref() == Some("hello")),
+        "timeline should contain the intermediate a.txt == 'hello'"
+    );
+
+    // Distinct text contents are deduplicated into the blob table.
+    let utf8_blobs: Vec<&str> = api
+        .blobs
+        .values()
+        .filter(|b| matches!(b.enc, BlobEncoding::Utf8))
+        .map(|b| b.data.as_str())
+        .collect();
+    assert!(utf8_blobs.contains(&"hello"), "blobs missing 'hello': {utf8_blobs:?}");
+    assert!(utf8_blobs.contains(&"hello world"), "blobs missing 'hello world': {utf8_blobs:?}");
+}
+
+/// Resolve the UTF-8 content of the file matching `suffix` at `event`, via the
+/// served blob table.
+fn text_content(api: &ApiData, event: &ApiEvent, suffix: &str) -> Option<String> {
+    let id = event.files.iter().find(|(path, _)| path.ends_with(suffix)).map(|(_, id)| id)?;
+    let blob = api.blobs.get(id)?;
+    matches!(blob.enc, BlobEncoding::Utf8).then(|| blob.data.as_str().to_owned())
 }
