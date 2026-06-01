@@ -52,11 +52,10 @@ pub fn install_callback(cmd: &mut fspy::Command, snap: Snapshotter, ignore: Arc<
         let Ok(content) = std::fs::read(&canonical) else {
             return;
         };
+        let (pid, fd) = (event.pid, event.raw_fd);
         match event.kind {
-            FileEventKind::Opened => snap.record_open(event.pid, event.raw_fd, path_str, &content),
-            FileEventKind::Closing => {
-                snap.record_close(event.pid, event.raw_fd, path_str, &content)
-            }
+            FileEventKind::Opened => snap.record_open(pid, fd, path_str, &content),
+            FileEventKind::Closing => snap.record_close(pid, fd, path_str, &content),
         }
     });
 }
