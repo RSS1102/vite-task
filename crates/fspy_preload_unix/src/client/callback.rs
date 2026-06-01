@@ -125,7 +125,7 @@ impl CallbackChannel {
             path.map(|path| <&NativePath>::from(OsStr::from_bytes(path)));
         // SAFETY: `getpid` is always safe to call.
         let pid = u32::try_from(unsafe { libc::getpid() }).unwrap_or(0);
-        let request = CallbackRequest { kind, mode, pid, path: native_path };
+        let request = CallbackRequest { kind, mode, pid, fd: i64::from(fd), path: native_path };
 
         let serialized_size = CallbackRequest::serialized_size(&request)
             .map_err(|err| io::Error::other(err.to_string()))?;

@@ -125,6 +125,13 @@ pub struct FileEvent<'a> {
     pub pid: u32,
     /// Access mode of the file.
     pub mode: AccessMode,
+    /// The traced process's own descriptor number (a fd on Unix, a `HANDLE`
+    /// value on Windows). Together with [`Self::pid`] this pairs an
+    /// [`FileEventKind::Opened`] event with the [`FileEventKind::Closing`] of
+    /// the same descriptor. `-1` when the backend cannot report it (the Linux
+    /// seccomp backend, where the target's descriptor is assigned by the kernel
+    /// after the open callback runs).
+    pub raw_fd: i64,
     /// Path of the file. Always present for [`FileEventKind::Opened`].
     pub path: FileEventPath<'a>,
     /// A file descriptor / handle usable inside the supervisor process.

@@ -134,7 +134,9 @@ impl CallbackChannel {
         let native_path = path.map(NativePath::from_wide);
         // SAFETY: `GetCurrentProcessId` is always safe to call.
         let pid = unsafe { GetCurrentProcessId() };
-        let request = CallbackRequest { kind, mode, pid, path: native_path };
+        // The HANDLE value identifies the descriptor for open/close pairing.
+        let fd = handle as usize as i64;
+        let request = CallbackRequest { kind, mode, pid, fd, path: native_path };
         let body = wincode::serialize(&request).map_err(|err| err.to_string())?;
         let len = u32::try_from(body.len()).map_err(|err| err.to_string())?;
 

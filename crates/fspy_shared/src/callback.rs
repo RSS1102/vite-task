@@ -3,8 +3,9 @@
 //! These travel on a separate request/response transport (a Unix-domain socket
 //! on the preload backend, a named pipe on Windows) layered beside the one-way
 //! [`crate::ipc`] shared-memory ring. The file descriptor / handle itself is
-//! passed out-of-band (`SCM_RIGHTS` / `DuplicateHandle` / seccomp `ADDFD`), so
-//! it is not part of the serialized request.
+//! passed out-of-band (`SCM_RIGHTS` / `DuplicateHandle` / seccomp `ADDFD`); the
+//! request additionally carries the descriptor's *number* (`fd`) so a consumer
+//! can pair an open event with the close of the same descriptor.
 
 use wincode::{SchemaRead, SchemaWrite};
 
@@ -32,6 +33,10 @@ pub struct CallbackRequest<'a> {
     pub mode: AccessMode,
     /// Process id of the traced process that opened/closed the file.
     pub pid: u32,
+    /// The traced process's own descriptor number (a fd on Unix, a `HANDLE`
+    /// value on Windows). Lets a consumer pair an open with the close of the
+    /// same descriptor.
+    pub fd: i64,
     /// Absolute path of the file. Always present for [`CallbackKind::OPENED`];
     /// `None` for [`CallbackKind::CLOSING`] when it cannot be resolved from the
     /// fd/handle.

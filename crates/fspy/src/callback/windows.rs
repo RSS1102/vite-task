@@ -176,6 +176,7 @@ struct ParsedRequest {
     kind: FileEventKind,
     pid: u32,
     mode: fspy_shared::ipc::AccessMode,
+    raw_fd: i64,
     path: Option<PathBuf>,
 }
 
@@ -189,7 +190,7 @@ impl ParsedRequest {
             FileEventKind::Opened
         };
         let path = request.path.map(|native| PathBuf::from(native.to_cow_os_str().into_owned()));
-        Ok(Self { kind, pid: request.pid, mode: request.mode, path })
+        Ok(Self { kind, pid: request.pid, mode: request.mode, raw_fd: request.fd, path })
     }
 }
 
@@ -207,6 +208,7 @@ async fn run_callback(callback: Arc<FileCallbackFn>, request: ParsedRequest, han
             kind: request.kind,
             pid: request.pid,
             mode: request.mode,
+            raw_fd: request.raw_fd,
             path,
             fd: BorrowedFile::new(handle.as_handle()),
         };

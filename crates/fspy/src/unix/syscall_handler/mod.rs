@@ -165,6 +165,10 @@ pub(super) fn invoke_callback(
         kind,
         pid: u32::try_from(caller.pid()).unwrap_or(0),
         mode,
+        // The seccomp backend cannot report the target's own descriptor: on an
+        // open it is assigned by the kernel (via `ADDFD`) only after this
+        // callback runs, so open/close cannot be paired by fd here.
+        raw_fd: -1,
         path,
         fd: BorrowedFile::new(fd.as_fd()),
     };
