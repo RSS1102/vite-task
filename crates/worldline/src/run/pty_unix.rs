@@ -216,3 +216,62 @@ fn write_fd(fd: i32, buf: &[u8]) -> io::Result<usize> {
     let n = unsafe { libc::write(fd, buf.as_ptr().cast(), buf.len()) };
     if n < 0 { Err(io::Error::last_os_error()) } else { Ok(usize::try_from(n).unwrap_or(0)) }
 }
+
+// fspy's blocking callbacks are compiled out on musl, so the PTY capture path
+// can only be exercised off-musl.
+#[cfg(all(test, not(target_env = "musl")))]
+#[expect(clippy::disallowed_types, reason = "test glue uses std String/Path types")]
+mod tests {
+    use std::sync::Arc;
+
+    use subprocess_test::command_for_fn;
+    use tokio_util::sync::CancellationToken;
+    use vite_path::AbsolutePathBuf;
+
+    use super::run_pty;
+    use crate::{
+        capture::{Snapshotter, install_callback},
+        ignore::IgnoreSet,
+    };
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn pty_captures_output_and_file_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_arg = dir.path().to_str().unwrap().to_owned();
+
+        let cmd = command_for_fn!(dir_arg, |dir: String| {
+            use std::io::Write as _;
+            let dir = std::path::Path::new(&dir);
+            std::fs::write(dir.join("pty.txt"), b"pty-content").unwrap();
+            let mut out = std::io::stdout();
+            out.write_all(b"PTY-HELLO\n").unwrap();
+            out.flush().unwrap();
+        });
+
+        let cwd = AbsolutePathBuf::new(dir.path().to_path_buf()).unwrap();
+        let ignore = Arc::new(IgnoreSet::new(cwd, true, &[]).unwrap());
+        let snap = Snapshotter::new();
+        let mut fspy_cmd = fspy::Command::new(cmd.program);
+        fspy_cmd.args(cmd.args);
+        fspy_cmd.envs(cmd.envs);
+        fspy_cmd.current_dir(cmd.cwd);
+        install_callback(&mut fspy_cmd, snap.clone(), ignore);
+
+        let status = run_pty(fspy_cmd, snap.clone(), CancellationToken::new()).await.unwrap();
+        assert!(status.success(), "child should exit cleanly");
+
+        snap.finalize();
+        let data = snap.finish();
+
+        assert!(
+            data.output.windows(9).any(|w| w == b"PTY-HELLO"),
+            "raw PTY output not captured: {:?}",
+            std::str::from_utf8(&data.output).unwrap_or("<non-utf8>"),
+        );
+        assert!(
+            data.events.iter().any(|e| e.path.ends_with("pty.txt")),
+            "pty.txt write not captured: {:?}",
+            data.events.iter().map(|e| e.path.as_str()).collect::<Vec<_>>(),
+        );
+    }
+}

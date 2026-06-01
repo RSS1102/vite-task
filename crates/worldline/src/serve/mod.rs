@@ -146,3 +146,79 @@ fn open_browser(url: &str) {
 
     let _ = std::process::Command::new(program).args(args).arg(url).spawn();
 }
+
+#[cfg(test)]
+mod tests {
+    use std::net::Ipv4Addr;
+
+    use tokio::{
+        io::{AsyncReadExt as _, AsyncWriteExt as _},
+        net::{TcpListener, TcpStream},
+    };
+
+    use super::{Payload, handle, reconstruct};
+    use crate::{
+        capture::{EventKind, Snapshotter},
+        run::{Captured, Meta},
+    };
+
+    /// Send `GET path` and return `(status_line, body)`.
+    async fn get(addr: std::net::SocketAddr, path: &str) -> (vite_str::Str, Vec<u8>) {
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        let request = vite_str::format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        let split = response.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+        let head = std::str::from_utf8(&response[..split]).unwrap_or("");
+        let status = vite_str::Str::from(head.lines().next().unwrap_or(""));
+        (status, response[split + 4..].to_vec())
+    }
+
+    fn body_text(body: &[u8]) -> &str {
+        std::str::from_utf8(body).unwrap_or("")
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn serves_endpoints_and_assets() {
+        let snap = Snapshotter::new();
+        snap.append_output(b"hello-output");
+        snap.record_write("/w/a.txt", b"content", EventKind::WriteClose);
+        let captured = Captured {
+            meta: Meta { argv: vec!["prog".into()], cwd: "/w".into(), exit_code: Some(0) },
+            data: snap.finish(),
+        };
+        let payload = std::sync::Arc::new(Payload {
+            json: serde_json::to_vec(&reconstruct(&captured)).unwrap(),
+            output: captured.data.output.clone(),
+        });
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for _ in 0..4 {
+                if let Ok((stream, _)) = listener.accept().await {
+                    let _ = handle(stream, &payload).await;
+                }
+            }
+        });
+
+        let (status, body) = get(addr, "/api/data").await;
+        assert!(status.contains("200"), "status was {status}");
+        let text = body_text(&body);
+        assert!(text.contains("a.txt"), "data missing a.txt: {text}");
+        assert!(text.contains("\"content\""), "data missing blob content: {text}");
+
+        let (_, out) = get(addr, "/api/output").await;
+        assert_eq!(out, b"hello-output");
+
+        let (idx_status, idx_body) = get(addr, "/").await;
+        assert!(idx_status.contains("200"));
+        assert!(body_text(&idx_body).contains("<!doctype html"));
+
+        let (missing, _) = get(addr, "/nope.js").await;
+        assert!(missing.contains("404"), "expected 404, got {missing}");
+
+        server.await.unwrap();
+    }
+}
