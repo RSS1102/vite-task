@@ -8,6 +8,7 @@ dist
 # be embedded in the binary without a Node step in CI.
 !crates/worldline/ui/dist/
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
 *.tsbuildinfo
 .DS_Store
 /.vscode/settings.json

@@ -6,7 +6,7 @@ mod store;
 use std::sync::Arc;
 
 use fspy::{AccessMode, FileEvent, FileEventKind};
-pub use store::{CapturedData, OpId, Snapshotter, Write, rebuild_frontier};
+pub use store::{CapturedData, FileId, OpId, Snapshotter, Write, rebuild_frontier};
 use vite_path::AbsolutePath;
 
 use crate::ignore::IgnoreSet;
@@ -23,9 +23,10 @@ use crate::ignore::IgnoreSet;
 /// which is write-only for a write open and therefore unreadable. We instead
 /// read the file's content by path: the supervisor process opens it `O_RDONLY`
 /// itself. The traced process is blocked in the open/close hook while we do
-/// this, so the content is a consistent point-in-time read. (For a truncating
-/// open the pre-write content reads as empty — the file's observable state at
-/// that instant.)
+/// this, so the content is a consistent point-in-time read. A truncating open
+/// reads as empty here (it already ran); the store recovers the pre-write
+/// content from the last recorded write, using the file's identity to avoid
+/// resurrecting stale content after a replacement (see [`Snapshotter`]).
 pub fn install_callback(cmd: &mut fspy::Command, snap: Snapshotter, ignore: Arc<IgnoreSet>) {
     cmd.on_file_event(AccessMode::WRITE, move |event: FileEvent<'_>| {
         let Some(path) = event.path.get() else {
@@ -52,10 +53,23 @@ pub fn install_callback(cmd: &mut fspy::Command, snap: Snapshotter, ignore: Arc<
         let Ok(content) = std::fs::read(&canonical) else {
             return;
         };
+        // The file's on-disk identity, to tell an in-place rewrite from a
+        // replacement of the same path (rename-over / delete-and-recreate).
+        #[cfg(unix)]
+        let identity = std::fs::metadata(&canonical).ok().map(|meta| {
+            use std::os::unix::fs::MetadataExt as _;
+            FileId::new(meta.dev(), meta.ino())
+        });
+        // A stable on-disk identity isn't available off Unix without unstable
+        // APIs (`windows_by_handle`), so replacement detection is skipped there:
+        // a truncating rewrite keeps the prior content (correct for in-place
+        // rewrites; a rename-over or delete-and-recreate may show stale content).
+        #[cfg(not(unix))]
+        let identity: Option<FileId> = None;
         let (pid, fd) = (event.pid, event.raw_fd);
         match event.kind {
-            FileEventKind::Opened => snap.record_open(pid, fd, path_str, &content),
-            FileEventKind::Closing => snap.record_close(pid, fd, path_str, &content),
+            FileEventKind::Opened => snap.record_open(pid, fd, path_str, &content, identity),
+            FileEventKind::Closing => snap.record_close(pid, fd, path_str, &content, identity),
         }
     });
 }

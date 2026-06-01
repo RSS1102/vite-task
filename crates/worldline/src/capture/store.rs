@@ -66,7 +66,10 @@ enum Flavor {
 
 /// Correlation key pairing an open with its close. Uses the descriptor when the
 /// backend reports it (`raw_fd >= 0`); otherwise falls back to the path (the
-/// seccomp backend can't report the target's fd).
+/// seccomp backend can't report the target's fd). Several opens can share a key
+/// — the path fallback collapses every open of one path, and a descriptor
+/// number is reused after close — so each key maps to a *stack* of pending
+/// opens, paired LIFO and validated by path on close.
 #[derive(Clone, PartialEq, Eq, Hash)]
 enum FdKey {
     Fd(u32, i64),
@@ -77,14 +80,45 @@ fn fd_key(pid: u32, raw_fd: i64, path: &Str) -> FdKey {
     if raw_fd >= 0 { FdKey::Fd(pid, raw_fd) } else { FdKey::Path(pid, path.clone()) }
 }
 
+/// A file's identity on disk: device + inode on Unix, volume serial + file index
+/// on Windows.
+///
+/// Used to tell an in-place truncating rewrite (same file) apart from a
+/// replacement of the same path — a rename-over or delete-and-recreate (a
+/// *different* file at that path).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct FileId {
+    dev: u64,
+    ino: u64,
+}
+
+impl FileId {
+    /// Construct from a `(device, inode)`-style identity pair.
+    #[must_use]
+    pub const fn new(dev: u64, ino: u64) -> Self {
+        Self { dev, ino }
+    }
+}
+
+/// One pending open awaiting its close: the path it was opened on (to validate
+/// the pairing) and the before-frontier captured for it.
+struct OpenSlot {
+    path: Str,
+    before: Vec<OpId>,
+}
+
 struct State {
     doc: LoroDoc,
     text_files: LoroMap,
     bin_files: LoroMap,
     /// Per-path text/binary classification, to clean up the other map on a flip.
     flavor: FxHashMap<Str, Flavor>,
-    /// Open descriptors awaiting their close: key -> the open's before-frontier.
-    open: FxHashMap<FdKey, Vec<OpId>>,
+    /// Pending opens awaiting their close: key -> a LIFO stack of open slots
+    /// (several opens can share a key; see [`FdKey`]).
+    open: FxHashMap<FdKey, Vec<OpenSlot>>,
+    /// Per-path on-disk identity as of the last recorded write, to tell an
+    /// in-place rewrite from a replacement of the same path.
+    identity: FxHashMap<Str, FileId>,
     writes: Vec<Write>,
     output: Vec<u8>,
     next_seq: u64,
@@ -120,6 +154,7 @@ impl Snapshotter {
                 bin_files,
                 flavor: FxHashMap::default(),
                 open: FxHashMap::default(),
+                identity: FxHashMap::default(),
                 writes: Vec::new(),
                 output: Vec::new(),
                 next_seq: 0,
@@ -145,46 +180,73 @@ impl Snapshotter {
     /// whole-file writes use) has already emptied the file by the time we read
     /// it. To avoid losing the real pre-write content, the open read is only
     /// adopted as the `before` when it is non-empty (a non-truncating open, or a
-    /// pre-existing file); an empty read for a path we've already recorded is
-    /// treated as a truncating open and the last-recorded content is kept.
+    /// pre-existing file). An empty read for a path we've already recorded is
+    /// treated as a truncating open and the last-recorded content is kept —
+    /// unless `id` shows the file was replaced since (rename-over or
+    /// delete-and-recreate), in which case it's treated as a fresh file so stale
+    /// content isn't resurrected.
     ///
     /// # Panics
     ///
     /// Panics if a Loro container operation fails (a corrupted invariant).
-    pub fn record_open(&self, pid: u32, raw_fd: i64, path: &str, content: &[u8]) {
+    pub fn record_open(
+        &self,
+        pid: u32,
+        raw_fd: i64,
+        path: &str,
+        content: &[u8],
+        id: Option<FileId>,
+    ) {
         let mut guard = self.lock();
         let key = Str::from(path);
         let before = if !content.is_empty() {
             // Non-truncating open or a pre-existing file: the read reflects the
             // real current content (including any external modification).
             set_content(&mut guard, path, content)
-        } else if guard.flavor.contains_key(&key) {
-            // Empty read but we already track this path: a truncating open
-            // emptied the file before we could read it. Keep what we last
-            // recorded (the previous write's `after`) as the `before`.
+        } else if guard.flavor.contains_key(&key) && !replaced(&guard, &key, id) {
+            // Empty read of a path we already track whose on-disk identity is
+            // unchanged: a truncating open emptied the file before we could read
+            // it. Keep what we last recorded (the previous write's `after`).
             serialize_frontiers(&guard.doc.state_frontiers())
         } else {
-            // Empty read, never seen before: a genuinely new or empty file.
+            // Empty read of a genuinely new file, or a path whose identity
+            // changed since we last saw it (rename-over / delete-and-recreate):
+            // treat it as fresh rather than resurrecting stale content.
             set_content(&mut guard, path, content)
         };
-        guard.open.insert(fd_key(pid, raw_fd, &key), before);
+        guard
+            .open
+            .entry(fd_key(pid, raw_fd, &key))
+            .or_default()
+            .push(OpenSlot { path: key, before });
     }
 
     /// Record the post-write snapshot taken just before `path` is closed on
     /// descriptor `raw_fd` of process `pid`, emitting a [`Write`]. Its `before`
     /// is the matching open's snapshot (or the file's prior content if the open
-    /// wasn't observed).
+    /// wasn't observed). `id` is the file's on-disk identity, remembered to
+    /// detect a later replacement of this path.
     ///
     /// # Panics
     ///
     /// Panics if a Loro container operation fails (a corrupted invariant).
-    pub fn record_close(&self, pid: u32, raw_fd: i64, path: &str, content: &[u8]) {
+    pub fn record_close(
+        &self,
+        pid: u32,
+        raw_fd: i64,
+        path: &str,
+        content: &[u8],
+        id: Option<FileId>,
+    ) {
         let path_key = Str::from(path);
         let mut guard = self.lock();
         // The file's content before this close, for the fallback `before`.
         let prior = serialize_frontiers(&guard.doc.state_frontiers());
         let after = set_content(&mut guard, path, content);
-        let before = guard.open.remove(&fd_key(pid, raw_fd, &path_key)).unwrap_or(prior);
+        if let Some(id) = id {
+            guard.identity.insert(path_key.clone(), id);
+        }
+        let before = pop_open(&mut guard, pid, raw_fd, &path_key).unwrap_or(prior);
         let seq = guard.next_seq;
         guard.next_seq += 1;
         let output_offset = guard.output.len();
@@ -205,6 +267,29 @@ impl Snapshotter {
             guard.doc.export(ExportMode::snapshot()).expect("loro snapshot export should not fail");
         CapturedData { snapshot, writes: guard.writes.clone(), output: guard.output.clone() }
     }
+}
+
+/// Whether the file at `key` has been replaced since we last recorded it — its
+/// on-disk identity differs from the stored one. Unknown identities (either side
+/// `None`) are treated as "not replaced", so the truncating-rewrite heuristic
+/// still applies when identity is unavailable.
+fn replaced(state: &State, key: &Str, current: Option<FileId>) -> bool {
+    matches!((state.identity.get(key), current), (Some(old), Some(new)) if *old != new)
+}
+
+/// Pop the most recent pending open for this `(pid, raw_fd/path)` key whose path
+/// matches the closing `path`, returning its before-frontier. A mismatched top
+/// slot — a descriptor reused for a different file (e.g. via `dup2`) — is
+/// discarded so it can't be mispaired. `None` means no matching open was
+/// observed, and the caller falls back to the file's prior content.
+fn pop_open(state: &mut State, pid: u32, raw_fd: i64, path: &Str) -> Option<Vec<OpId>> {
+    let key = fd_key(pid, raw_fd, path);
+    let stack = state.open.get_mut(&key)?;
+    let slot = stack.pop()?;
+    if stack.is_empty() {
+        state.open.remove(&key);
+    }
+    (slot.path == *path).then_some(slot.before)
 }
 
 /// Set `path`'s content in the doc, committing, and return the new frontier.

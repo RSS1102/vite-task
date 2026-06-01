@@ -149,22 +149,40 @@ fn read_content(doc: &LoroDoc, path: &str) -> (Str, Blob) {
 
 #[cfg(test)]
 mod tests {
-    use super::reconstruct;
+    use super::{ApiData, reconstruct};
     use crate::{
-        capture::Snapshotter,
+        capture::{FileId, Snapshotter},
         run::{Captured, Meta},
     };
+
+    /// Reconstruct a snapshotter's writes into the served payload.
+    fn api_of(snap: &Snapshotter) -> ApiData {
+        reconstruct(&Captured {
+            meta: Meta { argv: vec!["p".into()], cwd: "/w".into(), exit_code: Some(0) },
+            data: snap.finish(),
+        })
+    }
+
+    /// The (UTF-8) before-content of write `i`.
+    fn before(api: &ApiData, i: usize) -> &str {
+        api.blobs[api.writes[i].before.as_str()].data.as_str()
+    }
+
+    /// The (UTF-8) after-content of write `i`.
+    fn after(api: &ApiData, i: usize) -> &str {
+        api.blobs[api.writes[i].after.as_str()].data.as_str()
+    }
 
     #[test]
     fn reconstructs_writes_with_before_after() {
         let snap = Snapshotter::new();
         snap.append_output(b"out");
         // First write to a.txt: created empty, closed with "hello".
-        snap.record_open(1, 3, "/w/a.txt", b"");
-        snap.record_close(1, 3, "/w/a.txt", b"hello");
+        snap.record_open(1, 3, "/w/a.txt", b"", None);
+        snap.record_close(1, 3, "/w/a.txt", b"hello", None);
         // Second write to a.txt: opened with "hello", closed with "hello world".
-        snap.record_open(1, 3, "/w/a.txt", b"hello");
-        snap.record_close(1, 3, "/w/a.txt", b"hello world");
+        snap.record_open(1, 3, "/w/a.txt", b"hello", None);
+        snap.record_close(1, 3, "/w/a.txt", b"hello world", None);
 
         let captured = Captured {
             meta: Meta { argv: vec!["p".into()], cwd: "/w".into(), exit_code: Some(0) },
@@ -184,5 +202,86 @@ mod tests {
 
         // "hello" is shared between write 0's after and write 1's before.
         assert_eq!(api.writes[0].after.as_str(), api.writes[1].before.as_str());
+    }
+
+    /// A truncating in-place rewrite (same on-disk identity) keeps the file's
+    /// prior content as `before`; a replacement of the path (different identity
+    /// — rename-over or delete-and-recreate) is treated as a fresh file so stale
+    /// content isn't resurrected. (Empty open reads model an `O_TRUNC` open,
+    /// which `writeFileSync` uses.)
+    #[test]
+    fn identity_distinguishes_rewrite_from_replacement() {
+        let (x, y) = (FileId::new(1, 100), FileId::new(1, 200));
+
+        // In-place rewrite: same identity across both writes -> keep "v1".
+        let snap = Snapshotter::new();
+        snap.record_open(1, -1, "/w/a.txt", b"", Some(x));
+        snap.record_close(1, -1, "/w/a.txt", b"v1", Some(x));
+        snap.record_open(1, -1, "/w/a.txt", b"", Some(x));
+        snap.record_close(1, -1, "/w/a.txt", b"v2", Some(x));
+        let api = api_of(&snap);
+        assert_eq!(before(&api, 1), "v1", "in-place rewrite keeps prior content");
+        assert_eq!(after(&api, 1), "v2");
+
+        // Replacement: identity changes on the second write -> fresh, before "".
+        let snap = Snapshotter::new();
+        snap.record_open(1, -1, "/w/a.txt", b"", Some(x));
+        snap.record_close(1, -1, "/w/a.txt", b"v1", Some(x));
+        snap.record_open(1, -1, "/w/a.txt", b"", Some(y));
+        snap.record_close(1, -1, "/w/a.txt", b"v2", Some(y));
+        let api = api_of(&snap);
+        assert_eq!(before(&api, 1), "", "a replaced file shows an empty before, not stale content");
+        assert_eq!(after(&api, 1), "v2");
+    }
+
+    /// Under the seccomp backend (`raw_fd == -1`) several opens of one path
+    /// collapse to the same correlation key. Their before-frontiers must be
+    /// stacked, not overwritten, so two overlapping writes to one path each get
+    /// their own `before` rather than the second falling back to the first
+    /// close's after.
+    #[test]
+    fn seccomp_stacked_opens_keep_each_before() {
+        let snap = Snapshotter::new();
+        snap.record_open(1, -1, "/w/a.txt", b"", None);
+        snap.record_close(1, -1, "/w/a.txt", b"base", None); // write 0: "" -> "base"
+        // Two overlapping opens (both saw "base"), then two closes.
+        snap.record_open(1, -1, "/w/a.txt", b"base", None);
+        snap.record_open(1, -1, "/w/a.txt", b"base", None);
+        snap.record_close(1, -1, "/w/a.txt", b"X1", None); // write 1
+        snap.record_close(1, -1, "/w/a.txt", b"Y1", None); // write 2
+        let api = api_of(&snap);
+        assert_eq!(before(&api, 1), "base");
+        assert_eq!(
+            before(&api, 2),
+            "base",
+            "the second overlapping close must not fall back to the first close's after"
+        );
+    }
+
+    /// A descriptor reused for a different file (e.g. via `dup2`, which closes
+    /// the old target without a close callback, leaking that open) must not
+    /// mispair: the close validates the open's path and falls back to the file's
+    /// prior content on a mismatch, instead of adopting a stale `before` from the
+    /// leaked open of another file.
+    #[test]
+    fn reused_fd_does_not_mispair() {
+        let snap = Snapshotter::new();
+        // fd 5 opened for a.txt ("AAA"); its close is never observed.
+        snap.record_open(1, 5, "/w/a.txt", b"AAA", None);
+        // fd 6 opened + closed for b.txt normally.
+        snap.record_open(1, 6, "/w/b.txt", b"BBB", None);
+        snap.record_close(1, 6, "/w/b.txt", b"BBB2", None);
+        // fd 5 now aliases b.txt (after a dup2) and is closed.
+        snap.record_close(1, 5, "/w/b.txt", b"BBB3", None);
+        let api = api_of(&snap);
+        for i in 0..api.writes.len() {
+            if api.writes[i].path.as_str().ends_with("b.txt") {
+                assert_ne!(
+                    before(&api, i),
+                    "AAA",
+                    "a b.txt close on a reused fd must not adopt a.txt's leaked before"
+                );
+            }
+        }
     }
 }

@@ -183,8 +183,8 @@ mod tests {
     async fn serves_endpoints_and_assets() {
         let snap = Snapshotter::new();
         snap.append_output(b"hello-output");
-        snap.record_open(1, 3, "/w/a.txt", b"");
-        snap.record_close(1, 3, "/w/a.txt", b"content");
+        snap.record_open(1, 3, "/w/a.txt", b"", None);
+        snap.record_close(1, 3, "/w/a.txt", b"content", None);
         let captured = Captured {
             meta: Meta { argv: vec!["prog".into()], cwd: "/w".into(), exit_code: Some(0) },
             data: snap.finish(),
