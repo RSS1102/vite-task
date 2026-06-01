@@ -92,6 +92,50 @@ async fn captures_writes_with_before_and_after() {
     );
 }
 
+/// A truncating rewrite (`File::create`/`writeFileSync` — `O_TRUNC`) empties the
+/// file at open, before the open-time snapshot runs. The write's `before` must
+/// still be the file's prior content (the previously-recorded write), not the
+/// empty post-truncation read. Uses the test binary (no Node), so it runs in the
+/// default `cargo test` on every platform.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn truncating_rewrite_keeps_prior_content_as_before() {
+    let dir = tempfile::tempdir().unwrap();
+    let dir_arg = dir.path().to_str().unwrap().to_owned();
+
+    let cmd = command_for_fn!(dir_arg, |dir: String| {
+        use std::io::Write as _;
+        let a = std::path::Path::new(&dir).join("a.txt");
+        // Two truncating writes to the same file.
+        std::fs::write(&a, b"first").unwrap();
+        std::fs::write(&a, b"second").unwrap();
+        let mut out = std::io::stdout();
+        out.write_all(b"done!").unwrap();
+        out.flush().unwrap();
+    });
+
+    let cwd = AbsolutePathBuf::new(dir.path().to_path_buf()).unwrap();
+    let ignore = IgnoreSet::new(cwd.clone(), true, &[]).unwrap();
+    let captured = run(RunOptions { program: cmd.program, args: cmd.args, cwd, ignore })
+        .await
+        .expect("run worldline");
+    assert_eq!(captured.meta.exit_code, Some(0), "child should exit cleanly");
+
+    let api = reconstruct(&captured);
+    let a_writes: Vec<&ApiWrite> =
+        api.writes.iter().filter(|w| w.path.ends_with("a.txt")).collect();
+    assert!(
+        a_writes.iter().any(|w| {
+            text(&api, w.before.as_str()).as_deref() == Some("first")
+                && text(&api, w.after.as_str()).as_deref() == Some("second")
+        }),
+        "expected the truncating rewrite to show before='first' after='second', got {:?}",
+        a_writes
+            .iter()
+            .map(|w| (text(&api, w.before.as_str()), text(&api, w.after.as_str())))
+            .collect::<Vec<_>>()
+    );
+}
+
 /// Regression for the user-facing `worldline node` scenario: Node's libuv closes
 /// descriptors via `close$NOCANCEL` on macOS — a distinct libc symbol from
 /// `close`. If fspy doesn't interpose it, the write-close is never observed, so

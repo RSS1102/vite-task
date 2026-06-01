@@ -2,9 +2,12 @@
 //! ordered list of *writes* and a raw terminal-output byte log.
 //!
 //! A **write** is one open→…→close lifecycle of a descriptor opened for
-//! writing. Its *before* is the file's content snapshotted in the open
-//! callback; its *after* is the content snapshotted in the close callback of
-//! the same descriptor. Both are stored as points in the Loro history (per-path
+//! writing. Its *after* is the content snapshotted in the close callback of
+//! that descriptor; its *before* is the file's content just prior to the write
+//! — the open-callback snapshot for a fresh or non-truncating open, or, when a
+//! truncating open (`O_TRUNC`, as `writeFileSync` uses) has already emptied the
+//! file before the snapshot could run, the content last recorded for that path.
+//! Both are stored as points in the Loro history (per-path
 //! `LoroText`/binary, so repeated near-identical writes are delta-stored), and
 //! each write records the before/after [`Frontiers`](loro::Frontiers) the
 //! server later `checkout`s to render them.
@@ -34,7 +37,9 @@ pub struct Write {
     pub seq: u64,
     /// Absolute path of the written file.
     pub path: Str,
-    /// Frontier capturing the file's content at the matching open.
+    /// Frontier capturing the file's content just before this write (the open
+    /// snapshot, or the last-recorded content when a truncating open emptied it
+    /// first).
     pub before: Vec<OpId>,
     /// Frontier capturing the file's content at the close.
     pub after: Vec<OpId>,
@@ -135,14 +140,34 @@ impl Snapshotter {
     /// descriptor `raw_fd` of process `pid`. Pairs with the matching
     /// [`Self::record_close`].
     ///
+    /// The open-time `content` is read in the supervisor *after* the open
+    /// syscall, so a truncating open (`O_TRUNC` — what `writeFileSync` and most
+    /// whole-file writes use) has already emptied the file by the time we read
+    /// it. To avoid losing the real pre-write content, the open read is only
+    /// adopted as the `before` when it is non-empty (a non-truncating open, or a
+    /// pre-existing file); an empty read for a path we've already recorded is
+    /// treated as a truncating open and the last-recorded content is kept.
+    ///
     /// # Panics
     ///
     /// Panics if a Loro container operation fails (a corrupted invariant).
     pub fn record_open(&self, pid: u32, raw_fd: i64, path: &str, content: &[u8]) {
         let mut guard = self.lock();
-        let before = set_content(&mut guard, path, content);
-        let key = fd_key(pid, raw_fd, &Str::from(path));
-        guard.open.insert(key, before);
+        let key = Str::from(path);
+        let before = if !content.is_empty() {
+            // Non-truncating open or a pre-existing file: the read reflects the
+            // real current content (including any external modification).
+            set_content(&mut guard, path, content)
+        } else if guard.flavor.contains_key(&key) {
+            // Empty read but we already track this path: a truncating open
+            // emptied the file before we could read it. Keep what we last
+            // recorded (the previous write's `after`) as the `before`.
+            serialize_frontiers(&guard.doc.state_frontiers())
+        } else {
+            // Empty read, never seen before: a genuinely new or empty file.
+            set_content(&mut guard, path, content)
+        };
+        guard.open.insert(fd_key(pid, raw_fd, &key), before);
     }
 
     /// Record the post-write snapshot taken just before `path` is closed on
