@@ -1,11 +1,13 @@
 //! Run a program under fspy, snapshotting its file writes and terminal output.
 //!
-//! Transport is chosen automatically: an interactive Unix terminal gets a real
-//! PTY (see the `pty_unix` module); everything else (non-interactive stdio, and
-//! all of Windows) uses pipes (see the `pipe` module).
+//! Transport is chosen automatically: an interactive terminal on glibc/macOS
+//! Unix gets a real PTY (see the `pty_unix` module); everything else —
+//! non-interactive stdio, Windows, and musl (whose PTY internals are
+//! concurrency-unsafe, per `pty_terminal`) — uses pipes (see the `pipe`
+//! module).
 
 mod pipe;
-#[cfg(unix)]
+#[cfg(all(unix, not(target_env = "musl")))]
 mod pty_unix;
 
 use std::{ffi::OsString, io::IsTerminal as _, sync::Arc};
@@ -77,15 +79,16 @@ pub async fn run(options: RunOptions) -> anyhow::Result<Captured> {
     }
 
     let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    let use_pty = cfg!(all(unix, not(target_env = "musl"))) && interactive;
 
-    let status = if cfg!(unix) && interactive {
-        #[cfg(unix)]
+    let status = if use_pty {
+        #[cfg(all(unix, not(target_env = "musl")))]
         {
             pty_unix::run_pty(cmd, snap.clone(), cancel).await?
         }
-        #[cfg(not(unix))]
+        #[cfg(not(all(unix, not(target_env = "musl"))))]
         {
-            unreachable!("interactive PTY path is Unix-only")
+            unreachable!("interactive PTY path is glibc/macOS-Unix only")
         }
     } else {
         pipe::run_piped(cmd, snap.clone(), cancel).await?

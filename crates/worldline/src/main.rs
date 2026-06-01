@@ -1,4 +1,4 @@
-use std::{ffi::OsString, process::ExitCode};
+use std::ffi::OsString;
 
 use clap::Parser as _;
 use vite_path::{AbsolutePathBuf, current_dir};
@@ -10,21 +10,25 @@ use worldline::{
     serve::{reconstruct, serve},
 };
 
-fn main() -> ExitCode {
+fn main() -> ! {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .expect("build tokio runtime");
-    match runtime.block_on(run_main()) {
+    let code = match runtime.block_on(run_main()) {
         Ok(code) => code,
         Err(err) => {
             report(&err);
-            ExitCode::FAILURE
+            1
         }
-    }
+    };
+    // Exit immediately rather than returning: the I/O pump leaves a blocking
+    // stdin reader parked on a terminal with no input, and dropping the runtime
+    // would wait on it forever. (Mirrors `vt`'s `std::process::exit`.)
+    std::process::exit(code);
 }
 
-async fn run_main() -> anyhow::Result<ExitCode> {
+async fn run_main() -> anyhow::Result<i32> {
     let cli = Cli::parse();
 
     let mut command = cli.command.into_iter();
@@ -50,12 +54,9 @@ async fn run_main() -> anyhow::Result<ExitCode> {
     Ok(exit_code)
 }
 
-/// Map the child's exit code into an [`ExitCode`] (defaulting to failure when
-/// the child was killed by a signal).
-fn child_exit_code(captured: &Captured) -> ExitCode {
-    captured.meta.exit_code.map_or(ExitCode::FAILURE, |code| {
-        ExitCode::from(u8::try_from(code.rem_euclid(256)).unwrap_or(1))
-    })
+/// The child's exit code, defaulting to `1` when it was killed by a signal.
+fn child_exit_code(captured: &Captured) -> i32 {
+    captured.meta.exit_code.unwrap_or(1)
 }
 
 /// Write the reconstructed timeline JSON and raw output log to `dir` (resolved
