@@ -292,6 +292,45 @@ async fn close_callback_fires_for_node_write() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// A successful `rename` fires a `Renamed` event carrying both the source and
+/// the destination path. (Unix preload backend; the `rename` interception lives
+/// there — the seccomp and Windows backends don't surface renames.)
+#[cfg(all(unix, not(target_env = "musl")))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rename_event_reports_source_and_destination() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let dir_path = std::fs::canonicalize(dir.path())?;
+    std::fs::write(dir_path.join("from.txt"), b"x")?;
+
+    let renames: Arc<Mutex<Vec<(PathBuf, PathBuf)>>> = Arc::new(Mutex::new(Vec::new()));
+    let callback = {
+        let (dir_path, renames) = (dir_path.clone(), Arc::clone(&renames));
+        move |event: FileEvent<'_>| {
+            if event.kind == FileEventKind::Renamed
+                && let (Some(from), Some(to)) = (event.path.get(), event.to_path)
+                && from.starts_with(&dir_path)
+            {
+                renames.lock().unwrap().push((from.to_path_buf(), to.to_path_buf()));
+            }
+        }
+    };
+
+    let cmd = command_for_fn!(dir_path.to_str().unwrap().to_owned(), |dir: String| {
+        let dir = std::path::Path::new(&dir);
+        std::fs::rename(dir.join("from.txt"), dir.join("to.txt")).unwrap();
+    });
+    let child = spawn_with_callback(cmd, AccessMode::WRITE, callback).await?;
+    let termination = child.wait_handle.await?;
+    assert!(termination.status.success());
+
+    let renames = renames.lock().unwrap().clone();
+    assert!(
+        renames.iter().any(|(from, to)| from.ends_with("from.txt") && to.ends_with("to.txt")),
+        "expected a rename from.txt -> to.txt, got {renames:?}"
+    );
+    Ok(())
+}
+
 /// The access-mode mask filters which events reach the callback.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mask_filters_events() -> anyhow::Result<()> {

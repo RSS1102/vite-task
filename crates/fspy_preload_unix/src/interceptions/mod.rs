@@ -2,6 +2,7 @@ mod access;
 mod close;
 mod dirent;
 mod open;
+mod rename;
 mod spawn;
 mod stat;
 

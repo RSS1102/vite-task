@@ -108,19 +108,21 @@ struct ParsedRequest {
     mode: fspy_shared::ipc::AccessMode,
     raw_fd: i64,
     path: Option<PathBuf>,
+    to_path: Option<PathBuf>,
 }
 
 impl ParsedRequest {
     fn decode(body: &[u8]) -> io::Result<Self> {
         let request: CallbackRequest<'_> = wincode::deserialize_exact(body)
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))?;
-        let kind = if request.kind == CallbackKind::CLOSING {
-            FileEventKind::Closing
-        } else {
-            FileEventKind::Opened
+        let kind = match request.kind {
+            CallbackKind::CLOSING => FileEventKind::Closing,
+            CallbackKind::RENAMED => FileEventKind::Renamed,
+            _ => FileEventKind::Opened,
         };
         let path = request.path.map(|native| PathBuf::from(native.as_os_str()));
-        Ok(Self { kind, pid: request.pid, mode: request.mode, raw_fd: request.fd, path })
+        let to_path = request.to_path.map(|native| PathBuf::from(native.as_os_str()));
+        Ok(Self { kind, pid: request.pid, mode: request.mode, raw_fd: request.fd, path, to_path })
     }
 }
 
@@ -129,7 +131,7 @@ impl ParsedRequest {
 async fn run_callback(callback: Arc<FileCallbackFn>, request: ParsedRequest, owned_fd: OwnedFd) {
     let result = tokio::task::spawn_blocking(move || {
         let path = match request.kind {
-            FileEventKind::Opened => {
+            FileEventKind::Opened | FileEventKind::Renamed => {
                 FileEventPath::Open(request.path.as_deref().unwrap_or_else(|| Path::new("")))
             }
             FileEventKind::Closing => FileEventPath::Close(request.path.as_deref()),
@@ -140,6 +142,7 @@ async fn run_callback(callback: Arc<FileCallbackFn>, request: ParsedRequest, own
             mode: request.mode,
             raw_fd: request.raw_fd,
             path,
+            to_path: request.to_path.as_deref(),
             fd: BorrowedFile::new(owned_fd.as_fd()),
         };
         (*callback)(event);

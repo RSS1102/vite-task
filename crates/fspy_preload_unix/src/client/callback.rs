@@ -9,7 +9,10 @@ use std::{
     cell::Cell,
     ffi::OsStr,
     io::{self, Read as _, Write as _},
-    os::unix::{ffi::OsStrExt as _, net::UnixStream},
+    os::{
+        fd::AsRawFd as _,
+        unix::{ffi::OsStrExt as _, net::UnixStream},
+    },
     path::PathBuf,
 };
 
@@ -109,23 +112,59 @@ impl CallbackChannel {
         let Some(_guard) = ReentryGuard::enter() else {
             return;
         };
-        if let Err(err) = self.round_trip_inner(kind, fd, mode, path) {
+        if let Err(err) = self.send(kind, fd, mode, path, None) {
             eprintln!("fspy: open/close callback round-trip failed: {err}");
         }
     }
 
-    fn round_trip_inner(
+    /// Run a blocking callback round-trip for a successful `rename` (`from` ->
+    /// `to`). Fires under the `WRITE` mask; carries no descriptor.
+    #[expect(
+        clippy::print_stderr,
+        reason = "preload library intentionally uses stderr for error reporting"
+    )]
+    pub fn round_trip_rename(&self, from: &BStr, to: &BStr) {
+        if !AccessMode::WRITE.intersects(self.mask) {
+            return;
+        }
+        if is_ignored_path(from) || is_ignored_path(to) {
+            return;
+        }
+        let Some(_guard) = ReentryGuard::enter() else {
+            return;
+        };
+        if let Err(err) =
+            self.send(CallbackKind::RENAMED, -1, AccessMode::WRITE, Some(from), Some(to))
+        {
+            eprintln!("fspy: rename callback round-trip failed: {err}");
+        }
+    }
+
+    /// Connect, pass a descriptor, send the request, and await the ack. For
+    /// events with no descriptor (`fd < 0`, e.g. rename) the socket's own fd is
+    /// passed as a placeholder so the supervisor's receive path is unchanged.
+    fn send(
         &self,
         kind: CallbackKind,
         fd: c_int,
         mode: AccessMode,
         path: Option<&BStr>,
+        to_path: Option<&BStr>,
     ) -> io::Result<()> {
         let native_path: Option<&NativePath> =
             path.map(|path| <&NativePath>::from(OsStr::from_bytes(path)));
+        let native_to: Option<&NativePath> =
+            to_path.map(|path| <&NativePath>::from(OsStr::from_bytes(path)));
         // SAFETY: `getpid` is always safe to call.
         let pid = u32::try_from(unsafe { libc::getpid() }).unwrap_or(0);
-        let request = CallbackRequest { kind, mode, pid, fd: i64::from(fd), path: native_path };
+        let request = CallbackRequest {
+            kind,
+            mode,
+            pid,
+            fd: i64::from(fd),
+            path: native_path,
+            to_path: native_to,
+        };
 
         let serialized_size = CallbackRequest::serialized_size(&request)
             .map_err(|err| io::Error::other(err.to_string()))?;
@@ -138,7 +177,8 @@ impl CallbackChannel {
         // A fresh connection per event: it is dropped (and closed) while the
         // reentrancy guard is still held, so its own `close` does not recurse.
         let mut socket = UnixStream::connect(&self.socket_path)?;
-        socket.send_fd(fd)?;
+        let passed_fd = if fd >= 0 { fd } else { socket.as_raw_fd() };
+        socket.send_fd(passed_fd)?;
         socket.write_all(&len.to_le_bytes())?;
         socket.write_all(&body)?;
         let mut ack = [0u8; 1];

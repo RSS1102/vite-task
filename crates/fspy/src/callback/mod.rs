@@ -20,13 +20,17 @@ use std::{fs::File, mem::ManuallyDrop, path::Path, sync::Arc};
 
 use fspy_shared::ipc::AccessMode;
 
-/// Whether a [`FileEvent`] fires right after an open or right before a close.
+/// What a [`FileEvent`] reports: an open, a close, or a rename.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileEventKind {
     /// The file has just been opened; the fd/handle is valid.
     Opened,
     /// The file is about to be closed; the fd/handle is still valid.
     Closing,
+    /// A file was just renamed. [`FileEvent::path`] is the source and
+    /// [`FileEvent::to_path`] the destination. No usable descriptor is provided
+    /// ([`FileEvent::fd`] is a placeholder).
+    Renamed,
 }
 
 /// The path carried by a [`FileEvent`].
@@ -132,9 +136,13 @@ pub struct FileEvent<'a> {
     /// seccomp backend, where the target's descriptor is assigned by the kernel
     /// after the open callback runs).
     pub raw_fd: i64,
-    /// Path of the file. Always present for [`FileEventKind::Opened`].
+    /// Path of the file. Always present for [`FileEventKind::Opened`]; for
+    /// [`FileEventKind::Renamed`] it is the rename source.
     pub path: FileEventPath<'a>,
-    /// A file descriptor / handle usable inside the supervisor process.
+    /// Rename destination. `Some` only for [`FileEventKind::Renamed`].
+    pub to_path: Option<&'a Path>,
+    /// A file descriptor / handle usable inside the supervisor process. Not
+    /// meaningful for [`FileEventKind::Renamed`] (rename carries no descriptor).
     pub fd: BorrowedFile<'a>,
 }
 

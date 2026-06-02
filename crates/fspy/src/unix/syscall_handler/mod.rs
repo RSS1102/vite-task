@@ -170,6 +170,8 @@ pub(super) fn invoke_callback(
         // callback runs, so open/close cannot be paired by fd here.
         raw_fd: -1,
         path,
+        // The seccomp backend reports opens and closes, not renames.
+        to_path: None,
         fd: BorrowedFile::new(fd.as_fd()),
     };
     let invoke: &FileCallbackFn = &*callback.callback;

@@ -35,8 +35,13 @@ pub struct OpId {
 pub struct Write {
     /// Monotonic sequence number, starting at 0.
     pub seq: u64,
-    /// Absolute path of the written file.
+    /// Absolute path under which the content is stored (the file actually
+    /// written). The content is read back from here when reconstructing.
     pub path: Str,
+    /// Path to display for this write, when it differs from [`Self::path`]
+    /// because the file was later renamed (e.g. an atomic write-temp-then-rename
+    /// — `None` means use [`Self::path`]).
+    pub display_path: Option<Str>,
     /// Frontier capturing the file's content just before this write (the open
     /// snapshot, or the last-recorded content when a truncating open emptied it
     /// first).
@@ -252,7 +257,30 @@ impl Snapshotter {
         let seq = guard.next_seq;
         guard.next_seq += 1;
         let output_offset = guard.output.len();
-        guard.writes.push(Write { seq, path: path_key, before, after, output_offset });
+        guard.writes.push(Write {
+            seq,
+            path: path_key,
+            display_path: None,
+            before,
+            after,
+            output_offset,
+        });
+    }
+
+    /// Record a `rename` from `from` to `to`. Any captured writes currently
+    /// displayed as `from` are relabeled to display `to`, so an atomic
+    /// write-temp-then-rename shows up under the final name rather than the
+    /// temporary one. The stored content is untouched (still keyed by the
+    /// original path); only the displayed path changes.
+    pub fn record_rename(&self, from: &str, to: &str) {
+        let (from_key, to_key) = (Str::from(from), Str::from(to));
+        let mut guard = self.lock();
+        for write in &mut guard.writes {
+            let shown = write.display_path.as_ref().unwrap_or(&write.path);
+            if *shown == from_key {
+                write.display_path = Some(to_key.clone());
+            }
+        }
     }
 
     /// Export the captured run: a full Loro snapshot plus the write list and raw

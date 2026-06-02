@@ -85,11 +85,13 @@ pub fn reconstruct(captured: &Captured) -> ApiData {
     let mut writes = Vec::with_capacity(captured.data.writes.len());
 
     for write in &captured.data.writes {
+        // Content is stored under `write.path`; the displayed path follows a
+        // later rename when one was observed.
         let before = blob_at(&doc, &write.before, write.path.as_str(), &mut blobs);
         let after = blob_at(&doc, &write.after, write.path.as_str(), &mut blobs);
         writes.push(ApiWrite {
             seq: write.seq,
-            path: write.path.clone(),
+            path: write.display_path.clone().unwrap_or_else(|| write.path.clone()),
             before,
             after,
             output_offset: write.output_offset,

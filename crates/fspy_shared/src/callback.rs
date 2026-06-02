@@ -20,6 +20,11 @@ impl CallbackKind {
     pub const CLOSING: Self = Self(1);
     /// Fired right after a file was opened; the fd/handle is valid.
     pub const OPENED: Self = Self(0);
+    /// Fired right after a successful `rename`: `path` is the source and
+    /// `to_path` the destination. Carries no usable descriptor (the request's
+    /// `fd` is a placeholder); lets a consumer follow an atomic
+    /// write-temp-then-rename to its final name.
+    pub const RENAMED: Self = Self(2);
 }
 
 /// A single open/close callback request sent by a traced process to the
@@ -37,10 +42,12 @@ pub struct CallbackRequest<'a> {
     /// value on Windows). Lets a consumer pair an open with the close of the
     /// same descriptor.
     pub fd: i64,
-    /// Absolute path of the file. Always present for [`CallbackKind::OPENED`];
-    /// `None` for [`CallbackKind::CLOSING`] when it cannot be resolved from the
-    /// fd/handle.
+    /// Absolute path of the file. Always present for [`CallbackKind::OPENED`]
+    /// and [`CallbackKind::RENAMED`] (the rename source); `None` for
+    /// [`CallbackKind::CLOSING`] when it cannot be resolved from the fd/handle.
     pub path: Option<&'a NativePath>,
+    /// Rename destination. `Some` only for [`CallbackKind::RENAMED`].
+    pub to_path: Option<&'a NativePath>,
 }
 
 /// Single byte the supervisor writes back to release the blocked traced

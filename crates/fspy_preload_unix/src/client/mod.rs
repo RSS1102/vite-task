@@ -162,6 +162,28 @@ impl Client {
         };
     }
 
+    /// Run the blocking rename callback round-trip, resolving both endpoints to
+    /// absolute paths first.
+    unsafe fn run_rename_callback(&self, from: impl ToAbsolutePath, to: impl ToAbsolutePath) {
+        let Some(channel) = &self.callback else {
+            return;
+        };
+        // SAFETY: `from`/`to` only read the caller's path arguments / dir fds.
+        let _ = unsafe {
+            from.to_absolute_path(|from_abs| {
+                let Some(from_abs) = from_abs else {
+                    return Ok(());
+                };
+                to.to_absolute_path(|to_abs| {
+                    if let Some(to_abs) = to_abs {
+                        channel.round_trip_rename(from_abs, to_abs);
+                    }
+                    Ok(())
+                })
+            })
+        };
+    }
+
     /// Run the blocking pre-close callback round-trip for a still-valid fd.
     fn run_close_callback(&self, fd: c_int) {
         let Some(channel) = &self.callback else {
@@ -233,6 +255,19 @@ pub unsafe fn handle_open_callback(fd: c_int, path: impl ToAbsolutePath, mode: i
     }
     // SAFETY: path and mode are forwarded valid pointers/values from the caller.
     unsafe { client.run_open_callback(fd, path, mode) };
+}
+
+/// Run the rename callback, if one is registered. Called after a successful
+/// `rename`/`renameat`/… so the destination already holds the file.
+pub unsafe fn handle_rename(from: impl ToAbsolutePath, to: impl ToAbsolutePath) {
+    let Some(client) = global_client() else {
+        return;
+    };
+    if client.callback.is_none() || callback::is_reentrant() {
+        return;
+    }
+    // SAFETY: `from`/`to` carry valid path pointers / dir fds from the caller.
+    unsafe { client.run_rename_callback(from, to) };
 }
 
 /// Run the pre-close blocking callback, if one is registered. Called before

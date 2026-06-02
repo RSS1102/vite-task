@@ -136,7 +136,8 @@ impl CallbackChannel {
         let pid = unsafe { GetCurrentProcessId() };
         // The HANDLE value identifies the descriptor for open/close pairing.
         let fd = handle as usize as i64;
-        let request = CallbackRequest { kind, mode, pid, fd, path: native_path };
+        // The Windows backend does not surface renames; `to_path` is always None.
+        let request = CallbackRequest { kind, mode, pid, fd, path: native_path, to_path: None };
         let body = wincode::serialize(&request).map_err(|err| err.to_string())?;
         let len = u32::try_from(body.len()).map_err(|err| err.to_string())?;
 

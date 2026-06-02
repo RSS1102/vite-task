@@ -136,6 +136,53 @@ async fn truncating_rewrite_keeps_prior_content_as_before() {
     );
 }
 
+/// An atomic write-temp-then-`rename` (the pattern editors and build tools — and
+/// Claude Code — use) is shown under the final name, not the temporary file: the
+/// observed rename relabels the captured write. Uses the test binary (no Node).
+/// Gated to Unix, where the preload backend's `rename` interception lives.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn atomic_rename_shows_final_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let dir_arg = dir.path().to_str().unwrap().to_owned();
+
+    let cmd = command_for_fn!(dir_arg, |dir: String| {
+        use std::io::Write as _;
+        let dir = std::path::Path::new(&dir);
+        // Write a temp file, then atomically rename it over the final name.
+        std::fs::write(dir.join("report.txt.tmp"), b"REPORT").unwrap();
+        std::fs::rename(dir.join("report.txt.tmp"), dir.join("report.txt")).unwrap();
+        let mut out = std::io::stdout();
+        out.write_all(b"done!").unwrap();
+        out.flush().unwrap();
+    });
+
+    let cwd = AbsolutePathBuf::new(dir.path().to_path_buf()).unwrap();
+    let ignore = IgnoreSet::new(cwd.clone(), true, &[]).unwrap();
+    let captured = run(RunOptions { program: cmd.program, args: cmd.args, cwd, ignore })
+        .await
+        .expect("run worldline");
+    assert_eq!(captured.meta.exit_code, Some(0), "child should exit cleanly");
+
+    let api = reconstruct(&captured);
+    assert!(
+        api.writes.iter().any(|w| {
+            w.path.ends_with("report.txt")
+                && text(&api, w.after.as_str()).as_deref() == Some("REPORT")
+        }),
+        "expected a write displayed as report.txt -> REPORT, got {:?}",
+        api.writes
+            .iter()
+            .map(|w| (w.path.as_str().to_owned(), text(&api, w.after.as_str())))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        !api.writes.iter().any(|w| w.path.ends_with(".tmp")),
+        "the temporary file should have been relabeled to its final name, got {:?}",
+        api.writes.iter().map(|w| w.path.as_str().to_owned()).collect::<Vec<_>>()
+    );
+}
+
 /// Regression for the user-facing `worldline node` scenario: Node's libuv closes
 /// descriptors via `close$NOCANCEL` on macOS — a distinct libc symbol from
 /// `close`. If fspy doesn't interpose it, the write-close is never observed, so
