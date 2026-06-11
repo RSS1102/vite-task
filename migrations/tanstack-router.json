@@ -1,0 +1,47 @@
+{
+ "repo": "TanStack/router (/Volumes/d/code/vite-task-migrations/router)",
+ "status": "success",
+ "branch": "vite-task-migration (commit 776f59d)",
+ "scope": "Migrated: all 42 packages/* \u2014 build (42 pkgs), test:eslint (39), test:types (38) promoted from package.json scripts to run.tasks in each package's existing vite.config.ts (scripts moved, not copied: vp forbids script/task name collisions; the pnpm-regex test:types:ts55..60 fan-out became one &&-chained task = 6 separately-cached units). Root gains vp:build / vp:test:eslint / vp:test:types / vp:test:ci scripts; vp:test:ci is the tree-model phase pipeline (vp run vp:test:ci expands 3 nested vp runs in-process into one 399-unit graph). Inherited partial work (codemod across all packages + root config) was kept; I fixed 2 read-write overlaps (vue-router) and 1 lost graph edge (router-ssr-query-core). Skipped: examples/*, e2e/*, benchmarks/*, and test:unit/test:build/test:docs/test:e2e targets \u2014 these stay on nx (nx.json + nx dep kept). Coexistence caveat documented in MIGRATION.md: since scripts moved, nx no longer sees build/test:eslint/test:types targets for packages/*, so root nx scripts (test:pr, build:all) silently skip packages for those targets; CI would need a vp phase added before landing for real.",
+ "verification": "From repo root, vp 0.1.24: build x2: 50 units cold 25s -> warm 50/50 (100%), 5s wall, 71.8s saved. test:eslint x2: 83 units -> 83/83 (100%), 5s. test:types x2: 266 units cold 73s -> 266/266 (100%), 265.6s saved (after fixing vue-router rw-overlaps). Compound vp run vp:test:ci x2: 399 units -> 399/399 (100%), 11s wall, 539s saved. Selective invalidation: added an export to packages/history/src/index.ts -> build 9/50 hits, misses = exactly history's dependency cone; the 7 packages outside it stayed cached, and router-cli stayed cached even though its dep router-generator re-ran (byte-identical output = content cut-off, finer than nx). Output restore: rm -rf packages/vue-router/dist -> next run 50/50 hit, dist (308 files) restored from archive. Special experiment (nx namedInputs !**/*.md): edited packages/router-core/README.md -> 399/399 hits with zero config, featured in MIGRATION.md; nuance found: CREATING MIGRATION.md invalidated vue-router#test:types once ('MIGRATION.md added in workspace root' \u2014 vitest lists the root dir). Single-slot cache confirmed: reverting the history probe = full miss again. -t selection: @tanstack/react-router#build pulls exactly its workspace deps (3 tasks).",
+ "missingFeatures": [
+  "nx affected (git-based) \u2014 root scripts build/test:eslint/test:types/test:pr are all `nx affected`; replacement is full-graph vp run relying on cache hits",
+  "Remote/distributed cache \u2014 repo CI uses Nx Cloud distributed agents (nx-cloud start-ci-run --distribute-on dynamic-changesets.yaml); vp cache is local SQLite+tar.zst only, CI would need to persist node_modules/.vite/task-cache",
+  "Watch mode \u2014 root watch/dev scripts use `nx watch --all -- pnpm run build:all`; no vp equivalent (kept on nx)",
+  "Package-graph edges from pnpm-workspace.yaml overrides / linkWorkspacePackages \u2014 repo forces 'workspace:*' via overrides for all @tanstack deps; router-ssr-query-core declares router-core as '>=1.171.7' so vp lost the edge nx had (demonstrated: -t pulls 1 task vs 2); worked around with explicit dependsOn ['@tanstack/router-core#build']",
+  "nx plugin-computed targets (scripts/nx/playwright-plugin.ts Playwright sharding) cannot run outside nx \u2014 e2e out of scope anyway",
+  "True ^build for dependsOn-pulled tasks: nx test:types dependsOn ^build (deps' builds only); closest vp encoding is own-package dependsOn ['build'] + implicit topo of the selected task, which breaks if a mid-chain package lacks the selected task (bridging skips its build) \u2014 mitigated here by the phase pipeline running build first",
+  "Per-directory cache-listing exclusions by default: declared output dirs and workspace root listing should arguably be auto-excluded from inputs (root-dir listing made creating MIGRATION.md invalidate vitest-based test:types once)"
+ ],
+ "bugs": [
+  "CRITICAL: corrupted cache.db -> silent false green. A 99MB cache.db inherited from the previous (interrupted) session made every vp run print 'Cache lookup failed: Encoded sequence length exceeded preallocation limit of 4194304 bytes (needed 137438953472 bytes)', run ZERO tasks, and exit 0 (verified under bash -c, not a fish $status artifact; last-summary.json = {\"tasks\":[],\"exit_code\":0}). In CI the pipeline would pass while running nothing. Recovery: vp cache clean. Corrupt db preserved at /tmp/router-corrupt-cache.db",
+  "Graph-load circularity: vp evaluates every vite.config in the workspace even outside --filter, and configs import built artifacts (e2e/react-start/i18n-paraglide config -> @tanstack/react-start -> start-plugin-core/dist -> router-core/dist/esm/index.js). After rm -rf packages/router-core/dist, ALL vp runs fail with 'Failed to load task graph' (exit 1) \u2014 vp cannot run the very build task that would recreate the file. Recovery requires bypassing vp (direct vite build). Output-restore-on-delete is therefore unusable for any package whose dist is imported by some workspace config",
+  "Workspace-base input negations must explicitly handle dot-directories: '!node_modules/**/*.tsbuildinfo' was needed for a file under node_modules/.pnpm/... and first attempt with default glob semantics was unclear; also vp run --last-details output wraps mid-word making 'Cache miss' lines hard to grep (cosmetic)"
+ ],
+ "docsImprovements": [
+  "Document cache.db failure modes and that 'Cache lookup failed' aborts the run with exit 0 \u2014 users must know vp cache clean is the fix and that CI should treat '0/0 cache hit' as failure",
+  "Document that graph loading executes ALL workspace vite.configs (not just filtered ones) as real code: configs importing workspace dists create a bootstrap circularity after clean/clone; recommend configs import from src or guard plugin imports",
+  "Document the namedInputs translation story: declared input sets (nx namedInputs, turbo inputs) usually translate to NOTHING because fspy only tracks read files \u2014 with the nuance that directory listings are inputs, so file ADDITIONS can invalidate where glob-based tools would not",
+  "Document that pnpm-workspace.yaml overrides/linkWorkspacePackages do not create graph edges (only package.json workspace: protocol) and show the explicit cross-package dependsOn workaround",
+  "Document the TS annotation pattern (export typed as UserConfig & { run: ... }) for adding run.tasks to vite.config.ts files that are themselves type-checked under declaration emit (TS2742/TS2883/TS4082)",
+  "Document that vitest typecheck mode needs '!node_modules/.vite/**' and a workspace-base tsbuildinfo negation to be cacheable",
+  "Clarify ^build translation limits: dependsOn ['build'] + implicit topo only guarantees deps' builds when every package on the path defines the selected task; recommend phase pipelines (build && test) for nx repos"
+ ],
+ "inputExclusionsNeeded": [
+  "!dist + !dist/** + output: ['dist/**'] on every build task (vite-plugin-dts re-reads emitted files on warm rebuilds; exclusion also enables restore-on-delete)",
+  "{ pattern: '!packages/<name>', base: 'workspace' } on build tasks (package dir-listing invalidation, enables archive restore after rm -rf dist)",
+  "!**/*.tsbuildinfo, !node_modules/.vite/**, !node_modules/.vite-temp/** (tsc incremental state; vite bundles vite.config.ts to .vite-temp every run)",
+  "vue-router test:types (vitest typecheck): { pattern: '!node_modules/**/*.tsbuildinfo', base: 'workspace' } \u2014 vitest writes tsconfig.tmp.tsbuildinfo inside its own package under node_modules/.pnpm (glob must cross dot-dirs) \u2014 plus !node_modules/.vite/** for vitest's results.json cache",
+  "!coverage/** on all tasks (vitest coverage dirs)"
+ ],
+ "surprises": [
+  "The corrupted-cache silent-success combo (0 tasks, exit 0) \u2014 most dangerous vp behavior observed across all migrations so far",
+  "Deleting one package's dist can brick every vp invocation in the repo via config-import circularity \u2014 discovered during the standard output-restore verification step",
+  "fspy made the nx '!**/*.md' namedInputs exclusion completely free (399/399 hits after README edit), but creating a NEW root file invalidated one vitest-based task via root dir-listing tracking \u2014 'unread files never invalidate' holds for edits, not additions",
+  "Content cut-off beat nx: router-cli stayed cached while its dependency router-generator rebuilt with byte-identical output",
+  "pnpm-workspace.yaml overrides force workspace:* for all @tanstack deps, so pnpm/nx saw an edge vp didn't \u2014 edge loss can hide behind overrides, not just package.json version styles",
+  "vp's && splitting turned the pnpm regex fan-out scripts (test:types:ts55..60) into 6 independently cached units per package with no extra config \u2014 266 cached units for the types phase",
+  "Every vp run prints 100+ deprecation warnings because graph loading evaluates all workspace vite configs (cosmetic but very noisy)",
+  "The previous agent's codemod was high quality: 40/42 packages worked unchanged; only 2 config fixes and 1 edge fix were needed to reach 100% cache hits"
+ ]
+}
