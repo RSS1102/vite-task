@@ -1,5 +1,4 @@
-# Tests that running pkg#task errors when multiple packages share the same name,
-# while --filter with the same name still matches all packages.
+# Tests that running pkg#task errors when multiple packages share the same name, while --filter with the same name still matches all packages.
 
 [[plan]]
 compact = true

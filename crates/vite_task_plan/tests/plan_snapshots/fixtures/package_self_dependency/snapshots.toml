@@ -1,5 +1,4 @@
-# Tests that a package with a self-referential workspace dependency (e.g. for
-# testing purposes) does not produce a false cycle-dependency error.
+# Tests that a package with a self-referential workspace dependency (e.g. for testing purposes) does not produce a false cycle-dependency error.
 
 [[plan]]
 name = "build_in_self_referential_package"
