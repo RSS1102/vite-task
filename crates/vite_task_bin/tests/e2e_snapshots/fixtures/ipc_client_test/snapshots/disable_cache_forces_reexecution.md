@@ -1,7 +1,6 @@
 # disable_cache_forces_reexecution
 
-Exercises `disableCache`. The tool asks the runner not to cache this run,
-so the next invocation re-executes instead of hitting a prior entry.
+Exercises `disableCache`. The tool asks the runner not to cache this run, so the next invocation re-executes instead of hitting a prior entry.
 
 ## `vt run disable-cache`
 
