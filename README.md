@@ -1,25 +1,8 @@
 # Vite Task migration reports
 
-What happens when you take **nine popular OSS monorepos built on Turborepo or Nx and migrate them to [Vite Task](https://github.com/voidzero-dev/vite-task)** (`vp run`, Vite+ 0.1.24)? This branch is the answer: every migration was actually executed and verified on a real machine (macOS arm64) — cold runs, warm-cache re-runs, selective-invalidation probes, and output-restore-after-delete — not just config translation.
+This report covers nine Turborepo/Nx monorepo migrations to [Vite Task](https://github.com/voidzero-dev/vite-task) (`vp run`, Vite+ 0.1.24). Each migration was executed on macOS arm64 and checked with cold runs, warm-cache re-runs, selective-invalidation probes, and output-restore tests.
 
 Migrated and verified: create-t3-turbo, trpc, Turborepo's own kitchen-sink example, ZenStack, TanStack Router, TanStack Query, shadcn/ui, Vercel AI SDK, react-email. Largest single result: TanStack Query's entire CI pipeline — 420 task units including an 8-TypeScript-version typecheck sweep — replaying as **420/420 cache hits from one `vp run test:ci` command**.
-
-## Outcome ratios
-
-Denominator: the full [candidates.json](./candidates.json) research pool (**45 rows**; a few repos appear twice because they were revisited with updated metadata), not just the nine repos that were migrated.
-
-Accounting rule: **verified migration** means a repo from the pool was actually migrated and proved with real `vp run` executions; **clean success** means Vite Task cleanly replaced the intended turbo/nx scope for that migration; **partial success** means a meaningful, verified scope migrated, but material subtrees or task families still stayed on turbo/nx or plain scripts because of missing Vite Task capabilities or environment constraints.
-
-| measure | current result on Vite+ 0.1.24 | if [#467](https://github.com/voidzero-dev/vite-task/pull/467) lands |
-|---|---:|---:|
-| researched candidate pool | 45/45 (100.0%) | 45/45 (100.0%) |
-| verified migrations | 9/45 (20.0%) | 9/45 (20.0%) |
-| clean successes | 5/45 (11.1%) | 5/45 (11.1%) |
-| scoped partial successes | 4/45 (8.9%) | 4/45 (8.9%) |
-| researched but not migrated | 36/45 (80.0%) | 36/45 (80.0%) |
-| `^task` workaround burden in candidates that use that pattern | 43/45 (95.6%) have `^build`/`^compile`/`^topo`-style package-dependency task semantics | 0/43 need that workaround after adopting object-form `dependsOn`, e.g. `{ "task": "build", "from": "dependencies" }` |
-
-The five clean successes are create-t3-turbo, the Turborepo kitchen-sink example, TanStack Query, Vercel AI SDK, and react-email. The four partial successes are trpc (packages/* only), ZenStack (packages/* only), TanStack Router (packages/* only), and shadcn/ui (CLI + v4 registry scope). #467 would remove the biggest config-translation workaround across the pool, but it does **not** by itself change the success split above: the remaining partials are blocked by non-`workspace:` graph edges, retained e2e/service subtrees, persistent/watch semantics, affected/remote-cache gaps, or CI integration work.
 
 ## Missing-feature impact
 
@@ -28,7 +11,7 @@ Sorted by candidate-pool reach: how many of the 45 candidate rows would material
 | rank | missing feature | candidate-pool reach | improvement |
 |---:|---|---:|---|
 | 1 | Remote/shared cache | 45/45 for CI parity; explicitly hit in every verified migration | Turns local-only success into a plausible CI replacement instead of relying on ad hoc `actions/cache` for `node_modules/.vite/task-cache`. |
-| 2 | Native package-dependency task selection (`^task` parity, #467) | 43/45 (95.6%) | Removes phase-pipeline/manual `pkg#task` workarounds for the dominant turbo/nx pattern: "run this task in dependency packages first." |
+| 2 | Native package-dependency task selection (`^task` parity, [#467](https://github.com/voidzero-dev/vite-task/pull/467)) | 43/45 (95.6%) | Removes phase-pipeline/manual `pkg#task` workarounds for the dominant turbo/nx pattern: "run this task in dependency packages first." |
 | 3 | Auto-exclude declared outputs and common tool caches from inputs | 26/45 (57.8%) explicitly list output-heavy pipelines; all 9 verified migrations hit it | Converts the biggest migration tax into a default: fewer read-write-overlap misses, fewer directory-listing misses, more reliable archive restore. |
 | 4 | Watch + persistent/service task semantics | 21/45 (46.7%) | Lets dev-server fleets, `turbo watch`/`nx watch`, and "test depends on a running service" workflows migrate instead of staying as scripts or old-tool islands. |
 | 5 | Workspace graph edges beyond `workspace:` protocol | 17/45 (37.8%) | Unblocks exact-version, star-version, caret-linked, pnpm `linkWorkspacePackages`, npm/yarn workspace, and version-match dependency styles without rewriting package manifests. |
