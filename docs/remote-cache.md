@@ -24,23 +24,20 @@ vp run build
   `Authorization: Bearer <token>`. Optional (a local development endpoint may
   not require auth), but any real deployment should require one.
 
-### Passing the URL and token from files
+### Configuring via a `.env` file
 
-Both values can instead be read from a file, which keeps the token out of
-process listings and CI logs (the same convention as Docker/Kubernetes secrets):
-
-- `VITE_REMOTE_CACHE_URL_FILE` — path to a file whose contents are the base URL.
-- `VITE_REMOTE_CACHE_TOKEN_FILE` — path to a file whose contents are the token.
-
-The direct variable wins when both are set; the file contents are trimmed, and a
-relative path resolves against the working directory. For example, with the
-token mounted as a secret file:
+Both variables can also be set in a `.env` file in the workspace root, which
+keeps the token out of your shell profile and CI environment:
 
 ```sh
-export VITE_REMOTE_CACHE_URL=https://your-cache.example.workers.dev
-export VITE_REMOTE_CACHE_TOKEN_FILE=/run/secrets/vite-remote-cache-token
-vp run build
+# .env (workspace root)
+VITE_REMOTE_CACHE_URL=https://your-cache.example.workers.dev
+VITE_REMOTE_CACHE_TOKEN=<shared bearer token>
 ```
+
+The process environment wins when a variable is set in both places. The `.env`
+is only read for these two variables; it does not otherwise affect task
+execution. Add `.env` to `.gitignore` so the token is never committed.
 
 ## How it works
 

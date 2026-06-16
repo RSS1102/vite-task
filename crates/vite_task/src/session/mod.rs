@@ -238,8 +238,10 @@ impl<'a> Session<'a> {
         // Nest the cache in a per-schema-version subdirectory so builds that pin
         // different schema versions don't share (and corrupt) one database.
         let cache_path = cache_root.join(cache::cache_schema_dir_name().as_str());
-        // Resolve the optional remote cache tier from the environment snapshot.
-        let remote_cache_config = cache::remote::RemoteCacheConfig::from_envs(&envs);
+        // Resolve the optional remote cache tier from the environment snapshot,
+        // falling back to a `.env` file in the workspace root.
+        let remote_cache_config =
+            cache::remote::RemoteCacheConfig::from_envs(&envs, &workspace_root.path);
 
         // Prepend workspace's node_modules/.bin to PATH
         let workspace_node_modules_bin = workspace_root.path.join("node_modules").join(".bin");

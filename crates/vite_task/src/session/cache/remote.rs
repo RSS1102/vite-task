@@ -27,6 +27,7 @@ use anyhow::Context as _;
 use base64::Engine as _;
 use rustc_hash::FxHashMap;
 use sha2::{Digest as _, Sha256};
+use vite_path::AbsolutePath;
 use vite_str::Str;
 
 /// Environment variable holding the base URL of the remote cache endpoint
@@ -38,16 +39,9 @@ pub const REMOTE_CACHE_URL_ENV: &str = "VITE_REMOTE_CACHE_URL";
 /// request. Optional: a local development endpoint may not require auth.
 pub const REMOTE_CACHE_TOKEN_ENV: &str = "VITE_REMOTE_CACHE_TOKEN";
 
-/// Environment variable holding a path to a file whose contents are the base
-/// URL. Read when [`REMOTE_CACHE_URL_ENV`] is unset; a relative path resolves
-/// against the working directory.
-pub const REMOTE_CACHE_URL_FILE_ENV: &str = "VITE_REMOTE_CACHE_URL_FILE";
-
-/// Environment variable holding a path to a file whose contents are the bearer
-/// token. Read when [`REMOTE_CACHE_TOKEN_ENV`] is unset. Reading the token from
-/// a file (rather than an env var) keeps the secret out of process listings and
-/// CI logs — the same convention used by Docker/Kubernetes secrets.
-pub const REMOTE_CACHE_TOKEN_FILE_ENV: &str = "VITE_REMOTE_CACHE_TOKEN_FILE";
+/// Dotenv file, in the workspace root, that supplies [`REMOTE_CACHE_URL_ENV`] /
+/// [`REMOTE_CACHE_TOKEN_ENV`] when they are absent from the process environment.
+const DOTENV_FILE: &str = ".env";
 
 /// One of the two key→blob namespaces in the remote fingerprint store, mirroring
 /// the local cache's `cache_entries` and `task_fingerprints` `SQLite` tables.
@@ -105,18 +99,21 @@ impl std::fmt::Debug for RemoteCacheConfig {
 }
 
 impl RemoteCacheConfig {
-    /// Resolve remote cache config from the session's environment snapshot.
-    ///
-    /// The base URL comes from [`REMOTE_CACHE_URL_ENV`] or, failing that, the
-    /// file named by [`REMOTE_CACHE_URL_FILE_ENV`]; the token likewise from
-    /// [`REMOTE_CACHE_TOKEN_ENV`] or [`REMOTE_CACHE_TOKEN_FILE_ENV`]. Returns
-    /// `None` (remote cache disabled) when no base URL can be resolved. The
-    /// token is optional. Non-UTF-8 values and unreadable files are ignored.
+    /// Resolve remote cache config. Each value is taken from the process
+    /// environment ([`REMOTE_CACHE_URL_ENV`] / [`REMOTE_CACHE_TOKEN_ENV`]) or,
+    /// when unset there, from a [`DOTENV_FILE`] in the workspace root (the
+    /// process env wins). Returns `None` (remote cache disabled) when no base
+    /// URL can be resolved; the token is optional.
     #[must_use]
-    pub fn from_envs(envs: &FxHashMap<Arc<OsStr>, Arc<OsStr>>) -> Option<Self> {
-        let base_url = resolve_value(envs, REMOTE_CACHE_URL_ENV, REMOTE_CACHE_URL_FILE_ENV)?;
-        let base_url = Str::from(base_url.trim_end_matches('/'));
-        let token = resolve_value(envs, REMOTE_CACHE_TOKEN_ENV, REMOTE_CACHE_TOKEN_FILE_ENV);
+    pub fn from_envs(
+        envs: &FxHashMap<Arc<OsStr>, Arc<OsStr>>,
+        workspace_root: &AbsolutePath,
+    ) -> Option<Self> {
+        let dotenv = load_dotenv(workspace_root);
+        let resolve = |name: &str| env_value(envs, name).or_else(|| dotenv.get(name).cloned());
+
+        let base_url = Str::from(resolve(REMOTE_CACHE_URL_ENV)?.trim_end_matches('/'));
+        let token = resolve(REMOTE_CACHE_TOKEN_ENV);
         Some(Self { base_url, token })
     }
 }
@@ -127,32 +124,21 @@ fn env_value(envs: &FxHashMap<Arc<OsStr>, Arc<OsStr>>, name: &str) -> Option<Str
     (!value.is_empty()).then(|| Str::from(value))
 }
 
-/// Resolve a config value: the direct env var wins; otherwise the contents of
-/// the file named by `file_var` (trimmed). A missing/unreadable file yields
-/// `None` rather than an error — remote caching simply stays disabled.
-fn resolve_value(
-    envs: &FxHashMap<Arc<OsStr>, Arc<OsStr>>,
-    direct_var: &str,
-    file_var: &str,
-) -> Option<Str> {
-    if let Some(value) = env_value(envs, direct_var) {
-        return Some(value);
-    }
-    let path = env_value(envs, file_var)?;
-    match std::fs::read_to_string(path.as_str()) {
-        Ok(content) => {
-            let trimmed = content.trim();
-            (!trimmed.is_empty()).then(|| Str::from(trimmed))
-        }
-        Err(err) => {
-            tracing::warn!(
-                file = path.as_str(),
-                ?err,
-                "failed to read remote cache config from file; remote cache disabled"
-            );
-            None
+/// Parse the workspace `.env` file (via `dotenvy`, without mutating the process
+/// environment) into a map of its non-empty entries. A missing or unreadable
+/// file yields an empty map, so remote caching simply stays disabled.
+fn load_dotenv(workspace_root: &AbsolutePath) -> FxHashMap<Str, Str> {
+    let mut map = FxHashMap::default();
+    let path = workspace_root.join(DOTENV_FILE);
+    let Ok(iter) = dotenvy::from_path_iter(path.as_path()) else {
+        return map;
+    };
+    for (key, value) in iter.flatten() {
+        if !value.is_empty() {
+            map.insert(Str::from(key), Str::from(value));
         }
     }
+    map
 }
 
 /// A remote cache tier: three stores (two key→blob namespaces and a blob store)
@@ -336,6 +322,9 @@ impl RemoteCacheBackend for InMemoryRemoteCache {
 mod tests {
     use std::ffi::OsString;
 
+    use tempfile::TempDir;
+    use vite_path::AbsolutePathBuf;
+
     use super::*;
 
     fn envs(pairs: &[(&str, &str)]) -> FxHashMap<Arc<OsStr>, Arc<OsStr>> {
@@ -350,70 +339,82 @@ mod tests {
             .collect()
     }
 
+    /// A temp workspace dir, optionally seeded with a `.env` file.
+    fn workspace(dotenv: Option<&str>) -> (TempDir, AbsolutePathBuf) {
+        let tmp = TempDir::new().unwrap();
+        if let Some(content) = dotenv {
+            std::fs::write(tmp.path().join(DOTENV_FILE), content).unwrap();
+        }
+        let root = AbsolutePathBuf::new(tmp.path().to_path_buf()).unwrap();
+        (tmp, root)
+    }
+
     #[test]
     fn config_disabled_without_url() {
-        assert!(RemoteCacheConfig::from_envs(&envs(&[])).is_none());
-        assert!(RemoteCacheConfig::from_envs(&envs(&[(REMOTE_CACHE_URL_ENV, "")])).is_none());
+        let (_tmp, root) = workspace(None);
+        assert!(RemoteCacheConfig::from_envs(&envs(&[]), &root).is_none());
+        assert!(
+            RemoteCacheConfig::from_envs(&envs(&[(REMOTE_CACHE_URL_ENV, "")]), &root).is_none()
+        );
     }
 
     #[test]
     fn config_trims_trailing_slash_and_reads_token() {
-        let config = RemoteCacheConfig::from_envs(&envs(&[
-            (REMOTE_CACHE_URL_ENV, "https://cache.example.com/"),
-            (REMOTE_CACHE_TOKEN_ENV, "secret"),
-        ]))
+        let (_tmp, root) = workspace(None);
+        let config = RemoteCacheConfig::from_envs(
+            &envs(&[
+                (REMOTE_CACHE_URL_ENV, "https://cache.example.com/"),
+                (REMOTE_CACHE_TOKEN_ENV, "secret"),
+            ]),
+            &root,
+        )
         .expect("config enabled");
         assert_eq!(config.base_url, "https://cache.example.com");
         assert_eq!(config.token.as_deref(), Some("secret"));
     }
 
     #[test]
-    fn config_reads_url_and_token_from_files() {
-        let dir = tempfile::tempdir().unwrap();
-        let url_path = dir.path().join("url");
-        let token_path = dir.path().join("token");
-        // Trailing whitespace/newline is trimmed (files often end with `\n`).
-        std::fs::write(&url_path, "http://127.0.0.1:9999/\n").unwrap();
-        std::fs::write(&token_path, "  file-token\n").unwrap();
-
-        let config = RemoteCacheConfig::from_envs(&envs(&[
-            (REMOTE_CACHE_URL_FILE_ENV, url_path.to_str().unwrap()),
-            (REMOTE_CACHE_TOKEN_FILE_ENV, token_path.to_str().unwrap()),
-        ]))
-        .expect("config enabled via files");
+    fn config_reads_url_and_token_from_dotenv() {
+        let (_tmp, root) = workspace(Some(
+            "# remote cache\nVITE_REMOTE_CACHE_URL=http://127.0.0.1:9999/\nVITE_REMOTE_CACHE_TOKEN=dotenv-token\n",
+        ));
+        let config =
+            RemoteCacheConfig::from_envs(&envs(&[]), &root).expect("config enabled via .env");
         assert_eq!(config.base_url, "http://127.0.0.1:9999");
-        assert_eq!(config.token.as_deref(), Some("file-token"));
+        assert_eq!(config.token.as_deref(), Some("dotenv-token"));
     }
 
     #[test]
-    fn config_direct_var_wins_over_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let token_path = dir.path().join("token");
-        std::fs::write(&token_path, "from-file").unwrap();
-
-        let config = RemoteCacheConfig::from_envs(&envs(&[
-            (REMOTE_CACHE_URL_ENV, "https://direct.example.com"),
-            (REMOTE_CACHE_TOKEN_ENV, "from-env"),
-            (REMOTE_CACHE_TOKEN_FILE_ENV, token_path.to_str().unwrap()),
-        ]))
+    fn config_env_wins_over_dotenv() {
+        let (_tmp, root) = workspace(Some(
+            "VITE_REMOTE_CACHE_URL=http://from-dotenv\nVITE_REMOTE_CACHE_TOKEN=dotenv-token\n",
+        ));
+        let config = RemoteCacheConfig::from_envs(
+            &envs(&[
+                (REMOTE_CACHE_URL_ENV, "http://from-env"),
+                (REMOTE_CACHE_TOKEN_ENV, "env-token"),
+            ]),
+            &root,
+        )
         .expect("config enabled");
-        assert_eq!(config.token.as_deref(), Some("from-env"));
+        assert_eq!(config.base_url, "http://from-env");
+        assert_eq!(config.token.as_deref(), Some("env-token"));
     }
 
     #[test]
-    fn config_disabled_when_url_file_missing() {
-        let config = RemoteCacheConfig::from_envs(&envs(&[(
-            REMOTE_CACHE_URL_FILE_ENV,
-            "/nonexistent/remote-cache-url",
-        )]));
-        assert!(config.is_none());
+    fn config_disabled_without_dotenv_or_env() {
+        let (_tmp, root) = workspace(None);
+        assert!(RemoteCacheConfig::from_envs(&envs(&[]), &root).is_none());
     }
 
     #[test]
     fn config_token_optional() {
-        let config =
-            RemoteCacheConfig::from_envs(&envs(&[(REMOTE_CACHE_URL_ENV, "http://localhost:8787")]))
-                .expect("config enabled");
+        let (_tmp, root) = workspace(None);
+        let config = RemoteCacheConfig::from_envs(
+            &envs(&[(REMOTE_CACHE_URL_ENV, "http://localhost:8787")]),
+            &root,
+        )
+        .expect("config enabled");
         assert_eq!(config.token, None);
     }
 

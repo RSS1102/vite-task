@@ -67,6 +67,7 @@ ctrlc = "3.5.2"
 derive_more = "2.0.1"
 diff-struct = "0.5.3"
 directories = "6.0.0"
+dotenvy = "0.15.7"
 elf = { version = "0.8.0", default-features = false }
 materialized_artifact = { path = "crates/materialized_artifact" }
 materialized_artifact_build = { path = "crates/materialized_artifact_build" }

@@ -3,16 +3,17 @@
 // task command (see vite-task.json) so its lifetime is controlled by ordinary
 // task steps:
 //
-//   node scripts/remote-cache-dev.mjs start --state-dir <dir> --url-file <f> --token-file <f>
+//   node scripts/remote-cache-dev.mjs start --state-dir <dir>
 //   node scripts/remote-cache-dev.mjs stop  --state-dir <dir>
 //
 // `start` copies the worker into <dir> (so no committed `.dev.vars`/state
 // leaks), picks a free port, spawns `wrangler dev` detached (local simulation
 // mode: KV + R2 emulated on disk), waits until it serves HTTP, then writes the
-// endpoint URL and bearer token to the given files and records the pid. `stop`
-// kills the recorded process tree. The URL/token go to files (not stdout/env)
-// so the dynamic port and the secret never appear in the test snapshot — `vp
-// run` reads them via VITE_REMOTE_CACHE_URL_FILE / VITE_REMOTE_CACHE_TOKEN_FILE.
+// endpoint URL and bearer token into a `.env` in the workspace root and records
+// the pid. `stop` kills the recorded process tree. The values go to `.env`
+// (not stdout/args) so the dynamic port and the secret never appear in the test
+// snapshot — `vp run` reads VITE_REMOTE_CACHE_URL / VITE_REMOTE_CACHE_TOKEN from
+// that `.env`.
 //
 // wrangler and the worker source are located through the harness's
 // `node_modules` symlink (tmp/node_modules -> repo/packages/tools/node_modules),
@@ -75,8 +76,9 @@ async function waitUntilReady(port, logPath) {
 
 async function start(flags) {
   const stateDir = path.resolve(flags['state-dir']);
-  const urlFile = path.resolve(flags['url-file']);
-  const tokenFile = path.resolve(flags['token-file']);
+  // `vp run` reads VITE_REMOTE_CACHE_URL / VITE_REMOTE_CACHE_TOKEN from a `.env`
+  // in the workspace root, so write them there (process.cwd() is the workspace).
+  const envFile = path.resolve('.env');
 
   // Copy the worker into an isolated dir (no .dev.vars / node_modules / state).
   const workerDir = path.join(stateDir, 'worker');
@@ -127,9 +129,12 @@ async function start(flags) {
 
   await waitUntilReady(port, logPath);
 
-  // Publish endpoint + token only once the server is serving.
-  fs.writeFileSync(urlFile, `http://127.0.0.1:${port}`);
-  fs.writeFileSync(tokenFile, AUTH_TOKEN);
+  // Publish endpoint + token via the workspace `.env` only once the server is
+  // serving. `vp run` picks these up for the remote cache tier.
+  fs.writeFileSync(
+    envFile,
+    `VITE_REMOTE_CACHE_URL=http://127.0.0.1:${port}\nVITE_REMOTE_CACHE_TOKEN=${AUTH_TOKEN}\n`,
+  );
 }
 
 function stop(flags) {
