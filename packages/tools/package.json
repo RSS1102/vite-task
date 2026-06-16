@@ -9,5 +9,8 @@
     "oxlint": "catalog:",
     "oxlint-tsgolint": "catalog:",
     "vite": "catalog:"
+  },
+  "devDependencies": {
+    "wrangler": "catalog:"
   }
 }

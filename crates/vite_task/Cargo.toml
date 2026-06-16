@@ -15,6 +15,7 @@ workspace = true
 anstream = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+base64 = { workspace = true }
 wincode = { workspace = true, features = ["derive"] }
 clap = { workspace = true, features = ["derive"] }
 ctrlc = { workspace = true }
@@ -25,10 +26,12 @@ owo-colors = { workspace = true }
 petgraph = { workspace = true }
 pty_terminal_test_client = { workspace = true }
 rayon = { workspace = true }
+reqwest = { workspace = true }
 rusqlite = { workspace = true, features = ["bundled"] }
 rustc-hash = { workspace = true }
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 supports-color = { workspace = true }
 thiserror = { workspace = true }
 tar = { workspace = true }

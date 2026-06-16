@@ -176,6 +176,10 @@ pub struct Session<'a> {
     /// Used by `cache clean` to remove every version's cache (and any leftover
     /// from a pre-versioned layout) in one shot.
     cache_root: AbsolutePathBuf,
+    /// Remote cache configuration resolved from the environment, or `None` when
+    /// remote caching is disabled. Attached to the `ExecutionCache` on first
+    /// `cache()` access (see [`cache::remote`]).
+    remote_cache_config: Option<cache::remote::RemoteCacheConfig>,
 }
 
 fn get_cache_path_of_workspace(workspace_root: &AbsolutePath) -> AbsolutePathBuf {
@@ -234,6 +238,8 @@ impl<'a> Session<'a> {
         // Nest the cache in a per-schema-version subdirectory so builds that pin
         // different schema versions don't share (and corrupt) one database.
         let cache_path = cache_root.join(cache::cache_schema_dir_name().as_str());
+        // Resolve the optional remote cache tier from the environment snapshot.
+        let remote_cache_config = cache::remote::RemoteCacheConfig::from_envs(&envs);
 
         // Prepend workspace's node_modules/.bin to PATH
         let workspace_node_modules_bin = workspace_root.path.join("node_modules").join(".bin");
@@ -253,6 +259,7 @@ impl<'a> Session<'a> {
             cache: OnceCell::new(),
             cache_path,
             cache_root,
+            remote_cache_config,
         })
     }
 
@@ -602,7 +609,15 @@ impl<'a> Session<'a> {
     ///
     /// Returns an error if the cache database cannot be loaded or created.
     pub fn cache(&self) -> anyhow::Result<&ExecutionCache> {
-        self.cache.get_or_try_init(|| ExecutionCache::load_from_path(&self.cache_path))
+        self.cache.get_or_try_init(|| {
+            let mut cache = ExecutionCache::load_from_path(&self.cache_path)?;
+            // Attach the remote tier when configured (VITE_REMOTE_CACHE_URL).
+            if let Some(config) = self.remote_cache_config.clone() {
+                tracing::debug!(?config, "remote cache enabled");
+                cache.set_remote(Box::new(cache::remote::HttpRemoteCache::new(config)?));
+            }
+            Ok(cache)
+        })
     }
 
     pub fn workspace_path(&self) -> Arc<AbsolutePath> {

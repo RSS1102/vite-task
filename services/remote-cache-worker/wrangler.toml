@@ -1,0 +1,25 @@
+# Cloudflare Worker config for the Vite+ remote task cache.
+#
+# Local development (`wrangler dev`) simulates KV and R2 on disk under
+# `.wrangler/`, so the placeholder `id` below is fine until you deploy. For a
+# real deployment, create the resources and fill in the real ids:
+#
+#   wrangler r2 bucket create vite-remote-cache
+#   wrangler kv namespace create CACHE_KV         # prints the namespace id
+#   wrangler secret put AUTH_TOKEN                 # set the shared bearer token
+#   wrangler deploy
+
+name = "vite-remote-cache"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+
+# R2 bucket holding output archives (`*.tar.zst`).
+[[r2_buckets]]
+binding = "CACHE_R2"
+bucket_name = "vite-remote-cache"
+
+# KV namespace holding the fingerprint maps. Replace `id` with the value printed
+# by `wrangler kv namespace create CACHE_KV` before deploying.
+[[kv_namespaces]]
+binding = "CACHE_KV"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"

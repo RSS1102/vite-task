@@ -2,6 +2,7 @@
 
 pub mod archive;
 pub mod display;
+pub mod remote;
 
 use std::{collections::BTreeMap, fmt::Display, fs::File, io::Write, sync::Arc, time::Duration};
 
@@ -11,6 +12,7 @@ pub use display::{
     SpawnFingerprintChange, detect_spawn_fingerprint_changes, format_input_change_str,
     format_spawn_change,
 };
+use remote::{RemoteCacheBackend, RemoteNamespace};
 use rusqlite::{Connection, OptionalExtension as _};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
@@ -117,6 +119,10 @@ pub struct CacheEntryValue {
 #[derive(Debug)]
 pub struct ExecutionCache {
     conn: Mutex<Connection>,
+    /// Optional second tier shared across machines. `None` disables remote
+    /// caching; reads fall back to it after a local miss and writes push to it
+    /// best-effort. See [`remote`].
+    remote: Option<Box<dyn RemoteCacheBackend>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -261,6 +267,17 @@ pub fn cache_schema_dir_name() -> Str {
     vite_str::format!("v{CACHE_SCHEMA_VERSION}")
 }
 
+/// Derive the remote-store key for a serialized cache/execution key blob.
+///
+/// The remote fingerprint namespaces are shared by every client, so the key is
+/// prefixed with the schema version (mirroring [`cache_schema_dir_name`] for
+/// the local cache): clients pinning different versions never read each other's
+/// incompatible blobs. The blob itself is hashed (see [`remote::remote_key`])
+/// to stay within remote key-length limits.
+fn remote_kv_key(key_blob: &[u8]) -> Str {
+    vite_str::format!("v{CACHE_SCHEMA_VERSION}-{}", remote::remote_key(key_blob))
+}
+
 impl ExecutionCache {
     #[tracing::instrument(level = "debug", skip_all)]
     pub fn load_from_path(path: &AbsolutePath) -> anyhow::Result<Self> {
@@ -287,7 +304,13 @@ impl ExecutionCache {
              CREATE TABLE IF NOT EXISTS task_fingerprints (key BLOB PRIMARY KEY, value BLOB);",
         )?;
         // Lock is released when lock_file is dropped
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self { conn: Mutex::new(conn), remote: None })
+    }
+
+    /// Attach a remote cache tier. Reads fall back to it after a local miss and
+    /// writes push to it best-effort (see [`Self::try_hit`] and [`Self::update`]).
+    pub fn set_remote(&mut self, remote: Box<dyn RemoteCacheBackend>) {
+        self.remote = Some(remote);
     }
 
     #[tracing::instrument]
@@ -298,20 +321,32 @@ impl ExecutionCache {
 
     /// Try to hit cache by looking up the cache entry key and validating inputs.
     /// Returns `Ok(Ok(cache_value))` on cache hit, `Ok(Err(cache_miss))` on miss.
+    ///
+    /// Each lookup is local-first: a local miss falls back to the remote tier
+    /// (if configured), and a remote hit is backfilled into the local cache —
+    /// its DB row and output archive (materialized into `cache_dir`) — so the
+    /// validation and replay paths are identical to a local hit.
     #[tracing::instrument(level = "debug", skip_all)]
     pub async fn try_hit(
         &self,
         cache_metadata: &CacheMetadata,
         globbed_inputs: &BTreeMap<RelativePathBuf, u64>,
         workspace_root: &AbsolutePath,
+        cache_dir: &AbsolutePath,
     ) -> anyhow::Result<Result<CacheEntryValue, CacheMiss>> {
         let spawn_fingerprint = &cache_metadata.spawn_fingerprint;
         let execution_cache_key = &cache_metadata.execution_cache_key;
 
         let cache_key = CacheEntryKey::from_metadata(cache_metadata);
 
-        // Try to find the cache entry by key (spawn fingerprint + input config)
-        if let Some(cache_value) = self.get_by_cache_key(&cache_key).await? {
+        // Find the cache entry by key (spawn fingerprint + input/output config):
+        // local first, then the remote tier (which backfills local on hit).
+        let entry = match self.get_by_cache_key(&cache_key).await? {
+            Some(cache_value) => Some(cache_value),
+            None => self.fetch_remote_entry(&cache_key, cache_dir).await?,
+        };
+
+        if let Some(cache_value) = entry {
             // Validate explicit globbed inputs against the stored values
             if let Some(mismatch) =
                 detect_globbed_input_change(&cache_value.globbed_inputs, globbed_inputs)
@@ -332,11 +367,15 @@ impl ExecutionCache {
             return Ok(Ok(cache_value));
         }
 
-        // No cache found with the current cache entry key,
-        // check if execution key maps to a different cache entry key
-        if let Some(old_cache_key) =
-            self.get_cache_key_by_execution_key(execution_cache_key).await?
-        {
+        // No cache found with the current cache entry key (locally or remotely);
+        // check if the execution key maps to a different cache entry key so we
+        // can report what changed. Consult the remote fingerprint map too, so a
+        // fresh machine still gets a precise miss reason.
+        let old_cache_key = match self.get_cache_key_by_execution_key(execution_cache_key).await? {
+            Some(old_cache_key) => Some(old_cache_key),
+            None => self.fetch_remote_fingerprint(execution_cache_key).await?,
+        };
+        if let Some(old_cache_key) = old_cache_key {
             // Destructure to ensure we handle all fields when new ones are added.
             // `get_by_cache_key` above returned None for the *current* cache key,
             // so at least one field on `old_cache_key` must differ from the
@@ -393,7 +432,179 @@ impl ExecutionCache {
 
         self.upsert_cache_entry(&cache_key, &cache_value).await?;
         self.upsert_task_fingerprint(execution_cache_key, &cache_key).await?;
+
+        // Push to the remote tier so other machines can hit this result. This
+        // is best-effort: a remote outage logs a warning but never fails the
+        // build, since the local cache already holds the authoritative entry.
+        if let Some(remote) = self.remote.as_deref() {
+            push_to_remote(remote, &cache_key, execution_cache_key, &cache_value, cache_dir).await;
+        }
         Ok(())
+    }
+
+    /// Fetch the cache entry for `cache_key` from the remote tier, backfilling
+    /// the local cache so the caller treats it like a local hit.
+    ///
+    /// On a remote hit the output archive (if any) is downloaded into
+    /// `cache_dir` and the entry row is written to the local DB. Returns `None`
+    /// when there is no remote tier, no remote entry, or the remote tier errors
+    /// or returns an unreadable blob — a remote problem degrades to a cache
+    /// miss rather than failing the run.
+    async fn fetch_remote_entry(
+        &self,
+        cache_key: &CacheEntryKey,
+        cache_dir: &AbsolutePath,
+    ) -> anyhow::Result<Option<CacheEntryValue>> {
+        let Some(remote) = self.remote.as_deref() else {
+            return Ok(None);
+        };
+        let key = remote_kv_key(&wincode::serialize(cache_key)?);
+
+        let value_blob = match remote.get_kv(RemoteNamespace::Entry, key.as_str()).await {
+            Ok(Some(blob)) => blob,
+            Ok(None) => return Ok(None),
+            Err(err) => {
+                tracing::warn!(?err, "remote cache entry lookup failed; treating as miss");
+                return Ok(None);
+            }
+        };
+        let cache_value: CacheEntryValue = match wincode::deserialize(&value_blob) {
+            Ok(value) => value,
+            Err(err) => {
+                tracing::warn!(?err, "remote cache entry blob unreadable; treating as miss");
+                return Ok(None);
+            }
+        };
+
+        // Materialize the output archive locally so `replay_cache_hit` extracts
+        // it from `cache_dir` exactly as for a local hit.
+        if let Some(archive_name) = &cache_value.output_archive
+            && let Err(err) = ensure_remote_artifact(remote, archive_name, cache_dir).await
+        {
+            tracing::warn!(
+                ?err,
+                archive = archive_name.as_str(),
+                "failed to fetch remote output archive; treating as miss"
+            );
+            return Ok(None);
+        }
+
+        // Backfill the local entry row so future lookups skip the network.
+        self.upsert_cache_entry(cache_key, &cache_value).await?;
+        Ok(Some(cache_value))
+    }
+
+    /// Fetch the execution-key → cache-key mapping from the remote tier, used to
+    /// report a precise miss reason on a machine whose local cache lacks it.
+    /// Returns `None` on any remote problem (the caller falls back to a generic
+    /// `NotFound`).
+    async fn fetch_remote_fingerprint(
+        &self,
+        execution_cache_key: &ExecutionCacheKey,
+    ) -> anyhow::Result<Option<CacheEntryKey>> {
+        let Some(remote) = self.remote.as_deref() else {
+            return Ok(None);
+        };
+        let key = remote_kv_key(&wincode::serialize(execution_cache_key)?);
+
+        let blob = match remote.get_kv(RemoteNamespace::Fingerprint, key.as_str()).await {
+            Ok(Some(blob)) => blob,
+            Ok(None) => return Ok(None),
+            Err(err) => {
+                tracing::warn!(?err, "remote fingerprint lookup failed; ignoring");
+                return Ok(None);
+            }
+        };
+        match wincode::deserialize(&blob) {
+            Ok(cache_key) => Ok(Some(cache_key)),
+            Err(err) => {
+                tracing::warn!(?err, "remote fingerprint blob unreadable; ignoring");
+                Ok(None)
+            }
+        }
+    }
+}
+
+/// Download a remote output archive into `cache_dir` if it isn't already there.
+///
+/// # Errors
+///
+/// Returns an error if the remote fetch fails, the archive is missing remotely,
+/// or the file cannot be written locally.
+async fn ensure_remote_artifact(
+    remote: &dyn RemoteCacheBackend,
+    archive_name: &str,
+    cache_dir: &AbsolutePath,
+) -> anyhow::Result<()> {
+    let archive_path = cache_dir.join(archive_name);
+    if archive_path.as_path().exists() {
+        return Ok(());
+    }
+    let bytes = remote
+        .get_artifact(archive_name)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("remote output archive '{archive_name}' is missing"))?;
+    std::fs::write(archive_path.as_path(), &bytes)?;
+    Ok(())
+}
+
+/// Push a freshly computed cache entry to the remote tier: its output archive
+/// (uploaded first, so any advertised entry's archive is always fetchable),
+/// then the entry value and the execution-key mapping. Every step is
+/// best-effort — failures are logged and never propagated.
+async fn push_to_remote(
+    remote: &dyn RemoteCacheBackend,
+    cache_key: &CacheEntryKey,
+    execution_cache_key: &ExecutionCacheKey,
+    cache_value: &CacheEntryValue,
+    cache_dir: &AbsolutePath,
+) {
+    if let Some(archive_name) = &cache_value.output_archive {
+        match std::fs::read(cache_dir.join(archive_name.as_str()).as_path()) {
+            Ok(bytes) => {
+                if let Err(err) = remote.put_artifact(archive_name, &bytes).await {
+                    tracing::warn!(
+                        ?err,
+                        archive = archive_name.as_str(),
+                        "failed to push output archive to remote cache"
+                    );
+                    // Don't advertise an entry whose archive isn't uploaded.
+                    return;
+                }
+            }
+            Err(err) => {
+                tracing::warn!(
+                    ?err,
+                    archive = archive_name.as_str(),
+                    "failed to read output archive for remote push"
+                );
+                return;
+            }
+        }
+    }
+
+    let (Ok(cache_key_blob), Ok(value_blob)) =
+        (wincode::serialize(cache_key), wincode::serialize(cache_value))
+    else {
+        tracing::warn!("failed to serialize cache entry for remote push");
+        return;
+    };
+
+    let entry_key = remote_kv_key(&cache_key_blob);
+    if let Err(err) = remote.put_kv(RemoteNamespace::Entry, entry_key.as_str(), &value_blob).await {
+        tracing::warn!(?err, "failed to push cache entry to remote cache");
+        return;
+    }
+
+    let Ok(execution_blob) = wincode::serialize(execution_cache_key) else {
+        tracing::warn!("failed to serialize execution key for remote push");
+        return;
+    };
+    let fingerprint_key = remote_kv_key(&execution_blob);
+    if let Err(err) =
+        remote.put_kv(RemoteNamespace::Fingerprint, fingerprint_key.as_str(), &cache_key_blob).await
+    {
+        tracing::warn!(?err, "failed to push fingerprint mapping to remote cache");
     }
 }
 
@@ -584,6 +795,7 @@ impl ExecutionCache {
 
 #[cfg(test)]
 mod tests {
+    use remote::InMemoryRemoteCache;
     use rusqlite::Connection;
     use tempfile::TempDir;
     use vite_path::AbsolutePathBuf;
@@ -594,6 +806,45 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let dir = AbsolutePathBuf::new(tmp.path().to_path_buf()).unwrap();
         (tmp, dir)
+    }
+
+    /// A remote-only archive is downloaded into `cache_dir` so the replay path
+    /// finds it locally.
+    #[tokio::test]
+    async fn ensure_remote_artifact_downloads_when_missing() {
+        let (_tmp, dir) = temp_dir();
+        let remote = InMemoryRemoteCache::default();
+        remote.put_artifact("out.tar.zst", b"archive-bytes").await.unwrap();
+
+        ensure_remote_artifact(&remote, "out.tar.zst", &dir).await.unwrap();
+
+        let written = std::fs::read(dir.join("out.tar.zst").as_path()).unwrap();
+        assert_eq!(written, b"archive-bytes");
+    }
+
+    /// An archive already present locally is left untouched and triggers no
+    /// remote fetch (the empty remote would otherwise error).
+    #[tokio::test]
+    async fn ensure_remote_artifact_skips_when_already_local() {
+        let (_tmp, dir) = temp_dir();
+        std::fs::write(dir.join("out.tar.zst").as_path(), b"local-bytes").unwrap();
+        let remote = InMemoryRemoteCache::default();
+
+        ensure_remote_artifact(&remote, "out.tar.zst", &dir).await.unwrap();
+
+        assert_eq!(std::fs::read(dir.join("out.tar.zst").as_path()).unwrap(), b"local-bytes");
+    }
+
+    /// An entry referencing an archive the remote no longer has is an error, so
+    /// the caller can treat the would-be hit as a miss.
+    #[tokio::test]
+    async fn ensure_remote_artifact_errors_when_remote_missing() {
+        let (_tmp, dir) = temp_dir();
+        let remote = InMemoryRemoteCache::default();
+
+        let err = ensure_remote_artifact(&remote, "gone.tar.zst", &dir).await.unwrap_err();
+
+        assert!(err.to_string().contains("missing"), "unexpected error: {err}");
     }
 
     fn open_raw(db: &AbsolutePath) -> Connection {

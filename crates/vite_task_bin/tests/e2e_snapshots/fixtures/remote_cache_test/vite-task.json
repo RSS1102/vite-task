@@ -1,0 +1,18 @@
+{
+  "tasks": {
+    "remote-cache-start": {
+      "command": "node scripts/remote-cache-dev.mjs start --state-dir .remote-cache --url-file .remote-cache/url --token-file .remote-cache/token",
+      "cache": false
+    },
+    "remote-cache-stop": {
+      "command": "node scripts/remote-cache-dev.mjs stop --state-dir .remote-cache",
+      "cache": false
+    },
+    "build": {
+      "command": "vtt write-file dist/output.txt built",
+      "input": ["src/**"],
+      "output": ["dist/**"],
+      "cache": true
+    }
+  }
+}

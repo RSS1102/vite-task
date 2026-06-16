@@ -1,0 +1,7 @@
+# Copy to `.dev.vars` (gitignored) to configure local `wrangler dev`.
+#
+# When AUTH_TOKEN is set, the worker requires every request to carry
+# `Authorization: Bearer <AUTH_TOKEN>`. Point the client at it with:
+#   VITE_REMOTE_CACHE_URL=http://localhost:8787
+#   VITE_REMOTE_CACHE_TOKEN=local-dev-token
+AUTH_TOKEN=local-dev-token
