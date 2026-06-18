@@ -2,7 +2,7 @@
 
 `vp build` now has a better source of cache metadata: Vite itself.
 
-# Background: how caching works
+## How caching works
 
 A *task runner* like `vp run` speeds up repeated work by not repeating it.
 
