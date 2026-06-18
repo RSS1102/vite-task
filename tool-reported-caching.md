@@ -1,6 +1,9 @@
 # Tool-Reported Caching
 
-`vp build` now has a better source of cache metadata: Vite itself.
+`vp build` now gets cache metadata from Vite itself.
+
+Instead of asking users to list every input, output, and env var, Vite reports
+the cache facts it already knows.
 
 ## How caching works
 
@@ -58,6 +61,8 @@ flowchart TD
   C --> E["Input fingerprint"]
   D --> F["Output archive"]
 ```
+
+fspy covers files. Tool-reported caching covers the intent fspy cannot infer.
 
 For a straightforward file-only build, automatic tracking is enough. The user
 doesn't need to hand-list files:
@@ -155,7 +160,7 @@ flowchart LR
 Vite reports the exact temporary file in both directions. `ignoreInput` keeps it
 out of the input fingerprint. `ignoreOutput` keeps it out of the output archive.
 
-## The user still wins
+## Manual config still wins
 
 Tool-reported caching refines automatic inference. It does not override the user.
 
