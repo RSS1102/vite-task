@@ -1,7 +1,0 @@
-// run test_peer
-{
-  "packages/app#test_peer": [
-    "packages/peer-a#build"
-  ],
-  "packages/peer-a#build": []
-}

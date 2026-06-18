@@ -1,8 +1,0 @@
-{
-  "tasks": {
-    "build": {
-      "command": "vtt build nearest-stop-app",
-      "dependsOn": [{ "task": "build", "from": "dependencies" }]
-    }
-  }
-}
