@@ -196,9 +196,9 @@ The party that knows the cache behavior should declare it.
 
 ```mermaid
 flowchart TD
-  Tool["Tool owns semantics"]
-  Runner["Runner owns mechanics"]
-  User["User owns policy"]
+  Tool["Tool reports what matters"]
+  Runner["Runner fingerprints and restores"]
+  User["User overrides when needed"]
   Tool --> Runner
   User --> Runner
 ```
