@@ -143,17 +143,13 @@ observation, the cache would fingerprint and archive a file that only existed to
 load config for this run.
 
 ```mermaid
-sequenceDiagram
-  participant R as Runner
-  participant V as Vite
-  R->>V: start vp build with fspy
-  V->>V: create temporary bundled config
-  R-->>R: fspy records a write
-  V->>V: load temporary bundled config
-  R-->>R: fspy records a read
-  V->>R: ignoreInput(temp config file)
-  V->>R: ignoreOutput(temp config file)
-  R-->>R: exclude it from inputs and outputs
+flowchart LR
+  A["Temp bundled config file"] --> B["fspy: read + write"]
+  B --> C["would be input + output"]
+  A --> D["Vite: ignoreInput + ignoreOutput"]
+  C --> E["Runner excludes it"]
+  D --> E
+  E --> F["not fingerprinted or archived"]
 ```
 
 Vite reports the exact temporary file in both directions. `ignoreInput` keeps it
