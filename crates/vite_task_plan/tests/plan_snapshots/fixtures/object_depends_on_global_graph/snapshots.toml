@@ -1,0 +1,29 @@
+[[plan]]
+compact = true
+name = "dependencies_from"
+args = ["run", "test_dependencies"]
+cwd = "packages/app"
+
+[[plan]]
+compact = true
+name = "dev_dependencies_from"
+args = ["run", "test_dev"]
+cwd = "packages/app"
+
+[[plan]]
+compact = true
+name = "multiple_from_fields"
+args = ["run", "test_union"]
+cwd = "packages/app"
+
+[[plan]]
+compact = true
+name = "recursive_through_global_task_graph"
+args = ["run", "test_recursive"]
+cwd = "packages/app"
+
+[[plan]]
+compact = true
+name = "ignore_depends_on_omits_object_edges"
+args = ["run", "--ignore-depends-on", "test_union"]
+cwd = "packages/app"

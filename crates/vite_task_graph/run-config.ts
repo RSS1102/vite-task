@@ -8,6 +8,12 @@ auto: boolean, };
 
 export type Command = string | Array<string>;
 
+export type DependencyType = "dependencies" | "devDependencies" | "peerDependencies";
+
+export type DependsOnEntry = string | UserPackageDependency;
+
+export type DependsOnFrom = DependencyType | Array<DependencyType>;
+
 export type GlobWithBase = {
 /**
  * The glob pattern (positive or negative starting with `!`)
@@ -30,9 +36,12 @@ command: Command,
  */
 cwd?: string,
 /**
- * Dependencies of this task. Use `package-name#task-name` to refer to tasks in other packages.
+ * Dependencies of this task.
+ *
+ * String entries keep same-package / `package-name#task-name` behavior.
+ * Object entries select direct workspace dependency packages from package.json fields.
  */
-dependsOn?: Array<string>, } & ({
+dependsOn?: Array<DependsOnEntry>, } & ({
 /**
  * Whether to cache the task
  */
@@ -94,6 +103,16 @@ scripts?: boolean,
  * Default: `true`
  */
 tasks?: boolean, };
+
+export type UserPackageDependency = {
+/**
+ * Task name to run in dependency packages.
+ */
+task: string,
+/**
+ * Package.json dependency field or fields to use when selecting direct dependency packages.
+ */
+from: DependsOnFrom, };
 
 export type RunConfig = {
 /**
