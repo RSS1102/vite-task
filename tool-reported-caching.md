@@ -86,11 +86,9 @@ sequenceDiagram
   participant T as Vite
   U->>R: vp run build
   R->>T: start vp build with fspy + reporting channel
-  T->>R: getEnvs("VITE_*")
-  T->>R: getEnv("NODE_ENV")
-  T->>R: ignoreInput(temp config file)
-  T->>R: ignoreOutput(temp config file)
-  R->>R: merge fspy access + tool reports
+  T->>R: file reads and writes observed by fspy
+  T->>R: cache facts reported via @voidzero-dev/vite-task-client
+  R->>R: merge observations and reports
   R->>U: cache hit or miss
 ```
 
