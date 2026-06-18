@@ -207,6 +207,10 @@ fspy moved file inputs from the user to the runner's observation.
 Tool-reported caching moves the rest — envs, scratch, overlap — from the user
 to the tool.
 
-Vite is the first tool to use tool-reported caching, and the first step of
-Vite+ tools owning their own caching. The same client is open to any tool in
-the ecosystem.
+## What's next
+
+- This is only the start. We'll refine what Vite reports and extend this
+  mechanism to other Vite+ first-party tools.
+- Third-party tools are welcome to use
+  [`@voidzero-dev/vite-task-client`](https://npmx.dev/package/@voidzero-dev/vite-task-client)
+  to help `vp run` cache their work more accurately.
