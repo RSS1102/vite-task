@@ -1,0 +1,5 @@
+{
+  "name": "vitest-cache-modes-fixture",
+  "private": true,
+  "type": "module"
+}

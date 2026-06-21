@@ -1,0 +1,87 @@
+[[e2e]]
+name = "vitest_run_caches"
+comment = """
+`vitest run` creates a Vite server for transforms, but it does not listen on a port and Vitest sets `server.watch = null` in run mode. Vitest's own result cache is disabled so this fixture isolates Vite's task-cache signal; the task should stay cacheable.
+"""
+ignore = true
+steps = [
+  { argv = [
+    "vt",
+    "run",
+    "--cache",
+    "vitest-run",
+  ], comment = "first run: Vitest uses Vite as a non-watching transform server" },
+  { argv = [
+    "vt",
+    "run",
+    "--cache",
+    "vitest-run",
+  ], comment = "cache hit: no port listen or filesystem watcher opted out" },
+  { argv = [
+    "vt",
+    "run",
+    "--last-details",
+  ], comment = "summary shows the cached replay" },
+]
+
+[[e2e]]
+name = "vitest_api_disables_cache"
+comment = """
+`vitest --api` binds a Vite/Vitest API server port. Binding the port should call `disableCache()` immediately before listening, so completed API runs are not stored.
+"""
+ignore = true
+steps = [
+  { argv = [
+    "vt",
+    "run",
+    "--cache",
+    "vitest-api",
+  ], comment = "first run: --api listens on a port and opts out" },
+  { argv = [
+    "vt",
+    "run",
+    "--cache",
+    "vitest-api",
+  ], comment = "re-executes because the API run was not cached" },
+  { argv = [
+    "vt",
+    "run",
+    "--last-details",
+  ], comment = "summary names the port-listen opt-out" },
+]
+
+[[e2e]]
+name = "vitest_watch_disables_cache"
+comment = """
+`vitest watch` starts Vite's filesystem watcher. Vitest's own result cache is disabled so this fixture isolates Vite's task-cache signal. The custom reporter exits after the first completed test run so the e2e can assert that the completed watch-mode task still opted out of caching.
+"""
+ignore = true
+steps = [
+  { argv = [
+    "vt",
+    "run",
+    "--cache",
+    "vitest-watch",
+  ], envs = [
+    [
+      "VITEST_EXIT_AFTER_RUN",
+      "1",
+    ],
+  ], comment = "first run: watch mode observes the filesystem and opts out" },
+  { argv = [
+    "vt",
+    "run",
+    "--cache",
+    "vitest-watch",
+  ], envs = [
+    [
+      "VITEST_EXIT_AFTER_RUN",
+      "1",
+    ],
+  ], comment = "re-executes because the watch run was not cached" },
+  { argv = [
+    "vt",
+    "run",
+    "--last-details",
+  ], comment = "summary names the watcher opt-out" },
+]

@@ -1,0 +1,17 @@
+{
+  "tasks": {
+    "vitest-run": {
+      "command": "vitest run --no-cache --reporter=./quiet-reporter.mjs",
+      "cache": true
+    },
+    "vitest-api": {
+      "command": "vitest --api=51289 --run --no-cache --reporter=./quiet-reporter.mjs",
+      "cache": true
+    },
+    "vitest-watch": {
+      "command": "vitest watch --no-cache --reporter=./quiet-reporter.mjs",
+      "cache": true,
+      "env": ["VITEST_EXIT_AFTER_RUN"]
+    }
+  }
+}

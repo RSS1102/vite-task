@@ -1,10 +1,10 @@
 # vite_dev_disables_cache
 
-`vt run --cache dev` brings up a Vite dev server programmatically on an ephemeral port and closes it immediately. Vite's `_createServer` calls `disableCache()` via `@voidzero-dev/vite-task-client`, so this run is never stored — the next invocation re-executes (cache miss / NotFound).
+`vt run --cache dev` brings up a Vite dev server programmatically in middleware mode and closes it immediately. Middleware mode skips the port listen, but the default Vite dev watcher calls `disableCache()` via `@voidzero-dev/vite-task-client`, so this run is never stored — the next invocation re-executes (cache miss / NotFound).
 
 ## `vt run --cache dev`
 
-first run — Vite dev start calls disableCache
+first run — Vite dev watcher calls disableCache
 
 ```
 $ node dev.mjs
