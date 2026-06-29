@@ -70,13 +70,6 @@ where
     K: AsRef<OsStr>,
     V: AsRef<OsStr>,
 {
-    #[cfg(fspy)]
-    if fspy {
-        return spawn_fspy(cmd, stdio, cancellation_token, extra_envs).await;
-    }
-    #[cfg(not(fspy))]
-    let _ = fspy;
-
     let mut tokio_cmd = tokio::process::Command::new(cmd.program_path.as_path());
     tokio_cmd.args(cmd.args.iter().map(vite_str::Str::as_str));
     tokio_cmd.env_clear();
@@ -84,46 +77,23 @@ where
     tokio_cmd.envs(extra_envs);
     tokio_cmd.current_dir(&*cmd.cwd);
     apply_stdio(&mut tokio_cmd, stdio);
+
+    #[cfg(fspy)]
+    if fspy {
+        return spawn_fspy(tokio_cmd, cancellation_token).await;
+    }
+    #[cfg(not(fspy))]
+    let _ = fspy;
+
     spawn_tokio(tokio_cmd, cancellation_token)
 }
 
 #[cfg(fspy)]
-async fn spawn_fspy<E, K, V>(
-    cmd: &SpawnCommand,
-    stdio: SpawnStdio,
+async fn spawn_fspy(
+    tokio_cmd: tokio::process::Command,
     cancellation_token: CancellationToken,
-    extra_envs: E,
-) -> anyhow::Result<ChildHandle>
-where
-    E: IntoIterator<Item = (K, V)>,
-    K: AsRef<OsStr>,
-    V: AsRef<OsStr>,
-{
-    let mut fspy_cmd = fspy::Command::new(cmd.program_path.as_path());
-    fspy_cmd.args(cmd.args.iter().map(vite_str::Str::as_str));
-    fspy_cmd.envs(cmd.spawn_envs.iter());
-    fspy_cmd.envs(extra_envs);
-    fspy_cmd.current_dir(&*cmd.cwd);
-
-    match stdio {
-        SpawnStdio::Inherited => {
-            fspy_cmd.stdin(Stdio::inherit()).stdout(Stdio::inherit()).stderr(Stdio::inherit());
-            // libuv (used by Node.js) marks stdin/stdout/stderr as close-on-exec;
-            // without this fix the child reopens fds 0-2 as /dev/null after exec.
-            // See: https://github.com/libuv/libuv/issues/2062
-            // SAFETY: the pre_exec closure only performs fcntl operations on
-            // stdio fds, which is safe in a post-fork context.
-            #[cfg(unix)]
-            unsafe {
-                fspy_cmd.pre_exec(clear_stdio_cloexec);
-            }
-        }
-        SpawnStdio::Piped => {
-            fspy_cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-        }
-    }
-
-    let mut tracked = fspy_cmd.spawn(cancellation_token).await?;
+) -> anyhow::Result<ChildHandle> {
+    let mut tracked = fspy::spawn(tokio_cmd, cancellation_token).await?;
 
     // On Windows, assign the child to a Job Object so that killing the child
     // also kills all descendant processes (e.g., node.exe via a .cmd shim).

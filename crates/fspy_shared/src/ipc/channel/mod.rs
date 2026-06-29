@@ -228,13 +228,13 @@ mod tests {
     #[test]
     fn smoke() {
         let (conf, receiver) = channel(100).unwrap();
-        let cmd = command_for_fn!(conf, |conf: ChannelConf| {
+        let mut cmd = command_for_fn!(conf, |conf: ChannelConf| {
             let sender = conf.sender().unwrap();
             let frame_size = NonZeroUsize::new(2).unwrap();
             let mut frame = sender.claim_frame(frame_size).unwrap();
             frame.copy_from_slice(&[4, 2]);
         });
-        assert!(std::process::Command::from(cmd).status().unwrap().success());
+        assert!(cmd.status().unwrap().success());
 
         let lock = receiver.lock().unwrap();
         let mut frames = lock.iter_frames();
@@ -251,10 +251,10 @@ mod tests {
         let (conf, receiver) = channel(42).unwrap();
         let _lock = receiver.lock().unwrap();
 
-        let cmd = command_for_fn!(conf, |conf: ChannelConf| {
+        let mut cmd = command_for_fn!(conf, |conf: ChannelConf| {
             print!("{}", conf.sender().is_ok());
         });
-        let output = std::process::Command::from(cmd).output().unwrap();
+        let output = cmd.output().unwrap();
         assert_eq!(B(&output.stdout), B("false"));
     }
 
@@ -264,10 +264,10 @@ mod tests {
         let (conf, receiver) = channel(42).unwrap();
         drop(receiver);
 
-        let cmd = command_for_fn!(conf, |conf: ChannelConf| {
+        let mut cmd = command_for_fn!(conf, |conf: ChannelConf| {
             print!("{}", conf.sender().is_ok());
         });
-        let output = std::process::Command::from(cmd).output().unwrap();
+        let output = cmd.output().unwrap();
         assert_eq!(B(&output.stdout), B("false"));
     }
 
@@ -275,7 +275,7 @@ mod tests {
     fn concurrent_senders() {
         let (conf, receiver) = channel(8192).unwrap();
         for i in 0u16..200 {
-            let cmd = command_for_fn!((conf.clone(), i), |(conf, i): (ChannelConf, u16)| {
+            let mut cmd = command_for_fn!((conf.clone(), i), |(conf, i): (ChannelConf, u16)| {
                 let sender = conf.sender().unwrap();
                 let data_to_send = i.to_string();
                 sender
@@ -283,7 +283,7 @@ mod tests {
                     .unwrap()
                     .copy_from_slice(data_to_send.as_bytes());
             });
-            let output = std::process::Command::from(cmd).output().unwrap();
+            let output = cmd.output().unwrap();
             assert!(
                 output.status.success(),
                 "Failed to send in iteration {}: {:?}",

@@ -15,10 +15,10 @@ async fn main() -> anyhow::Result<()> {
 
     let program = PathBuf::from(args.next().unwrap());
 
-    let mut command = fspy::Command::new(program);
+    let mut command = tokio::process::Command::new(program);
     command.envs(std::env::vars_os()).args(args);
 
-    let child = command.spawn(tokio_util::sync::CancellationToken::new()).await?;
+    let child = fspy::spawn(command, tokio_util::sync::CancellationToken::new()).await?;
     let termination = child.wait_handle.await?;
 
     let mut path_count = 0usize;

@@ -14,9 +14,9 @@ async fn cancellation_kills_tracked_child() -> anyhow::Result<()> {
         let _ = std::io::stdin().read_line(&mut String::new());
     });
     let token = CancellationToken::new();
-    let mut fspy_cmd = fspy::Command::from(cmd);
-    fspy_cmd.stdout(Stdio::piped()).stdin(Stdio::piped());
-    let mut child = fspy_cmd.spawn(token.clone()).await?;
+    let mut cmd = tokio::process::Command::from(cmd);
+    cmd.stdout(Stdio::piped()).stdin(Stdio::piped());
+    let mut child = fspy::spawn(cmd, token.clone()).await?;
 
     // Wait for child to signal readiness
     let mut stdout = child.stdout.take().unwrap();

@@ -320,11 +320,7 @@ impl<M: AsRef<[u8]>> ShmReader<M> {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        process::{Child, Command},
-        sync::Arc,
-        thread,
-    };
+    use std::{process::Child, sync::Arc, thread};
 
     use assert2::assert;
     use bstr::BStr;
@@ -676,7 +672,7 @@ mod tests {
 
         let children: Vec<Child> = (0..CHILD_COUNT)
             .map(|child_index| {
-                let cmd = command_for_fn!(
+                let mut cmd = command_for_fn!(
                     (shm_name.clone(), child_index),
                     |(shm_name, child_index): (String, usize)| {
                         let shm = ShmemConf::new().os_id(shm_name).open().unwrap();
@@ -690,7 +686,7 @@ mod tests {
                         }
                     }
                 );
-                Command::from(cmd).spawn().unwrap()
+                cmd.spawn().unwrap()
             })
             .collect();
 

@@ -1,54 +1,26 @@
-use std::{env::current_exe, ffi::OsString, path::PathBuf, process::Command as StdCommand};
+#![cfg_attr(feature = "portable-pty", feature(command_resolved_envs))]
+
+use std::{env::current_exe, ffi::OsString, process::Command as StdCommand};
 
 use base64::{Engine, prelude::BASE64_STANDARD_NO_PAD};
-use rustc_hash::FxHashMap;
 use wincode::{SchemaReadOwned, SchemaWrite, config::DefaultConfig};
 
-/// A command configuration that can be converted to `std::process::Command`
-/// or `fspy::Command` for execution.
-#[derive(Debug, Clone)]
-pub struct Command {
-    pub program: OsString,
-    pub args: Vec<OsString>,
-    pub envs: FxHashMap<OsString, OsString>,
-    pub cwd: PathBuf,
-}
-
-impl From<Command> for StdCommand {
-    fn from(cmd: Command) -> Self {
-        let mut std_cmd = Self::new(cmd.program);
-        std_cmd.args(cmd.args);
-        std_cmd.env_clear().envs(cmd.envs);
-        std_cmd.current_dir(cmd.cwd);
-        std_cmd
-    }
-}
-
-#[cfg(feature = "fspy")]
-impl From<Command> for fspy::Command {
-    fn from(cmd: Command) -> Self {
-        let mut fspy_cmd = Self::new(cmd.program);
-        fspy_cmd.args(cmd.args).envs(cmd.envs);
-        fspy_cmd.current_dir(cmd.cwd);
-        fspy_cmd
-    }
-}
-
 #[cfg(feature = "portable-pty")]
-impl From<Command> for portable_pty::CommandBuilder {
-    fn from(cmd: Command) -> Self {
-        let mut cmd_builder = Self::new(cmd.program);
-        cmd_builder.args(cmd.args);
-        cmd_builder.env_clear();
-        for (key, value) in cmd.envs {
-            cmd_builder.env(key, value);
-        }
-        cmd_builder.cwd(cmd.cwd);
-        cmd_builder
+#[must_use]
+pub fn portable_pty_command_builder(cmd: &StdCommand) -> portable_pty::CommandBuilder {
+    let mut cmd_builder = portable_pty::CommandBuilder::new(cmd.get_program());
+    cmd_builder.args(cmd.get_args());
+    cmd_builder.env_clear();
+    for (key, value) in cmd.get_resolved_envs() {
+        cmd_builder.env(key, value);
     }
+    if let Some(cwd) = cmd.get_current_dir() {
+        cmd_builder.cwd(cwd);
+    }
+    cmd_builder
 }
 
-/// Creates a `subprocess_test::Command` that only executes the provided function.
+/// Creates a `std::process::Command` that only executes the provided function.
 ///
 /// - $arg: The argument to pass to the function, must implement `SchemaWrite` and `SchemaReadOwned`.
 /// - $f: The function to run in the separate process, takes one argument of the type of $arg.
@@ -135,31 +107,30 @@ pub fn init_impl<A: SchemaReadOwned<DefaultConfig, Dst = A>>(expected_id: &str, 
 }
 
 #[doc(hidden)]
-pub fn create_command<T: SchemaWrite<DefaultConfig, Src = T>>(id: &str, arg: T) -> Command {
+pub fn create_command<T: SchemaWrite<DefaultConfig, Src = T>>(id: &str, arg: T) -> StdCommand {
     let program = current_exe().unwrap().into_os_string();
     let arg_bytes = wincode::serialize(&arg).expect("Failed to encode arg");
     let arg_base64 = BASE64_STANDARD_NO_PAD.encode(&arg_bytes);
 
     let args = vec![OsString::from(id), OsString::from(arg_base64)];
-    let envs: FxHashMap<OsString, OsString> = std::env::vars_os().collect();
-    let cwd = std::env::current_dir().unwrap();
-
-    Command { program, args, envs, cwd }
+    let mut command = StdCommand::new(program);
+    command.args(args);
+    command.env_clear().envs(std::env::vars_os());
+    command.current_dir(std::env::current_dir().unwrap());
+    command
 }
 
 #[cfg(test)]
 mod tests {
     use std::str::from_utf8;
 
-    use crate::StdCommand;
-
     #[test]
     #[expect(clippy::print_stdout, reason = "test diagnostics")]
     fn test_command_for_fn() {
-        let command = command_for_fn!(42u32, |arg: u32| {
+        let mut command = command_for_fn!(42u32, |arg: u32| {
             print!("{arg}");
         });
-        let output = StdCommand::from(command).output().unwrap();
+        let output = command.output().unwrap();
         assert_eq!(from_utf8(&output.stdout), Ok("42"));
         assert!(output.status.success());
     }

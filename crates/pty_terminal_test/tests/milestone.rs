@@ -1,15 +1,14 @@
 use std::io::Write;
 
 use ntest::timeout;
-use portable_pty::CommandBuilder;
 use pty_terminal::geo::ScreenSize;
 use pty_terminal_test::TestTerminal;
-use subprocess_test::command_for_fn;
+use subprocess_test::{command_for_fn, portable_pty_command_builder};
 
 #[test]
 #[timeout(5000)]
 fn milestone_raw_mode_keystrokes() {
-    let cmd = CommandBuilder::from(command_for_fn!((), |(): ()| {
+    let cmd = portable_pty_command_builder(&command_for_fn!((), |(): ()| {
         use std::io::{Read, Write, stdout};
 
         // Enable raw mode (cross-platform via crossterm)
@@ -77,7 +76,7 @@ fn milestone_raw_mode_keystrokes() {
 #[test]
 #[timeout(5000)]
 fn milestone_does_not_pollute_screen() {
-    let cmd = CommandBuilder::from(command_for_fn!((), |(): ()| {
+    let cmd = portable_pty_command_builder(&command_for_fn!((), |(): ()| {
         use std::io::{Read, Write, stdout};
 
         crossterm::terminal::enable_raw_mode().unwrap();

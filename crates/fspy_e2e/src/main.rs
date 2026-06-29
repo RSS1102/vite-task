@@ -75,7 +75,7 @@ async fn main() {
             continue;
         }
         println!("Running case `{}` in dir `{}`", name, case.dir);
-        let mut cmd = fspy::Command::new(case.cmd[0].clone());
+        let mut cmd = tokio::process::Command::new(case.cmd[0].clone());
         let dir = manifest_dir.join(&case.dir);
         cmd.args(&case.cmd[1..])
             .envs(env::vars_os())
@@ -85,7 +85,7 @@ async fn main() {
             .current_dir(&dir);
 
         let mut tracked_child =
-            cmd.spawn(tokio_util::sync::CancellationToken::new()).await.unwrap();
+            fspy::spawn(cmd, tokio_util::sync::CancellationToken::new()).await.unwrap();
 
         let mut stdout_bytes = Vec::<u8>::new();
         tracked_child.stdout.take().unwrap().read_to_end(&mut stdout_bytes).await.unwrap();

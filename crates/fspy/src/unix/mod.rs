@@ -4,8 +4,15 @@ mod syscall_handler;
 #[cfg(target_os = "macos")]
 mod macos_artifacts;
 
-use std::{io, path::Path};
+use std::{
+    ffi::{CString, OsStr, c_char},
+    io,
+    os::unix::ffi::{OsStrExt as _, OsStringExt as _},
+    path::Path,
+    ptr,
+};
 
+use bstr::BString;
 #[cfg(target_os = "linux")]
 use fspy_seccomp_unotify::supervisor::supervise;
 use fspy_shared::ipc::PathAccess;
@@ -14,19 +21,19 @@ use fspy_shared::ipc::{NativeStr, channel::channel};
 #[cfg(target_os = "macos")]
 use fspy_shared_unix::payload::Artifacts;
 use fspy_shared_unix::{
-    exec::ExecResolveConfig,
+    exec::{Exec, ExecResolveConfig},
     payload::{Payload, encode_payload},
     spawn::handle_exec,
 };
 use futures_util::FutureExt;
 #[cfg(target_os = "linux")]
 use syscall_handler::SyscallHandler;
-use tokio::task::spawn_blocking;
+use tokio::{process::Command as TokioCommand, task::spawn_blocking};
 use tokio_util::sync::CancellationToken;
 
 #[cfg(not(target_env = "musl"))]
 use crate::ipc::{OwnedReceiverLockGuard, SHM_CAPACITY};
-use crate::{ChildTermination, Command, TrackedChild, arena::PathAccessArena, error::SpawnError};
+use crate::{ChildTermination, TrackedChild, arena::PathAccessArena, error::SpawnError};
 
 #[derive(Debug)]
 pub struct SpyImpl {
@@ -71,7 +78,7 @@ impl SpyImpl {
 
     pub(crate) async fn spawn(
         &self,
-        mut command: Command,
+        mut command: TokioCommand,
         cancellation_token: CancellationToken,
     ) -> Result<TrackedChild, SpawnError> {
         #[cfg(target_os = "linux")]
@@ -97,36 +104,36 @@ impl SpyImpl {
 
         let encoded_payload = encode_payload(payload);
 
-        let mut exec = command.get_exec();
+        let mut exec = command_to_exec(&command)?;
         let mut exec_resolve_accesses = PathAccessArena::default();
         let pre_exec = handle_exec(
             &mut exec,
-            ExecResolveConfig::search_path_enabled(None),
+            ExecResolveConfig::search_path_disabled(),
             &encoded_payload,
             |mode, path| {
                 exec_resolve_accesses.add(PathAccess { mode, path: path.into() });
             },
         )
         .map_err(|err| SpawnError::Injection(err.into()))?;
-        command.set_exec(exec);
-        command.env("FSPY", "1");
+        set_exec_env(&mut exec, b"FSPY", b"1");
+        let execve_command = ExecveCommand::new(exec).map_err(SpawnError::OsSpawn)?;
 
-        let mut tokio_command = command.into_tokio_command();
-
-        // SAFETY: the pre_exec closure only calls pre_exec.run() which is safe to call in a fork context
+        // SAFETY: caller-provided pre_exec hooks (if any) run first. This hook
+        // then installs fspy's process-local state and execs the resolved
+        // program with the resolved environment.
         unsafe {
-            tokio_command.pre_exec(move || {
+            command.pre_exec(move || {
                 if let Some(pre_exec) = pre_exec.as_ref() {
                     pre_exec.run()?;
                 }
-                Ok(())
+                execve_command.exec()
             });
         }
 
-        // tokio_command.spawn blocks while executing the `pre_exec` closure.
+        // command.spawn blocks while executing the `pre_exec` closure.
         // Run it inside spawn_blocking to avoid blocking the tokio runtime, especially the supervisor loop,
         // which needs to accept incoming connections while `pre_exec` is connecting to it.
-        let mut child = spawn_blocking(move || tokio_command.spawn())
+        let mut child = spawn_blocking(move || command.spawn())
             .await
             .map_err(|err| SpawnError::OsSpawn(err.into()))?
             .map_err(SpawnError::OsSpawn)?;
@@ -175,6 +182,109 @@ impl SpyImpl {
             .boxed(),
         })
     }
+}
+
+fn command_to_exec(command: &TokioCommand) -> Result<Exec, SpawnError> {
+    let command = command.as_std();
+    let resolved_envs = command.get_resolved_envs().collect::<Vec<_>>();
+    let path_env = resolved_envs.iter().find_map(|(name, value)| {
+        name.to_str()
+            .is_some_and(|name| name.eq_ignore_ascii_case("path"))
+            .then_some(value.as_os_str())
+    });
+
+    let cwd = command.get_current_dir().map_or_else(
+        || std::env::current_dir().expect("failed to get current dir"),
+        Path::to_path_buf,
+    );
+    let program = which::which_in(command.get_program(), path_env, &cwd).map_err(|err| {
+        SpawnError::Which {
+            program: command.get_program().to_os_string(),
+            path: path_env.map(OsStr::to_owned),
+            cwd,
+            cause: err,
+        }
+    })?;
+
+    let args = std::iter::once(program.as_os_str())
+        .chain(command.get_args())
+        .map(|arg| BString::from(arg.as_bytes().to_vec()))
+        .collect();
+    let envs = resolved_envs
+        .into_iter()
+        .map(|(name, value)| {
+            (BString::from(name.into_vec()), Some(BString::from(value.into_vec())))
+        })
+        .collect();
+
+    Ok(Exec { program: BString::from(program.into_os_string().into_vec()), args, envs })
+}
+
+fn set_exec_env(exec: &mut Exec, name: &[u8], value: &[u8]) {
+    if let Some((_, existing_value)) = exec.envs.iter_mut().find(|(env_name, _)| env_name == name) {
+        *existing_value = Some(BString::from(value.to_vec()));
+    } else {
+        exec.envs.push((BString::from(name.to_vec()), Some(BString::from(value.to_vec()))));
+    }
+}
+
+struct ExecveCommand {
+    program: CString,
+    args: Vec<CString>,
+    envs: Vec<CString>,
+    arg_ptrs: Vec<*const c_char>,
+    env_ptrs: Vec<*const c_char>,
+}
+
+// SAFETY: The raw pointers point into immutable `CString` allocations owned by
+// the same struct. They are only read in the child-side pre_exec hook.
+unsafe impl Send for ExecveCommand {}
+// SAFETY: See the `Send` impl. The struct is captured by a pre_exec closure
+// requiring `Sync`, but it is not accessed concurrently after fork.
+unsafe impl Sync for ExecveCommand {}
+
+impl ExecveCommand {
+    fn new(exec: Exec) -> io::Result<Self> {
+        let program = CString::new(Vec::<u8>::from(exec.program)).map_err(nul_error)?;
+        let args = exec
+            .args
+            .into_iter()
+            .map(|arg| CString::new(Vec::<u8>::from(arg)).map_err(nul_error))
+            .collect::<io::Result<Vec<_>>>()?;
+        let envs = exec
+            .envs
+            .into_iter()
+            .map(|(name, value)| {
+                let mut env = Vec::<u8>::from(name);
+                if let Some(value) = value {
+                    env.push(b'=');
+                    env.extend(Vec::<u8>::from(value));
+                }
+                CString::new(env).map_err(nul_error)
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        let mut arg_ptrs = args.iter().map(|arg| arg.as_ptr()).collect::<Vec<_>>();
+        arg_ptrs.push(ptr::null());
+        let mut env_ptrs = envs.iter().map(|env| env.as_ptr()).collect::<Vec<_>>();
+        env_ptrs.push(ptr::null());
+
+        Ok(Self { program, args, envs, arg_ptrs, env_ptrs })
+    }
+
+    fn exec(&self) -> io::Result<()> {
+        // Keep the backing allocations visibly live for the raw argv/envp pointers.
+        let _ = (&self.args, &self.envs);
+        // SAFETY: `program`, `argv`, and `envp` are null-terminated C strings
+        // with trailing null pointer arrays. On success this does not return.
+        unsafe {
+            libc::execve(self.program.as_ptr(), self.arg_ptrs.as_ptr(), self.env_ptrs.as_ptr());
+        }
+        Err(io::Error::last_os_error())
+    }
+}
+
+fn nul_error(err: std::ffi::NulError) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, err)
 }
 
 pub struct PathAccessIterable {
