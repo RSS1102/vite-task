@@ -35,6 +35,41 @@ steps = [
 ]
 
 [[e2e]]
+name = "vite_build_defaults_node_env_to_production"
+comment = """
+When the runner has no `NODE_ENV`, Vite's `getEnv('NODE_ENV')` call must return JavaScript `undefined`. This lets Vite apply its normal production-build default instead of assigning the string `"null"` to `process.env.NODE_ENV`.
+"""
+ignore = true
+steps = [
+  { argv = [
+    "vt",
+    "run",
+    "--cache",
+    "build-production-node-env",
+  ], comment = "Vite config hook observes NODE_ENV=production" },
+]
+
+[[e2e]]
+name = "vite_build_preserves_explicit_node_env"
+comment = """
+When the runner has an explicit `NODE_ENV`, Vite's `getEnv('NODE_ENV')` call must return that value instead of applying the production-build default.
+"""
+ignore = true
+steps = [
+  { argv = [
+    "vt",
+    "run",
+    "--cache",
+    "build-test-node-env",
+  ], envs = [
+    [
+      "NODE_ENV",
+      "test",
+    ],
+  ], comment = "Vite config hook observes NODE_ENV=test" },
+]
+
+[[e2e]]
 name = "vite_prefix_env_change_invalidates_cache"
 comment = """
 `VITE_CACHE_LABEL` is picked up by Vite's patched `loadEnv`, which asks the runner for every `VITE_*` env via `getEnvs(pattern, { tracked: true })`. Flipping its value between runs must invalidate the cache AND change the build output because Vite substitutes `import.meta.env.VITE_CACHE_LABEL` at build time.

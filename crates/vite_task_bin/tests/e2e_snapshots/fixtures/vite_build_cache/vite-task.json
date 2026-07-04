@@ -6,6 +6,14 @@
       // every `VITE_*` env via `getEnvs`, so the glob + match-set are
       // fingerprinted automatically.
       "cache": true
+    },
+    "build-production-node-env": {
+      "command": "ASSERT_NODE_ENV=production vite build",
+      "cache": true
+    },
+    "build-test-node-env": {
+      "command": "ASSERT_NODE_ENV=test vite build",
+      "cache": true
     }
   }
 }

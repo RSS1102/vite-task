@@ -1,5 +1,6 @@
 # Changelog
 
+- **Fixed** Missing environment variables returned by `@voidzero-dev/vite-task-client` are now JavaScript `undefined` instead of `null`, preventing tools such as Vite from assigning `"null"` to `process.env.NODE_ENV` ([vite-plus#2047](https://github.com/voidzero-dev/vite-plus/issues/2047)).
 - **Fixed** Windows builds no longer hang on CI when a `node_modules/.bin` `.cmd` shim is routed through PowerShell: the npm/pnpm/yarn `.ps1` wrappers read stdin and block forever on a non-TTY pipe, so the PowerShell rewrite is now skipped when stdin is not an interactive terminal, falling back to the `.cmd` (which never reads stdin) ([#491](https://github.com/voidzero-dev/vite-task/pull/491)).
 - **Added** First-party support for caching `vite build` with zero cache config, giving Vite projects correct cache hits out of the box ([vitejs/vite#22453](https://github.com/vitejs/vite/pull/22453)).
 - **Added** Support for specifying tasks from dependency packages in `dependsOn`, such as `dependsOn: [{ "task": "build", "from": "dependencies" }]` ([#479](https://github.com/voidzero-dev/vite-task/pull/479)).
