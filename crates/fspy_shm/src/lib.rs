@@ -176,7 +176,10 @@ mod tests {
         write_byte(&owner, 0, 17);
         drop(owner);
 
-        // Windows keeps the named object alive while an opened view exists.
+        // The Linux broker and POSIX shm_unlink reject post-drop opens
+        // immediately. On Windows, an existing mapped view keeps the named
+        // kernel object alive; fspy's lock file, rather than this low-level
+        // mapping API, rejects late senders.
         #[cfg(not(target_os = "windows"))]
         assert!(open(&id, SIZE).is_err());
         assert_eq!(read_byte(&opened, 0), 17);
