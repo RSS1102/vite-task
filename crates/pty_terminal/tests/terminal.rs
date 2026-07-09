@@ -4,15 +4,14 @@ use std::{
 };
 
 use ntest::timeout;
-use portable_pty::CommandBuilder;
 use pty_terminal::{geo::ScreenSize, terminal::Terminal};
-use subprocess_test::command_for_fn;
+use subprocess_test::{command_for_fn, portable_pty_command_builder};
 
 #[test]
 #[timeout(5000)]
 #[expect(clippy::print_stdout, reason = "subprocess test output")]
 fn is_terminal() {
-    let cmd = CommandBuilder::from(command_for_fn!((), |(): ()| {
+    let cmd = portable_pty_command_builder(&command_for_fn!((), |(): ()| {
         println!("{} {} {}", stdin().is_terminal(), stdout().is_terminal(), stderr().is_terminal());
     }));
 
@@ -29,7 +28,7 @@ fn is_terminal() {
 #[timeout(5000)]
 #[expect(clippy::print_stdout, reason = "subprocess test output")]
 fn write_basic_echo() {
-    let cmd = CommandBuilder::from(command_for_fn!((), |(): ()| {
+    let cmd = portable_pty_command_builder(&command_for_fn!((), |(): ()| {
         use std::io::{BufRead, Write, stdin, stdout};
         let stdin = stdin();
         let mut stdout = stdout();
@@ -58,7 +57,7 @@ fn write_basic_echo() {
 #[timeout(5000)]
 #[expect(clippy::print_stdout, reason = "subprocess test output")]
 fn write_multiple_lines() {
-    let cmd = CommandBuilder::from(command_for_fn!((), |(): ()| {
+    let cmd = portable_pty_command_builder(&command_for_fn!((), |(): ()| {
         use std::io::{BufRead, Write, stdin, stdout};
         let stdin = stdin();
         let mut stdout = stdout();
@@ -109,7 +108,7 @@ fn write_multiple_lines() {
 #[timeout(5000)]
 #[expect(clippy::print_stdout, reason = "subprocess test output")]
 fn write_after_exit() {
-    let cmd = CommandBuilder::from(command_for_fn!((), |(): ()| {
+    let cmd = portable_pty_command_builder(&command_for_fn!((), |(): ()| {
         print!("exiting");
     }));
 
@@ -137,7 +136,7 @@ fn write_after_exit() {
 #[timeout(5000)]
 #[expect(clippy::print_stdout, reason = "subprocess test output")]
 fn write_interactive_prompt() {
-    let cmd = CommandBuilder::from(command_for_fn!((), |(): ()| {
+    let cmd = portable_pty_command_builder(&command_for_fn!((), |(): ()| {
         use std::io::{Write, stdin, stdout};
         let mut stdout = stdout();
         // Use "Name:\n" instead of "Name: " so the test can synchronize with
@@ -178,7 +177,7 @@ fn write_interactive_prompt() {
 #[timeout(5000)]
 #[expect(clippy::print_stdout, reason = "subprocess test output")]
 fn resize_terminal() {
-    let cmd = CommandBuilder::from(command_for_fn!((), |(): ()| {
+    let cmd = portable_pty_command_builder(&command_for_fn!((), |(): ()| {
         use std::io::{Write, stdin, stdout};
         #[cfg(unix)]
         use std::sync::Arc;
@@ -275,7 +274,7 @@ fn resize_terminal() {
 #[timeout(5000)]
 #[expect(clippy::print_stdout, reason = "subprocess test output")]
 fn send_ctrl_c_interrupts_process() {
-    let cmd = CommandBuilder::from(command_for_fn!((), |(): ()| {
+    let cmd = portable_pty_command_builder(&command_for_fn!((), |(): ()| {
         use std::io::{Write, stdout};
 
         // On Linux, use signalfd to wait for SIGINT without signal handlers or
@@ -376,7 +375,7 @@ fn send_ctrl_c_interrupts_process() {
 #[timeout(5000)]
 #[expect(clippy::print_stdout, reason = "subprocess test output")]
 fn read_to_end_returns_exit_status_success() {
-    let cmd = CommandBuilder::from(command_for_fn!((), |(): ()| {
+    let cmd = portable_pty_command_builder(&command_for_fn!((), |(): ()| {
         println!("success");
     }));
 
@@ -392,7 +391,7 @@ fn read_to_end_returns_exit_status_success() {
 #[test]
 #[timeout(5000)]
 fn read_to_end_returns_exit_status_nonzero() {
-    let cmd = CommandBuilder::from(command_for_fn!((), |(): ()| {
+    let cmd = portable_pty_command_builder(&command_for_fn!((), |(): ()| {
         std::process::exit(42);
     }));
 

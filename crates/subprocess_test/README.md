@@ -19,10 +19,9 @@ Then use the macro in your tests:
 ```rust
 use subprocess_test::command_for_fn;
 
-let cmd = command_for_fn!(42u32, |arg: u32| {
+let mut cmd = command_for_fn!(42u32, |arg: u32| {
     println!("{}", arg);
 });
 
-// Convert to std::process::Command and execute
-let output = std::process::Command::from(cmd).output().unwrap();
+let output = cmd.output().unwrap();
 ```

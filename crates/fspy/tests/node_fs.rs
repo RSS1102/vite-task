@@ -10,13 +10,13 @@ use test_log::test;
 use test_utils::assert_contains;
 
 async fn track_node_script(script: &str, args: &[&OsStr]) -> anyhow::Result<PathAccessIterable> {
-    let mut command = fspy::Command::new("node");
+    let mut command = tokio::process::Command::new("node");
     command
         .arg("-e")
         .envs(vars_os()) // https://github.com/jdx/mise/discussions/5968
         .arg(script)
         .args(args);
-    let child = command.spawn(tokio_util::sync::CancellationToken::new()).await?;
+    let child = fspy::spawn(command, tokio_util::sync::CancellationToken::new()).await?;
     let termination = child.wait_handle.await?;
     assert!(termination.status.success());
     Ok(termination.path_accesses)

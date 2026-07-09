@@ -21,7 +21,7 @@ It uses [Detours](https://github.com/microsoft/Detours) to intercept file system
 
 ## Unified interface
 
-The unified interface of `Command` is in `src/command.rs`.
+The unified interface accepts a `tokio::process::Command`. On Unix, use `spawn_with` to apply stdio and other opaque settings to the final rewritten command.
 
 ## Preload Libraries
 

@@ -40,12 +40,12 @@ fn test_bin_path() -> &'static Path {
 }
 
 async fn track_test_bin(args: &[&str], cwd: Option<&str>) -> PathAccessIterable {
-    let mut cmd = fspy::Command::new(test_bin_path());
+    let mut cmd = tokio::process::Command::new(test_bin_path());
     if let Some(cwd) = cwd {
         cmd.current_dir(cwd);
     }
     cmd.args(args);
-    let tracked_child = cmd.spawn(tokio_util::sync::CancellationToken::new()).await.unwrap();
+    let tracked_child = fspy::spawn(cmd, tokio_util::sync::CancellationToken::new()).await.unwrap();
 
     let termination = tracked_child.wait_handle.await.unwrap();
     assert!(termination.status.success());

@@ -9,13 +9,11 @@ publish = false
 wincode = { workspace = true }
 bstr = { workspace = true, default-features = false }
 bumpalo = { workspace = true }
-derive_more = { workspace = true, features = ["debug"] }
 materialized_artifact = { workspace = true }
 fspy_shared = { workspace = true }
 futures-util = { workspace = true }
 libc = { workspace = true }
 ouroboros = { workspace = true }
-rustc-hash = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["net", "process", "io-util", "sync", "rt"] }
@@ -43,7 +41,7 @@ tempfile = { workspace = true }
 anyhow = { workspace = true }
 csv-async = { workspace = true }
 ctor = { workspace = true }
-subprocess_test = { workspace = true, features = ["fspy"] }
+subprocess_test = { workspace = true }
 test-log = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "fs", "io-std"] }
 

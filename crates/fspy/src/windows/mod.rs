@@ -13,6 +13,7 @@ use fspy_shared::{
 };
 use futures_util::FutureExt;
 use materialized_artifact::{Artifact, artifact};
+use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 use winapi::{
     shared::minwindef::TRUE,
@@ -22,7 +23,6 @@ use winsafe::co::{CP, WC};
 
 use crate::{
     ChildTermination, TrackedChild,
-    command::Command,
     error::SpawnError,
     ipc::{OwnedReceiverLockGuard, SHM_CAPACITY},
 };
@@ -66,15 +66,23 @@ impl SpyImpl {
         Ok(Self { ansi_dll_path_with_nul: ansi_dll_path_with_nul.into() })
     }
 
-    #[expect(clippy::unused_async, reason = "async signature required by SpyImpl trait")]
-    pub(crate) async fn spawn(
+    #[expect(
+        clippy::unused_async,
+        clippy::unused_async_trait_impl,
+        reason = "async signature matches the Unix implementation"
+    )]
+    pub(crate) async fn spawn<F>(
         &self,
         mut command: Command,
         cancellation_token: CancellationToken,
-    ) -> Result<TrackedChild, SpawnError> {
+        configure: F,
+    ) -> Result<TrackedChild, SpawnError>
+    where
+        F: FnOnce(&mut Command),
+    {
         let ansi_dll_path_with_nul = Arc::clone(&self.ansi_dll_path_with_nul);
+        configure(&mut command);
         command.env("FSPY", "1");
-        let mut command = command.into_tokio_command();
 
         command.creation_flags(CREATE_SUSPENDED);
 

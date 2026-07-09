@@ -1,3 +1,4 @@
+#![cfg_attr(unix, feature(command_resolved_envs))]
 #![cfg_attr(target_os = "windows", feature(windows_process_extensions_main_thread_handle))]
 
 pub mod error;
@@ -19,7 +20,7 @@ mod command;
 
 use std::{env::temp_dir, fs::create_dir, io, process::ExitStatus, sync::LazyLock};
 
-pub use command::Command;
+pub use command::{spawn, spawn_with};
 pub use fspy_shared::ipc::{AccessMode, PathAccess};
 use futures_util::future::BoxFuture;
 pub use os_impl::PathAccessIterable;
