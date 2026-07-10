@@ -1,4 +1,4 @@
-//! Behavior-neutral shared-memory facade for fspy channels.
+//! Platform shared-memory implementation for fspy channels.
 //!
 //! # Ownership semantics
 //!
@@ -11,19 +11,31 @@
 //! - Already-open views remain fully usable after the owner is dropped and
 //!   keep the underlying memory alive for their own lifetime.
 //! - Once the owner is dropped, new [`open`] calls are no longer guaranteed
-//!   to succeed: they fail on POSIX platforms (the name is unlinked), while
-//!   on Windows they may still succeed as long as other handles or views keep
+//!   to succeed: they fail on Linux (the owner's broker stops serving the
+//!   mapping) and on other POSIX platforms (the name is unlinked), while on
+//!   Windows they may still succeed as long as other handles or views keep
 //!   the underlying section object alive.
 //!
 //! The fspy channel additionally gates sender creation with the receiver's
 //! lock file, so the platform difference in the last point is not observable
 //! in-protocol.
+//!
+//! On Linux the mapping is an anonymous memfd handed out by a broker task, so
+//! [`create`] must be called within a tokio runtime there.
 
+#[cfg(not(target_os = "linux"))]
 use std::io;
 
+#[cfg(target_os = "linux")]
+mod linux;
+
+#[cfg(target_os = "linux")]
+pub use linux::{Shm, create, open};
+#[cfg(not(target_os = "linux"))]
 use shared_memory::{Shmem, ShmemConf};
 
 /// An owned shared-memory mapping.
+#[cfg(not(target_os = "linux"))]
 pub struct Shm {
     inner: Shmem,
 }
@@ -37,6 +49,7 @@ pub struct Shm {
 /// # Errors
 ///
 /// Returns an error if the platform cannot create or map the region.
+#[cfg(not(target_os = "linux"))]
 pub fn create(size: usize) -> io::Result<Shm> {
     let conf = ShmemConf::new().size(size);
     #[cfg(target_os = "windows")]
@@ -55,6 +68,7 @@ pub fn create(size: usize) -> io::Result<Shm> {
 /// # Errors
 ///
 /// Returns an error if the mapping does not exist or cannot be mapped.
+#[cfg(not(target_os = "linux"))]
 pub fn open(id: &str, size: usize) -> io::Result<Shm> {
     let conf = ShmemConf::new().size(size).os_id(id);
     #[cfg(target_os = "windows")]
@@ -64,6 +78,7 @@ pub fn open(id: &str, size: usize) -> io::Result<Shm> {
     Ok(Shm { inner })
 }
 
+#[cfg(not(target_os = "linux"))]
 #[expect(clippy::len_without_is_empty, reason = "shared-memory mappings are always non-empty")]
 impl Shm {
     /// Returns this mapping's opaque platform identifier.
@@ -105,11 +120,11 @@ mod tests {
 
     use super::{Shm, create, open};
 
-    // Page-aligned on supported macOS and Windows targets.
+    // Page-aligned on all supported targets.
     const SIZE: usize = 64 * 1024;
 
-    #[test]
-    fn create_and_open_are_shared() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn create_and_open_are_shared() {
         let owner = create(SIZE).unwrap();
         assert_eq!(owner.len(), SIZE);
         assert_eq!(owner.as_ptr() as usize % align_of::<usize>(), 0);
@@ -126,8 +141,8 @@ mod tests {
         assert_eq!(read_byte(&owner, SIZE - 1), 29);
     }
 
-    #[test]
-    fn mapping_is_visible_across_processes() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn mapping_is_visible_across_processes() {
         let owner = create(SIZE).unwrap();
         write_byte(&owner, 0, 17);
 
@@ -136,12 +151,16 @@ mod tests {
             assert_eq!(read_byte(&opened, 0), 17);
             write_byte(&opened, SIZE - 1, 29);
         });
-        assert!(Command::from(command).status().unwrap().success());
+        let success =
+            tokio::task::spawn_blocking(move || Command::from(command).status().unwrap().success())
+                .await
+                .unwrap();
+        assert!(success);
         assert_eq!(read_byte(&owner, SIZE - 1), 29);
     }
 
-    #[test]
-    fn owner_drop_prevents_new_opens() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn owner_drop_prevents_new_opens() {
         let owner = create(SIZE).unwrap();
         let id = owner.id().to_owned();
         drop(owner);
@@ -149,8 +168,8 @@ mod tests {
         assert!(open(&id, SIZE).is_err());
     }
 
-    #[test]
-    fn opened_mapping_survives_owner_drop() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn opened_mapping_survives_owner_drop() {
         let owner = create(SIZE).unwrap();
         let id = owner.id().to_owned();
         let opened = open(&id, SIZE).unwrap();

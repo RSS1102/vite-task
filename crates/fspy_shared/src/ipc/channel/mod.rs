@@ -117,9 +117,12 @@ impl Deref for Sender {
     }
 }
 
-#[expect(
-    clippy::non_send_fields_in_send_ty,
-    reason = "`Sender` holds a shared file lock that ensures there's no reader, so `shm` can be safely written to"
+#[cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        clippy::non_send_fields_in_send_ty,
+        reason = "`Sender` holds a shared file lock that ensures there's no reader, so `shm` can be safely written to"
+    )
 )]
 /// SAFETY: `Sender` holds a shared file lock that ensures there's no reader, so `shm` can be safely written to.
 unsafe impl Send for Sender {}
@@ -135,9 +138,12 @@ pub struct Receiver {
     shm: Shm,
 }
 
-#[expect(
-    clippy::non_send_fields_in_send_ty,
-    reason = "Receiver doesn't read or write `shm`. It only pass it to `ReceiverLockGuard` under the lock"
+#[cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        clippy::non_send_fields_in_send_ty,
+        reason = "Receiver doesn't read or write `shm`. It only passes it to `ReceiverLockGuard` under the lock"
+    )
 )]
 /// SAFETY: `Receiver` doesn't read or write `shm`. It only passes it to `ReceiverLockGuard` under the lock.
 unsafe impl Send for Receiver {}
@@ -204,78 +210,102 @@ mod tests {
 
     use super::*;
 
+    /// Runs `test` with an ambient tokio runtime on Linux, where `channel`
+    /// spawns the shared-memory broker onto it. The test body runs on the
+    /// test thread, so it may block without starving the broker.
+    fn in_service_runtime<T>(test: impl FnOnce() -> T) -> T {
+        #[cfg(target_os = "linux")]
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_io()
+            .enable_time()
+            .build()
+            .unwrap();
+        #[cfg(target_os = "linux")]
+        let _guard = runtime.enter();
+        test()
+    }
+
     #[test]
     fn smoke() {
-        let (conf, receiver) = channel(100).unwrap();
-        let cmd = command_for_fn!(conf, |conf: ChannelConf| {
-            let sender = conf.sender().unwrap();
-            let frame_size = NonZeroUsize::new(2).unwrap();
-            let mut frame = sender.claim_frame(frame_size).unwrap();
-            frame.copy_from_slice(&[4, 2]);
+        in_service_runtime(|| {
+            let (conf, receiver) = channel(100).unwrap();
+            let cmd = command_for_fn!(conf, |conf: ChannelConf| {
+                let sender = conf.sender().unwrap();
+                let frame_size = NonZeroUsize::new(2).unwrap();
+                let mut frame = sender.claim_frame(frame_size).unwrap();
+                frame.copy_from_slice(&[4, 2]);
+            });
+            assert!(std::process::Command::from(cmd).status().unwrap().success());
+
+            let lock = receiver.lock().unwrap();
+            let mut frames = lock.iter_frames();
+
+            let received_frame = frames.next().unwrap();
+            assert_eq!(received_frame, &[4, 2]);
+
+            assert!(frames.next().is_none());
         });
-        assert!(std::process::Command::from(cmd).status().unwrap().success());
-
-        let lock = receiver.lock().unwrap();
-        let mut frames = lock.iter_frames();
-
-        let received_frame = frames.next().unwrap();
-        assert_eq!(received_frame, &[4, 2]);
-
-        assert!(frames.next().is_none());
     }
 
     #[test]
     #[expect(clippy::print_stdout, reason = "test diagnostics")]
     fn forbid_new_senders_after_locked() {
-        let (conf, receiver) = channel(42).unwrap();
-        let _lock = receiver.lock().unwrap();
+        in_service_runtime(|| {
+            let (conf, receiver) = channel(42).unwrap();
+            let _lock = receiver.lock().unwrap();
 
-        let cmd = command_for_fn!(conf, |conf: ChannelConf| {
-            print!("{}", conf.sender().is_ok());
+            let cmd = command_for_fn!(conf, |conf: ChannelConf| {
+                print!("{}", conf.sender().is_ok());
+            });
+            let output = std::process::Command::from(cmd).output().unwrap();
+            assert_eq!(B(&output.stdout), B("false"));
         });
-        let output = std::process::Command::from(cmd).output().unwrap();
-        assert_eq!(B(&output.stdout), B("false"));
     }
 
     #[test]
     #[expect(clippy::print_stdout, reason = "test diagnostics")]
     fn forbid_new_senders_after_receiver_dropped() {
-        let (conf, receiver) = channel(42).unwrap();
-        drop(receiver);
+        in_service_runtime(|| {
+            let (conf, receiver) = channel(42).unwrap();
+            drop(receiver);
 
-        let cmd = command_for_fn!(conf, |conf: ChannelConf| {
-            print!("{}", conf.sender().is_ok());
+            let cmd = command_for_fn!(conf, |conf: ChannelConf| {
+                print!("{}", conf.sender().is_ok());
+            });
+            let output = std::process::Command::from(cmd).output().unwrap();
+            assert_eq!(B(&output.stdout), B("false"));
         });
-        let output = std::process::Command::from(cmd).output().unwrap();
-        assert_eq!(B(&output.stdout), B("false"));
     }
 
     #[test]
     fn concurrent_senders() {
-        let (conf, receiver) = channel(8192).unwrap();
-        for i in 0u16..200 {
-            let cmd = command_for_fn!((conf.clone(), i), |(conf, i): (ChannelConf, u16)| {
-                let sender = conf.sender().unwrap();
-                let data_to_send = i.to_string();
-                sender
-                    .claim_frame(NonZeroUsize::new(data_to_send.len()).unwrap())
-                    .unwrap()
-                    .copy_from_slice(data_to_send.as_bytes());
-            });
-            let output = std::process::Command::from(cmd).output().unwrap();
-            assert!(
-                output.status.success(),
-                "Failed to send in iteration {}: {:?}",
-                i,
-                B(&output.stderr)
-            );
-        }
-        let lock = receiver.lock().unwrap();
-        let mut received_values: Vec<u16> = lock
-            .iter_frames()
-            .map(|frame| from_utf8(frame).unwrap().parse::<u16>().unwrap())
-            .collect();
-        received_values.sort_unstable();
-        assert_eq!(received_values, (0u16..200).collect::<Vec<u16>>());
+        in_service_runtime(|| {
+            let (conf, receiver) = channel(8192).unwrap();
+            for i in 0u16..200 {
+                let cmd = command_for_fn!((conf.clone(), i), |(conf, i): (ChannelConf, u16)| {
+                    let sender = conf.sender().unwrap();
+                    let data_to_send = i.to_string();
+                    sender
+                        .claim_frame(NonZeroUsize::new(data_to_send.len()).unwrap())
+                        .unwrap()
+                        .copy_from_slice(data_to_send.as_bytes());
+                });
+                let output = std::process::Command::from(cmd).output().unwrap();
+                assert!(
+                    output.status.success(),
+                    "Failed to send in iteration {}: {:?}",
+                    i,
+                    B(&output.stderr)
+                );
+            }
+            let lock = receiver.lock().unwrap();
+            let mut received_values: Vec<u16> = lock
+                .iter_frames()
+                .map(|frame| from_utf8(frame).unwrap().parse::<u16>().unwrap())
+                .collect();
+            received_values.sort_unstable();
+            assert_eq!(received_values, (0u16..200).collect::<Vec<u16>>());
+        });
     }
 }
