@@ -23,19 +23,23 @@
 //! On Linux the mapping is an anonymous memfd handed out by a broker task, so
 //! [`create`] must be called within a tokio runtime there.
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 use std::io;
 
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "windows")]
+mod windows;
 
 #[cfg(target_os = "linux")]
 pub use linux::{Shm, create, open};
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 use shared_memory::{Shmem, ShmemConf};
+#[cfg(target_os = "windows")]
+pub use windows::{Shm, create, open};
 
 /// An owned shared-memory mapping.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub struct Shm {
     inner: Shmem,
 }
@@ -49,11 +53,9 @@ pub struct Shm {
 /// # Errors
 ///
 /// Returns an error if the platform cannot create or map the region.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub fn create(size: usize) -> io::Result<Shm> {
     let conf = ShmemConf::new().size(size);
-    #[cfg(target_os = "windows")]
-    let conf = conf.allow_raw(true);
 
     let inner = conf.create().map_err(io::Error::other)?;
     Ok(Shm { inner })
@@ -68,17 +70,15 @@ pub fn create(size: usize) -> io::Result<Shm> {
 /// # Errors
 ///
 /// Returns an error if the mapping does not exist or cannot be mapped.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub fn open(id: &str, size: usize) -> io::Result<Shm> {
     let conf = ShmemConf::new().size(size).os_id(id);
-    #[cfg(target_os = "windows")]
-    let conf = conf.allow_raw(true);
 
     let inner = conf.open().map_err(io::Error::other)?;
     Ok(Shm { inner })
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 #[expect(clippy::len_without_is_empty, reason = "shared-memory mappings are always non-empty")]
 impl Shm {
     /// Returns this mapping's opaque platform identifier.
