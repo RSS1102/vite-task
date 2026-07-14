@@ -4278,6 +4278,9 @@ dependencies = [
  "cow-utils",
  "cp_r",
  "ctrlc",
+ "fspy_detours_sys",
+ "fspy_shared",
+ "fspy_shared_unix",
  "jsonc-parser",
  "libc",
  "libtest-mimic",
@@ -4301,6 +4304,7 @@ dependencies = [
  "vite_task",
  "vite_workspace",
  "which",
+ "wincode",
 ]
 
 [[package]]

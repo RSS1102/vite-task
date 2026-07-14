@@ -34,6 +34,17 @@ which = { workspace = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 nix = { workspace = true, features = ["mount", "sched", "user"] }
 
+# `vtt write-garbage-fspy-frame` connects a sender to the task's fspy channel
+# (from the payload fspy hands every traced process) to write an undecodable
+# frame; the channel doesn't exist on musl targets.
+[target.'cfg(all(unix, not(target_env = "musl")))'.dependencies]
+fspy_shared_unix = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+fspy_detours_sys = { workspace = true }
+fspy_shared = { workspace = true }
+wincode = { workspace = true }
+
 [dev-dependencies]
 cow-utils = { workspace = true }
 cp_r = { workspace = true }

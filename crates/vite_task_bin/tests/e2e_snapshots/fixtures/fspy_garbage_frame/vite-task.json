@@ -1,0 +1,13 @@
+{
+  "tasks": {
+    "garbage-frame": {
+      "command": "vtt write-garbage-fspy-frame",
+      "cache": true,
+      "input": [
+        {
+          "auto": true
+        }
+      ]
+    }
+  }
+}

@@ -99,6 +99,11 @@ pub fn redact_e2e_output(mut output: String, workspace_root: &str) -> String {
     let thread_regex = regex::Regex::new(r"using \d+ threads").unwrap();
     output = thread_regex.replace_all(&output, "using <n> threads").into_owned();
 
+    // Redact the process id that panic messages carry ("thread 'main' (123)
+    // panicked at ...").
+    let panic_pid_regex = regex::Regex::new(r"thread '([^']+)' \(\d+\) panicked").unwrap();
+    output = panic_pid_regex.replace_all(&output, "thread '$1' (<pid>) panicked").into_owned();
+
     // Remove Node.js experimental warnings (e.g., Type Stripping warnings)
     let node_warning_regex =
         regex::Regex::new(r"(?m)^\(node:\d+\) ExperimentalWarning:.*\n?").unwrap();

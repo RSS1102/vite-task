@@ -1,0 +1,10 @@
+# The fspy shared-memory channel doesn't exist on musl targets (fspy uses
+# seccomp-unotify arenas there), so there is no frame stream to corrupt:
+# non-musl only.
+[[e2e]]
+name = "garbage_frame"
+comment = """
+Repro for issue 544: the task connects a sender to its own fspy channel — the same writer API every traced process uses — and writes a frame that doesn't decode as a path access, reconstructing the in-bounds variant of the frame-stream corruption a dying or racing writer leaves behind. Collecting the traced accesses after the task succeeded must not crash the runner, and the run must not be cached from the incomplete data (the second run must stay a cache miss).
+"""
+platform = "non-musl"
+steps = [["vt", "run", "-v", "garbage-frame"], ["vt", "run", "-v", "garbage-frame"]]
