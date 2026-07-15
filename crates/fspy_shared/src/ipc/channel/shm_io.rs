@@ -2,6 +2,7 @@
 
 use core::iter::from_fn;
 use std::{
+    cell::Cell,
     num::NonZeroUsize,
     ops::{Deref, DerefMut},
     ptr::slice_from_raw_parts_mut,
@@ -261,28 +262,54 @@ impl<M: AsRawSlice> ShmWriter<M> {
 /// Reader of frames in shared memory created by `ShmWriter`.
 pub struct ShmReader<M: AsRef<[u8]>> {
     mem: M,
+    /// Set when [`Self::iter_frames`] found a frame whose recorded extent
+    /// doesn't fit in the used region and stopped early. See
+    /// [`Self::is_tail_truncated`].
+    tail_truncated: Cell<bool>,
 }
 
 impl<M: AsRef<[u8]>> ShmReader<M> {
     /// The content of `mem` should be created by `ShmWriter`.
-    /// Failing to do so may result in panics (mostly out-of-bounds), but won't trigger undefined behavior.
+    /// Failing to do so may result in missing frames (see [`Self::is_tail_truncated`]), but won't trigger undefined behavior.
     ///
     /// The `ShmReader` must be created after all writing to the shared memory is done and visible to the calling thread.
     /// This is guaranteed by `M: AsRef<[u8]>`, which means the memory region is immutable during the lifetime of `ShmReader`,
     /// so no need to mark `ShmReader::new` as unsafe, but care must be taken to create a safe `M` from the shared memory.
     pub fn new(mem: M) -> Self {
         assert_alignment(mem.as_ref().as_ptr());
-        Self { mem }
+        Self { mem, tail_truncated: Cell::new(false) }
+    }
+
+    /// Whether a [`Self::iter_frames`] iteration ended early because the
+    /// remaining buffer contents were inconsistent — a frame size pointing
+    /// past the used region.
+    ///
+    /// That state means a writer broke the quiescence contract (it died or
+    /// was still writing between claiming a frame and completing it — see
+    /// issue 544), so every frame from the inconsistency on is unreliable
+    /// and is not yielded. Callers that need complete data must treat the
+    /// whole read as untrustworthy when this returns `true`.
+    pub const fn is_tail_truncated(&self) -> bool {
+        self.tail_truncated.get()
     }
 
     /// Iterate over all the frames in the shared memory.
+    ///
+    /// A frame whose recorded extent doesn't fit in the used region ends the
+    /// iteration early instead of panicking; [`Self::is_tail_truncated`]
+    /// reports that afterwards.
     pub fn iter_frames(&self) -> impl Iterator<Item = &[u8]> {
         let mem = self.mem.as_ref();
         let (header, content) = mem
             .split_first_chunk::<{ size_of::<usize>() }>()
             .expect("mem too small to contain header");
         let content_size: usize = must_cast(*header);
-        let mut remaining_content = &content[..content_size];
+        let mut remaining_content = content.get(..content_size).unwrap_or_else(|| {
+            // The recorded end offset overruns the mapping. No frame can be
+            // trusted; yield nothing.
+            self.tail_truncated.set(true);
+            &[]
+        });
 
         from_fn(move || {
             let frame_size = loop {
@@ -299,8 +326,18 @@ impl<M: AsRef<[u8]>> ShmReader<M> {
                     1.. => {
                         // Partially written frame - skip it and continue
                         let size = usize::try_from(frame_header).unwrap();
-                        remaining_content =
-                            &remaining_content[roundup_to_align_frame_header(size)..];
+                        let Some(rest) =
+                            remaining_content.get(roundup_to_align_frame_header(size)..)
+                        else {
+                            // The skip overruns the used region: these bytes
+                            // were never a frame header (e.g. frame content
+                            // reached by walking over a claimed-but-unwritten
+                            // frame that a dying or racing writer later
+                            // filled — issue 544). Stop; the tail is lost.
+                            self.tail_truncated.set(true);
+                            return None;
+                        };
+                        remaining_content = rest;
                     }
                     ..0 => {
                         // Fully written frame (negative size indicates completion)
@@ -309,8 +346,15 @@ impl<M: AsRef<[u8]>> ShmReader<M> {
                 }
             };
 
+            let padded_size = roundup_to_align_frame_header(frame_size);
+            if padded_size > remaining_content.len() {
+                // Same misparse as above, with the garbage bytes read as a
+                // "complete" frame header.
+                self.tail_truncated.set(true);
+                return None;
+            }
             let (frame_with_padding, next_remaining_content) =
-                remaining_content.split_at(roundup_to_align_frame_header(frame_size));
+                remaining_content.split_at(padded_size);
             remaining_content = next_remaining_content;
 
             Some(&frame_with_padding[..frame_size])
@@ -381,6 +425,31 @@ mod tests {
         }
     }
 
+    /// Reproduce the byte-level state from issue 544 through raw writes: bump
+    /// the end offset to cover a frame extent, leave the frame header zero,
+    /// and fill in content bytes. This is what a writer that dies — or races
+    /// the reader — between claiming a frame and completing it leaves behind;
+    /// the writer API can never produce it on its own (the header is always
+    /// stored before any content).
+    fn append_torn_frame(shm: &MockedShm, content: &[u8]) {
+        let base = shm.as_raw_slice().cast::<u8>();
+        let extent = roundup_to_align_frame_header(size_of::<i32>() + content.len());
+        // SAFETY: the mapping starts with the writers' shared `AtomicUsize`
+        // end offset; the allocation is valid and aligned for `usize`.
+        let end_offset = unsafe { AtomicUsize::from_ptr(base.cast()) };
+        let frame_offset = end_offset.fetch_add(extent, Ordering::Relaxed);
+        // SAFETY: the extent claimed above is exclusively ours and within the
+        // allocation (the callers stay far below the capacity).
+        unsafe {
+            let frame = base.add(size_of::<usize>() + frame_offset);
+            std::ptr::copy_nonoverlapping(
+                content.as_ptr(),
+                frame.add(size_of::<i32>()),
+                content.len(),
+            );
+        }
+    }
+
     #[test]
     fn single_thread_basic() {
         // SAFETY: `MockedShm::alloc` provides a valid, properly-sized, zero-initialized allocation.
@@ -396,6 +465,47 @@ mod tests {
         assert_eq!(frames.next().unwrap(), b"world");
         assert_eq!(frames.next().unwrap(), b"this is a test");
         assert_eq!(frames.next(), None);
+        assert!(!reader.is_tail_truncated());
+    }
+
+    #[test]
+    fn torn_frame_truncates_tail_as_partial_frame() {
+        // Walking over the torn frame's zero header lands on its content:
+        // b"\0/pr" reads as the positive (partially-written) frame header
+        // 0x7270_2F00, whose skip length overruns the used region. The exact
+        // state — including the header value — observed in issue 544.
+        let shm = MockedShm::alloc(1024);
+        // SAFETY: `MockedShm::alloc` provides a valid, properly-sized, zero-initialized allocation.
+        let writer = unsafe { ShmWriter::new(shm.clone()) };
+        assert!(writer.try_write_frame(b"foo"));
+        append_torn_frame(&shm, b"\0/private/tmp/some/staged/path");
+        assert!(writer.try_write_frame(b"bar"));
+
+        let reader = ShmReader::new(shm);
+        let mut frames = reader.iter_frames();
+        assert_eq!(frames.next().unwrap(), b"foo");
+        // The torn frame ends the iteration: everything behind it (even the
+        // valid "bar" frame) is unreachable because the walk lost its frame
+        // alignment.
+        assert_eq!(frames.next(), None);
+        assert!(reader.is_tail_truncated());
+    }
+
+    #[test]
+    fn torn_frame_truncates_tail_as_complete_frame() {
+        // Content bytes with the high bit set read as a negative ("complete")
+        // frame header whose extent overruns the used region.
+        let shm = MockedShm::alloc(1024);
+        // SAFETY: `MockedShm::alloc` provides a valid, properly-sized, zero-initialized allocation.
+        let writer = unsafe { ShmWriter::new(shm.clone()) };
+        assert!(writer.try_write_frame(b"foo"));
+        append_torn_frame(&shm, b"\xF0\xF1\xF2\xF3 torn frame content");
+
+        let reader = ShmReader::new(shm);
+        let mut frames = reader.iter_frames();
+        assert_eq!(frames.next().unwrap(), b"foo");
+        assert_eq!(frames.next(), None);
+        assert!(reader.is_tail_truncated());
     }
     #[test]
     fn single_thread_empty() {

@@ -34,6 +34,10 @@ struct TrackingOutcome {
     /// First path that was both read and written during execution, if any.
     /// A non-empty value means caching this task is unsound.
     read_write_overlap: Option<RelativePathBuf>,
+    /// True when the traced accesses couldn't be read back completely (torn
+    /// shared-memory frames — see issue 544). `path_reads`/`path_writes` may
+    /// then be missing entries, so caching this task is unsound.
+    tracking_truncated: bool,
 }
 
 type TrackedEnvValues = BTreeMap<Str, Option<EnvValueHash>>;
@@ -97,6 +101,14 @@ pub(super) async fn update_cache(
         &ignored_output_rels,
         workspace_root,
     );
+
+    if let Some(TrackingOutcome { tracking_truncated: true, .. }) = &fspy_outcome {
+        // The traced accesses couldn't be read back completely (torn
+        // shared-memory frames — see issue 544): the inferred inputs and
+        // outputs may be missing entries, so a cache entry built from them
+        // could produce stale hits later.
+        return (CacheUpdateStatus::NotUpdated(CacheNotUpdatedReason::TrackingIncomplete), None);
+    }
 
     if let Some(TrackingOutcome { read_write_overlap: Some(path), .. }) = &fspy_outcome {
         // fspy-inferred read-write overlap: the task wrote to a file it also
@@ -249,6 +261,7 @@ fn observe_fspy(
                 path_reads: filtered_path_reads,
                 path_writes: filtered_path_writes,
                 read_write_overlap,
+                tracking_truncated: tracked.truncated,
             }
         })
     }

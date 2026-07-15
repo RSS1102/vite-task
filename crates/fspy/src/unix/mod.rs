@@ -198,4 +198,19 @@ impl PathAccessIterable {
             accesses_in_arena
         }
     }
+
+    /// Whether a previous [`Self::iter`] iteration returned an incomplete
+    /// record (torn or undecodable shared-memory frames — see issue 544).
+    pub fn is_truncated(&self) -> bool {
+        #[cfg(not(target_env = "musl"))]
+        {
+            self.ipc_receiver_lock_guard.is_truncated()
+        }
+        // On musl, accesses come only from in-process arenas, which cannot
+        // be torn.
+        #[cfg(target_env = "musl")]
+        {
+            false
+        }
+    }
 }

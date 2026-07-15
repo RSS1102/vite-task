@@ -4,26 +4,42 @@ Repro for issue 544: the task connects a sender to its own fspy channel — the 
 
 ## `vt run -v garbage-frame`
 
-**Exit code:** 101
-
 ```
 $ vtt write-garbage-fspy-frame
 wrote a garbage frame to the fspy channel
 
-thread 'main' (<pid>) panicked at crates/fspy/src/ipc.rs:36:60:
-called `Result::unwrap()` on an `Err` value: Io(ReadSizeLimit(8))
-note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    Vite+ Task Runner • Execution Summary
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Statistics:   1 tasks • 0 cache hits • 1 cache misses
+Performance:  0% cache hit rate
+
+Task Details:
+────────────────────────────────────────────────
+  [1] fspy-garbage-frame#garbage-frame: $ vtt write-garbage-fspy-frame ✓
+      → Not cached: file access tracking data was incomplete
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
 ## `vt run -v garbage-frame`
 
-**Exit code:** 101
-
 ```
 $ vtt write-garbage-fspy-frame
 wrote a garbage frame to the fspy channel
 
-thread 'main' (<pid>) panicked at crates/fspy/src/ipc.rs:36:60:
-called `Result::unwrap()` on an `Err` value: Io(ReadSizeLimit(8))
-note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    Vite+ Task Runner • Execution Summary
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Statistics:   1 tasks • 0 cache hits • 1 cache misses
+Performance:  0% cache hit rate
+
+Task Details:
+────────────────────────────────────────────────
+  [1] fspy-garbage-frame#garbage-frame: $ vtt write-garbage-fspy-frame ✓
+      → Not cached: file access tracking data was incomplete
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```

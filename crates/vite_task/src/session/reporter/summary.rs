@@ -108,6 +108,11 @@ pub enum SpawnOutcome {
         /// Task ran successfully but cache was not updated.
         #[serde(default)]
         fspy_unsupported: bool,
+        /// `true` when the traced file accesses couldn't be read back
+        /// completely (torn shared-memory frames — see issue 544). Task ran
+        /// successfully but cache was not updated.
+        #[serde(default)]
+        tracking_incomplete: bool,
         /// Rendered message of the IPC server error that caused the cache to
         /// be skipped, if any.
         ipc_server_error: Option<Str>,
@@ -328,6 +333,10 @@ impl TaskResult {
             cache_update_status,
             CacheUpdateStatus::NotUpdated(CacheNotUpdatedReason::FspyUnsupported)
         );
+        let tracking_incomplete = matches!(
+            cache_update_status,
+            CacheUpdateStatus::NotUpdated(CacheNotUpdatedReason::TrackingIncomplete)
+        );
         let ipc_server_error = match cache_update_status {
             CacheUpdateStatus::NotUpdated(CacheNotUpdatedReason::IpcServerError(err)) => {
                 Some(vite_str::format!("{err}"))
@@ -351,6 +360,7 @@ impl TaskResult {
                     saved_error,
                     input_modified_path,
                     fspy_unsupported,
+                    tracking_incomplete,
                     ipc_server_error,
                     tool_disabled_cache,
                 ),
@@ -364,6 +374,7 @@ impl TaskResult {
                     saved_error,
                     input_modified_path,
                     fspy_unsupported,
+                    tracking_incomplete,
                     ipc_server_error,
                     tool_disabled_cache,
                 ),
@@ -378,6 +389,7 @@ fn spawn_outcome_from_execution(
     saved_error: Option<&SavedExecutionError>,
     input_modified_path: Option<Str>,
     fspy_unsupported: bool,
+    tracking_incomplete: bool,
     ipc_server_error: Option<Str>,
     tool_disabled_cache: bool,
 ) -> SpawnOutcome {
@@ -389,6 +401,7 @@ fn spawn_outcome_from_execution(
             infra_error: saved_error.cloned(),
             input_modified_path,
             fspy_unsupported,
+            tracking_incomplete,
             ipc_server_error,
             tool_disabled_cache,
         },
@@ -409,6 +422,7 @@ fn spawn_outcome_from_execution(
             infra_error: None,
             input_modified_path: None,
             fspy_unsupported: false,
+            tracking_incomplete: false,
             ipc_server_error: None,
             tool_disabled_cache: false,
         },
@@ -557,6 +571,14 @@ impl TaskResult {
             return Str::from(
                 "→ Not cached: `input` auto-inference isn't supported on this OS. Configure `input` manually to enable caching.",
             );
+        }
+        // Incomplete tracking data — same overrides precedence as above
+        if let Self::Spawned {
+            outcome: SpawnOutcome::Success { tracking_incomplete: true, .. },
+            ..
+        } = self
+        {
+            return Str::from("→ Not cached: file access tracking data was incomplete");
         }
 
         match self {

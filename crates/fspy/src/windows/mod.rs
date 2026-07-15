@@ -37,6 +37,12 @@ impl PathAccessIterable {
     pub fn iter(&self) -> impl Iterator<Item = PathAccess<'_>> {
         self.ipc_receiver_lock_guard.iter_path_accesses()
     }
+
+    /// Whether a previous [`Self::iter`] iteration returned an incomplete
+    /// record (torn or undecodable shared-memory frames — see issue 544).
+    pub fn is_truncated(&self) -> bool {
+        self.ipc_receiver_lock_guard.is_truncated()
+    }
 }
 
 // pub struct TracedProcess {

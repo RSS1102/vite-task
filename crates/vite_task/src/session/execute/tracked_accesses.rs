@@ -22,6 +22,12 @@ pub struct TrackedPathAccesses {
 
     /// Tracked path writes
     pub path_writes: FxHashSet<RelativePathBuf>,
+
+    /// True when fspy couldn't read the traced accesses back completely
+    /// (torn or undecodable shared-memory frames — see issue 544).
+    /// `path_reads`/`path_writes` may then be missing entries and must not
+    /// feed a cache entry.
+    pub truncated: bool,
 }
 
 impl TrackedPathAccesses {
@@ -64,6 +70,9 @@ impl TrackedPathAccesses {
                 }
             }
         }
+        // Truncation is discovered lazily while iterating, so this must be
+        // read after the loop drained the iterator.
+        accesses.truncated = raw.is_truncated();
         accesses
     }
 }

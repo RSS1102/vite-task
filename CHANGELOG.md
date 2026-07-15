@@ -1,5 +1,6 @@
 # Changelog
 
+- **Fixed** `vp run` no longer crashes after a task succeeds when a traced process died (or was still writing) while its file accesses were being collected; the run completes and is reported as not cached instead ([#544](https://github.com/voidzero-dev/vite-task/issues/544), [#545](https://github.com/voidzero-dev/vite-task/pull/545)).
 - **Fixed** An issue where Bun tasks on macOS did not rerun when files they read, wrote, or listed changed ([#532](https://github.com/voidzero-dev/vite-task/issues/532), [#542](https://github.com/voidzero-dev/vite-task/pull/542)).
 - **Improved** Windows file-access tracking now uses sparse temporary backing files where supported, avoiding upfront allocation of the full backing file on disk ([#524](https://github.com/voidzero-dev/vite-task/pull/524)).
 - **Fixed** Automatic file-access tracking on Linux now works in containers and Kubernetes runners with limited `/dev/shm` space ([#353](https://github.com/voidzero-dev/vite-task/issues/353), [#523](https://github.com/voidzero-dev/vite-task/pull/523)).
