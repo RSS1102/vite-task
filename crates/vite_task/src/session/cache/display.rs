@@ -143,6 +143,7 @@ fn format_env_changed_inline(names: &[&Str]) -> Str {
 /// Returns `Some(formatted_string)` for Hit, Miss with reason, and Disabled, None for `NotFound`.
 /// - Cache Hit: Shows "cache hit" indicator
 /// - Cache Miss (NotFound): No inline message (just command)
+/// - Cache Miss (Unreadable): Shows that the local row was ignored
 /// - Cache Miss (with mismatch): Shows "cache miss" with brief reason
 /// - Cache Disabled: Shows "cache disabled" with reason
 ///
@@ -157,6 +158,9 @@ pub fn format_cache_status_inline(cache_status: &CacheStatus) -> Option<Str> {
             // No inline message for "not found" case - just show command
             // This keeps the output clean for first-time executions
             None
+        }
+        CacheStatus::Miss(CacheMiss::Unreadable) => {
+            Some(Str::from("○ cache miss: unreadable local cache entry ignored, executing"))
         }
         CacheStatus::Miss(CacheMiss::FingerprintMismatch(mismatch)) => {
             // Show "cache miss" with reason why cache couldn't be used

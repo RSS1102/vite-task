@@ -11,7 +11,7 @@ pub use display::{
     SpawnFingerprintChange, detect_spawn_fingerprint_changes, format_input_change_str,
     format_spawn_change,
 };
-use rusqlite::{Connection, OptionalExtension as _};
+use rusqlite::{Connection, OptionalExtension as _, types::Value};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use vite_path::{AbsolutePath, RelativePathBuf};
@@ -46,7 +46,74 @@ fn deserialize_cache<T>(bytes: &[u8]) -> ReadResult<T>
 where
     T: SchemaReadOwned<TaskCacheConfig, Dst = T>,
 {
-    wincode::config::deserialize(bytes, TASK_CACHE_CONFIG)
+    wincode::config::deserialize_exact(bytes, TASK_CACHE_CONFIG)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CacheTable {
+    CacheEntries,
+    TaskFingerprints,
+}
+
+impl CacheTable {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::CacheEntries => "cache_entries",
+            Self::TaskFingerprints => "task_fingerprints",
+        }
+    }
+
+    const fn select_sql(self) -> &'static str {
+        match self {
+            Self::CacheEntries => "SELECT value FROM cache_entries WHERE key=?1",
+            Self::TaskFingerprints => "SELECT value FROM task_fingerprints WHERE key=?1",
+        }
+    }
+
+    const fn upsert_sql(self) -> &'static str {
+        match self {
+            Self::CacheEntries => {
+                "INSERT INTO cache_entries (key, value) VALUES (?1, ?2) \
+                 ON CONFLICT(key) DO UPDATE SET value=?2"
+            }
+            Self::TaskFingerprints => {
+                "INSERT INTO task_fingerprints (key, value) VALUES (?1, ?2) \
+                 ON CONFLICT(key) DO UPDATE SET value=?2"
+            }
+        }
+    }
+
+    const fn delete_if_unchanged_sql(self) -> &'static str {
+        match self {
+            Self::CacheEntries => {
+                "DELETE FROM cache_entries \
+                 WHERE key=?1 AND typeof(value)=typeof(?2) AND value IS ?2"
+            }
+            Self::TaskFingerprints => {
+                "DELETE FROM task_fingerprints \
+                 WHERE key=?1 AND typeof(value)=typeof(?2) AND value IS ?2"
+            }
+        }
+    }
+
+    const fn list_sql(self) -> &'static str {
+        match self {
+            Self::CacheEntries => "SELECT key, value FROM cache_entries",
+            Self::TaskFingerprints => "SELECT key, value FROM task_fingerprints",
+        }
+    }
+}
+
+struct CacheRow<T> {
+    value: T,
+    key_blob: Vec<u8>,
+    stored_value: Value,
+}
+
+enum CacheRead<T> {
+    Found(CacheRow<T>),
+    Missing,
+    Unreadable,
 }
 
 /// Cache lookup key identifying a task's execution configuration.
@@ -148,6 +215,8 @@ pub struct ExecutionCache {
 )]
 pub enum CacheMiss {
     NotFound,
+    /// A malformed or incompatible local cache row was ignored.
+    Unreadable,
     FingerprintMismatch(FingerprintMismatch),
 }
 
@@ -333,7 +402,12 @@ impl ExecutionCache {
         let cache_key = CacheEntryKey::from_metadata(cache_metadata);
 
         // Try to find the cache entry by key (spawn fingerprint + input config)
-        if let Some(cache_value) = self.get_by_cache_key(&cache_key).await? {
+        let cache_value = match self.get_by_cache_key(&cache_key).await? {
+            CacheRead::Found(row) => Some(row.value),
+            CacheRead::Missing => None,
+            CacheRead::Unreadable => return Ok(Err(CacheMiss::Unreadable)),
+        };
+        if let Some(cache_value) = cache_value {
             // Validate explicit globbed inputs against the stored values
             if let Some(mismatch) =
                 detect_globbed_input_change(&cache_value.globbed_inputs, globbed_inputs)
@@ -356,30 +430,38 @@ impl ExecutionCache {
 
         // No cache found with the current cache entry key,
         // check if execution key maps to a different cache entry key
-        if let Some(old_cache_key) =
-            self.get_cache_key_by_execution_key(execution_cache_key).await?
-        {
-            // Destructure to ensure we handle all fields when new ones are added.
-            // `get_by_cache_key` above returned None for the *current* cache key,
-            // so at least one field on `old_cache_key` must differ from the
-            // current metadata — checked in priority order (spawn → input → output).
-            let CacheEntryKey {
-                spawn_fingerprint: old_spawn_fingerprint,
-                input_config: old_input_config,
-                output_config: old_output_config,
-            } = old_cache_key;
-            let mismatch = if old_spawn_fingerprint != *spawn_fingerprint {
-                FingerprintMismatch::SpawnFingerprint {
-                    old: old_spawn_fingerprint,
-                    new: spawn_fingerprint.clone(),
+        match self.get_cache_key_by_execution_key(execution_cache_key).await? {
+            CacheRead::Found(row) => {
+                let old_cache_key = row.value;
+                if old_cache_key == cache_key {
+                    self.discard_dangling_fingerprint(row.key_blob, row.stored_value).await;
+                    return Ok(Err(CacheMiss::NotFound));
                 }
-            } else if old_input_config != cache_metadata.input_config {
-                FingerprintMismatch::InputConfig
-            } else {
-                debug_assert_ne!(old_output_config, cache_metadata.output_config);
-                FingerprintMismatch::OutputConfig
-            };
-            return Ok(Err(CacheMiss::FingerprintMismatch(mismatch)));
+
+                // Destructure to ensure we handle all fields when new ones are added.
+                // `get_by_cache_key` above returned None for the *current* cache key,
+                // so at least one field on `old_cache_key` must differ from the
+                // current metadata — checked in priority order (spawn → input → output).
+                let CacheEntryKey {
+                    spawn_fingerprint: old_spawn_fingerprint,
+                    input_config: old_input_config,
+                    output_config: old_output_config,
+                } = old_cache_key;
+                let mismatch = if old_spawn_fingerprint != *spawn_fingerprint {
+                    FingerprintMismatch::SpawnFingerprint {
+                        old: old_spawn_fingerprint,
+                        new: spawn_fingerprint.clone(),
+                    }
+                } else if old_input_config != cache_metadata.input_config {
+                    FingerprintMismatch::InputConfig
+                } else {
+                    debug_assert_ne!(old_output_config, cache_metadata.output_config);
+                    FingerprintMismatch::OutputConfig
+                };
+                return Ok(Err(CacheMiss::FingerprintMismatch(mismatch)));
+            }
+            CacheRead::Unreadable => return Ok(Err(CacheMiss::Unreadable)),
+            CacheRead::Missing => {}
         }
 
         Ok(Err(CacheMiss::NotFound))
@@ -403,7 +485,8 @@ impl ExecutionCache {
 
         // If a previous entry exists with a stale output archive, delete the
         // old file so the cache directory doesn't accumulate orphaned archives.
-        if let Some(old_value) = self.get_by_cache_key(&cache_key).await?
+        if let CacheRead::Found(row) = self.get_by_cache_key(&cache_key).await?
+            && let old_value = row.value
             && let Some(old_archive) = old_value.output_archive
             && cache_value.output_archive.as_ref() != Some(&old_archive)
         {
@@ -484,41 +567,105 @@ impl ExecutionCache {
         V: SchemaReadOwned<TaskCacheConfig, Dst = V>,
     >(
         &self,
-        table: &str,
+        table: CacheTable,
         key: &K,
-    ) -> anyhow::Result<Option<V>> {
+    ) -> anyhow::Result<CacheRead<V>> {
         let key_blob = serialize_cache(key)?;
-        let value_blob = {
+        let stored_value = {
             let conn = self.conn.lock().await;
-            #[expect(
-                clippy::disallowed_macros,
-                reason = "SQL query string for rusqlite requires String"
-            )]
-            let mut select_stmt =
-                conn.prepare_cached(&format!("SELECT value FROM {table} WHERE key=?"))?;
-            let value_blob: Option<Vec<u8>> =
-                select_stmt.query_row::<Vec<u8>, _, _>([key_blob], |row| row.get(0)).optional()?;
-            value_blob
+            let mut select_stmt = conn.prepare_cached(table.select_sql())?;
+            select_stmt.query_row::<Value, _, _>([&key_blob], |row| row.get(0)).optional()?
         };
-        let Some(value_blob) = value_blob else {
-            return Ok(None);
+        let Some(stored_value) = stored_value else {
+            return Ok(CacheRead::Missing);
         };
-        let value: V = deserialize_cache(&value_blob)?;
-        Ok(Some(value))
+        let Value::Blob(value_blob) = &stored_value else {
+            let value_type = stored_value.data_type();
+            self.discard_unreadable_row(table, &key_blob, &stored_value, &value_type).await;
+            return Ok(CacheRead::Unreadable);
+        };
+        match deserialize_cache(value_blob) {
+            Ok(value) => Ok(CacheRead::Found(CacheRow { value, key_blob, stored_value })),
+            Err(error) => {
+                self.discard_unreadable_row(table, &key_blob, &stored_value, &error).await;
+                Ok(CacheRead::Unreadable)
+            }
+        }
     }
 
     async fn get_by_cache_key(
         &self,
         cache_key: &CacheEntryKey,
-    ) -> anyhow::Result<Option<CacheEntryValue>> {
-        self.get_key_by_value("cache_entries", cache_key).await
+    ) -> anyhow::Result<CacheRead<CacheEntryValue>> {
+        self.get_key_by_value(CacheTable::CacheEntries, cache_key).await
     }
 
     async fn get_cache_key_by_execution_key(
         &self,
         execution_cache_key: &ExecutionCacheKey,
-    ) -> anyhow::Result<Option<CacheEntryKey>> {
-        self.get_key_by_value("task_fingerprints", execution_cache_key).await
+    ) -> anyhow::Result<CacheRead<CacheEntryKey>> {
+        self.get_key_by_value(CacheTable::TaskFingerprints, execution_cache_key).await
+    }
+
+    async fn delete_if_unchanged(
+        &self,
+        table: CacheTable,
+        key_blob: &[u8],
+        stored_value: &Value,
+    ) -> rusqlite::Result<usize> {
+        let conn = self.conn.lock().await;
+        conn.execute(table.delete_if_unchanged_sql(), rusqlite::params![key_blob, stored_value])
+    }
+
+    async fn discard_unreadable_row(
+        &self,
+        table: CacheTable,
+        key_blob: &[u8],
+        stored_value: &Value,
+        reason: &(impl Display + Sync),
+    ) {
+        let value_size = match stored_value {
+            Value::Blob(bytes) => Some(bytes.len()),
+            Value::Null | Value::Integer(_) | Value::Real(_) | Value::Text(_) => None,
+        };
+        match self.delete_if_unchanged(table, key_blob, stored_value).await {
+            Ok(1) => tracing::warn!(
+                table = table.name(),
+                key_size = key_blob.len(),
+                ?value_size,
+                reason = %reason,
+                "Discarded unreadable task cache row"
+            ),
+            Ok(_) => tracing::warn!(
+                table = table.name(),
+                key_size = key_blob.len(),
+                ?value_size,
+                reason = %reason,
+                "Ignored unreadable task cache row that changed concurrently"
+            ),
+            Err(error) => tracing::warn!(
+                table = table.name(),
+                key_size = key_blob.len(),
+                ?value_size,
+                reason = %reason,
+                ?error,
+                "Ignored unreadable task cache row but failed to discard it"
+            ),
+        }
+    }
+
+    async fn discard_dangling_fingerprint(&self, key_blob: Vec<u8>, stored_value: Value) {
+        match self.delete_if_unchanged(CacheTable::TaskFingerprints, &key_blob, &stored_value).await
+        {
+            Ok(1) => tracing::warn!("Discarded dangling task cache fingerprint"),
+            Ok(_) => {
+                tracing::warn!("Ignored dangling task cache fingerprint that changed concurrently");
+            }
+            Err(error) => tracing::warn!(
+                ?error,
+                "Ignored dangling task cache fingerprint but failed to discard it"
+            ),
+        }
     }
 
     #[expect(
@@ -530,17 +677,14 @@ impl ExecutionCache {
         V: SchemaWrite<TaskCacheConfig, Src = V>,
     >(
         &self,
-        table: &str,
+        table: CacheTable,
         key: &K,
         value: &V,
     ) -> anyhow::Result<()> {
         let key_blob = serialize_cache(key)?;
         let value_blob = serialize_cache(value)?;
         let conn = self.conn.lock().await;
-        #[expect(clippy::disallowed_macros, reason = "SQL query string for rusqlite requires String")]
-        let mut update_stmt = conn.prepare_cached(&format!(
-            "INSERT INTO {table} (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value=?2"
-        ))?;
+        let mut update_stmt = conn.prepare_cached(table.upsert_sql())?;
         update_stmt.execute([key_blob, value_blob])?;
         Ok(())
     }
@@ -550,7 +694,7 @@ impl ExecutionCache {
         cache_key: &CacheEntryKey,
         cache_value: &CacheEntryValue,
     ) -> anyhow::Result<()> {
-        self.upsert("cache_entries", cache_key, cache_value).await
+        self.upsert(CacheTable::CacheEntries, cache_key, cache_value).await
     }
 
     async fn upsert_task_fingerprint(
@@ -558,7 +702,7 @@ impl ExecutionCache {
         execution_cache_key: &ExecutionCacheKey,
         cache_entry_key: &CacheEntryKey,
     ) -> anyhow::Result<()> {
-        self.upsert("task_fingerprints", execution_cache_key, cache_entry_key).await
+        self.upsert(CacheTable::TaskFingerprints, execution_cache_key, cache_entry_key).await
     }
 
     #[expect(
@@ -570,15 +714,11 @@ impl ExecutionCache {
         V: SchemaReadOwned<TaskCacheConfig, Dst = V> + Serialize,
     >(
         &self,
-        table: &str,
+        table: CacheTable,
         out: &mut impl Write,
     ) -> anyhow::Result<()> {
         let conn = self.conn.lock().await;
-        #[expect(
-            clippy::disallowed_macros,
-            reason = "SQL query string for rusqlite requires String"
-        )]
-        let mut select_stmt = conn.prepare_cached(&format!("SELECT key, value FROM {table}"))?;
+        let mut select_stmt = conn.prepare_cached(table.list_sql())?;
         let mut rows = select_stmt.query([])?;
         while let Some(row) = rows.next()? {
             let key_blob: Vec<u8> = row.get(0)?;
@@ -597,9 +737,11 @@ impl ExecutionCache {
 
     pub async fn list(&self, mut out: impl Write) -> anyhow::Result<()> {
         out.write_all(b"------- task_fingerprints -------\n")?;
-        self.list_table::<ExecutionCacheKey, CacheEntryKey>("task_fingerprints", &mut out).await?;
+        self.list_table::<ExecutionCacheKey, CacheEntryKey>(CacheTable::TaskFingerprints, &mut out)
+            .await?;
         out.write_all(b"------- cache_entries -------\n")?;
-        self.list_table::<CacheEntryKey, CacheEntryValue>("cache_entries", &mut out).await?;
+        self.list_table::<CacheEntryKey, CacheEntryValue>(CacheTable::CacheEntries, &mut out)
+            .await?;
         Ok(())
     }
 }

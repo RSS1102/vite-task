@@ -130,6 +130,8 @@ pub enum SpawnOutcome {
 pub enum SavedCacheMissReason {
     /// No previous cache entry for this task.
     NotFound,
+    /// A malformed or incompatible local cache entry was ignored.
+    Unreadable,
     /// Spawn fingerprint changed (command, envs, cwd, etc.).
     SpawnFingerprintChanged(Vec<SpawnFingerprintChange>),
     /// Task configuration changed (`input_config` or `glob_base`).
@@ -288,6 +290,7 @@ impl SavedCacheMissReason {
     fn from_cache_miss(cache_miss: &CacheMiss) -> Self {
         match cache_miss {
             CacheMiss::NotFound => Self::NotFound,
+            CacheMiss::Unreadable => Self::Unreadable,
             CacheMiss::FingerprintMismatch(mismatch) => match mismatch {
                 FingerprintMismatch::SpawnFingerprint { old, new } => {
                     Self::SpawnFingerprintChanged(detect_spawn_fingerprint_changes(old, new))
@@ -578,6 +581,9 @@ impl TaskResult {
                 SpawnedCacheStatus::Miss(reason) => match reason {
                     SavedCacheMissReason::NotFound => {
                         Str::from("→ Cache miss: no previous cache entry found")
+                    }
+                    SavedCacheMissReason::Unreadable => {
+                        Str::from("→ Cache miss: unreadable local cache entry ignored")
                     }
                     SavedCacheMissReason::SpawnFingerprintChanged(changes) => {
                         let formatted: Vec<Str> = changes.iter().map(format_spawn_change).collect();

@@ -1,5 +1,6 @@
 # Changelog
 
+- **Fixed** Unreadable local task-cache rows are now ignored, discarded when possible, and treated as cache misses instead of preventing tasks from running ([#555](https://github.com/voidzero-dev/vite-task/pull/555)).
 - **Fixed** The task cache now supports much larger automatically tracked input sets without hitting wincode's default 4 MiB sequence preallocation limit ([#554](https://github.com/voidzero-dev/vite-task/pull/554)).
 - **Fixed** npm workspace patterns beginning with `./` now discover matching packages correctly ([vite-plus#2201](https://github.com/voidzero-dev/vite-plus/issues/2201), [#547](https://github.com/voidzero-dev/vite-task/pull/547)).
 - **Fixed** Failures while forwarding output from a started task process no longer incorrectly say the process failed to spawn ([#506](https://github.com/voidzero-dev/vite-task/issues/506)).
