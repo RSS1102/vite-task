@@ -748,11 +748,18 @@ impl ExecutionCache {
 
 #[cfg(test)]
 mod tests {
+    use std::{ffi::OsStr, sync::Arc};
+
     use rusqlite::Connection;
+    use rustc_hash::FxHashMap;
     use tempfile::TempDir;
     use vite_path::AbsolutePathBuf;
+    use vite_task_graph::config::user::{EnabledCacheConfig, UserCacheConfig};
+    use vite_task_plan::{plan_request::SyntheticPlanRequest, plan_synthetic};
+    use wincode::{config::DEFAULT_PREALLOCATION_SIZE_LIMIT, error::WriteError};
 
     use super::*;
+    use crate::{collections::HashMap, session::execute::fingerprint::PathFingerprint};
 
     fn temp_dir() -> (TempDir, AbsolutePathBuf) {
         let tmp = TempDir::new().unwrap();
@@ -762,6 +769,211 @@ mod tests {
 
     fn open_raw(db: &AbsolutePath) -> Connection {
         Connection::open(db.as_path()).unwrap()
+    }
+
+    fn synthetic_cache_metadata(workspace: &Arc<AbsolutePath>) -> CacheMetadata {
+        let program = Arc::<OsStr>::from(std::env::current_exe().unwrap().into_os_string());
+        plan_synthetic(
+            workspace,
+            workspace,
+            SyntheticPlanRequest {
+                program,
+                args: Arc::from([]),
+                cache_config: UserCacheConfig::with_config(EnabledCacheConfig {
+                    env: None,
+                    untracked_env: None,
+                    input: None,
+                    output: None,
+                }),
+                envs: Arc::new(FxHashMap::default()),
+            },
+            Arc::from([Str::from("cache-regression-test")]),
+        )
+        .unwrap()
+        .cache_metadata
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn cache_entry_larger_than_default_preallocation_limit_roundtrips() {
+        let (_tmp, dir) = temp_dir();
+        let cache = ExecutionCache::load_from_path(&dir).unwrap();
+        let entry_size = size_of::<(RelativePathBuf, PathFingerprint)>();
+        let entry_count = DEFAULT_PREALLOCATION_SIZE_LIMIT / entry_size + 1;
+        let needed = entry_count * entry_size;
+
+        let mut inferred_inputs = HashMap::with_capacity(entry_count);
+        for index in 0..entry_count {
+            inferred_inputs.insert(
+                RelativePathBuf::new(vite_str::format!("input-{index}")).unwrap(),
+                PathFingerprint::FileContentHash(index as u64),
+            );
+        }
+        let value = CacheEntryValue {
+            post_run_fingerprint: PostRunFingerprint {
+                inferred_inputs,
+                ..PostRunFingerprint::default()
+            },
+            std_outputs: Arc::from([]),
+            duration: Duration::ZERO,
+            globbed_inputs: BTreeMap::new(),
+            output_archive: None,
+        };
+
+        assert!(needed > DEFAULT_PREALLOCATION_SIZE_LIMIT);
+        assert_eq!(
+            <TaskCacheConfig as ConfigCore>::PREALLOCATION_SIZE_LIMIT,
+            Some(TASK_CACHE_PREALLOCATION_SIZE_LIMIT),
+        );
+        assert!(matches!(
+            wincode::serialize(&value),
+            Err(WriteError::PreallocationSizeLimit {
+                needed: error_needed,
+                limit: DEFAULT_PREALLOCATION_SIZE_LIMIT,
+            }) if error_needed == needed
+        ));
+
+        cache.upsert(CacheTable::CacheEntries, &0_u8, &value).await.unwrap();
+        let CacheRead::Found(row) = cache
+            .get_key_by_value::<u8, CacheEntryValue>(CacheTable::CacheEntries, &0_u8)
+            .await
+            .unwrap()
+        else {
+            panic!("large cache entry did not round-trip");
+        };
+        assert_eq!(row.value.post_run_fingerprint.inferred_inputs.len(), entry_count);
+        assert_eq!(
+            row.value.post_run_fingerprint.inferred_inputs.get(
+                &RelativePathBuf::new(vite_str::format!("input-{}", entry_count - 1)).unwrap(),
+            ),
+            Some(&PathFingerprint::FileContentHash((entry_count - 1) as u64)),
+        );
+    }
+
+    #[tokio::test]
+    async fn unreadable_cache_entry_is_a_miss_and_only_that_row_is_deleted() {
+        let (_tmp, dir) = temp_dir();
+        let cache = ExecutionCache::load_from_path(&dir).unwrap();
+        let key = serialize_cache(&0_u8).unwrap();
+        let neighbor_key = serialize_cache(&1_u8).unwrap();
+        {
+            let conn = cache.conn.lock().await;
+            conn.execute(
+                "INSERT INTO cache_entries (key, value) VALUES (?1, ?2), (?3, ?4)",
+                rusqlite::params![key, vec![0xff_u8], neighbor_key, vec![0xfe_u8]],
+            )
+            .unwrap();
+        }
+
+        assert!(matches!(
+            cache
+                .get_key_by_value::<u8, CacheEntryValue>(CacheTable::CacheEntries, &0_u8)
+                .await
+                .unwrap(),
+            CacheRead::Unreadable
+        ));
+
+        let rows: Vec<Vec<u8>> = {
+            let conn = cache.conn.lock().await;
+            conn.prepare("SELECT key FROM cache_entries ORDER BY key")
+                .unwrap()
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        assert_eq!(rows, vec![neighbor_key]);
+    }
+
+    #[tokio::test]
+    async fn unreadable_task_fingerprint_is_a_miss_and_is_deleted() {
+        let (_tmp, dir) = temp_dir();
+        let cache = ExecutionCache::load_from_path(&dir).unwrap();
+        let key = serialize_cache(&0_u8).unwrap();
+        {
+            let conn = cache.conn.lock().await;
+            conn.execute(
+                "INSERT INTO task_fingerprints (key, value) VALUES (?1, 'not a blob')",
+                [&key],
+            )
+            .unwrap();
+        }
+
+        assert!(matches!(
+            cache
+                .get_key_by_value::<u8, CacheEntryKey>(CacheTable::TaskFingerprints, &0_u8)
+                .await
+                .unwrap(),
+            CacheRead::Unreadable
+        ));
+        let remaining: u32 = cache
+            .conn
+            .lock()
+            .await
+            .query_one("SELECT COUNT(*) FROM task_fingerprints", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(remaining, 0);
+    }
+
+    #[tokio::test]
+    async fn cleanup_does_not_delete_a_concurrently_replaced_value() {
+        let (_tmp, dir) = temp_dir();
+        let cache = ExecutionCache::load_from_path(&dir).unwrap();
+        let key = serialize_cache(&0_u8).unwrap();
+        {
+            let conn = cache.conn.lock().await;
+            conn.execute(
+                "INSERT INTO cache_entries (key, value) VALUES (?1, ?2)",
+                rusqlite::params![key, Value::Real(1.0)],
+            )
+            .unwrap();
+        }
+
+        let deleted = cache
+            .delete_if_unchanged(CacheTable::CacheEntries, &key, &Value::Integer(1))
+            .await
+            .unwrap();
+        assert_eq!(deleted, 0);
+        let value: Value = cache
+            .conn
+            .lock()
+            .await
+            .query_one("SELECT value FROM cache_entries WHERE key=?1", [&key], |row| row.get(0))
+            .unwrap();
+        assert_eq!(value, Value::Real(1.0));
+    }
+
+    #[tokio::test]
+    async fn unreadable_entry_and_dangling_fingerprint_do_not_block_execution() {
+        let (_tmp, dir) = temp_dir();
+        let workspace = Arc::<AbsolutePath>::from(dir.clone());
+        let cache = ExecutionCache::load_from_path(&dir).unwrap();
+        let metadata = synthetic_cache_metadata(&workspace);
+        let cache_key = CacheEntryKey::from_metadata(&metadata);
+        let key_blob = serialize_cache(&cache_key).unwrap();
+        {
+            let conn = cache.conn.lock().await;
+            conn.execute("INSERT INTO cache_entries (key, value) VALUES (?1, X'FF')", [&key_blob])
+                .unwrap();
+        }
+        cache.upsert_task_fingerprint(&metadata.execution_cache_key, &cache_key).await.unwrap();
+
+        assert!(matches!(
+            cache.try_hit(&metadata, &BTreeMap::new(), &dir).await.unwrap(),
+            Err(CacheMiss::Unreadable)
+        ));
+        assert!(matches!(
+            cache.try_hit(&metadata, &BTreeMap::new(), &dir).await.unwrap(),
+            Err(CacheMiss::NotFound)
+        ));
+
+        let conn = cache.conn.lock().await;
+        let entries: u32 =
+            conn.query_one("SELECT COUNT(*) FROM cache_entries", [], |row| row.get(0)).unwrap();
+        let fingerprints: u32 =
+            conn.query_one("SELECT COUNT(*) FROM task_fingerprints", [], |row| row.get(0)).unwrap();
+        drop(conn);
+        assert_eq!((entries, fingerprints), (0, 0));
     }
 
     /// Reopening the same cache directory keeps existing entries: the tables are
