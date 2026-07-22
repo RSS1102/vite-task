@@ -24,7 +24,7 @@ catalog:
   # Playwright 1.52 pins the browser package to Chromium 136.
   playwright: 1.61.1
   typescript: ^6.0.3
-  vite: npm:@voidzero-dev/vite-plus-core@0.2.4
+  vite: npm:@voidzero-dev/vite-plus-core@0.2.5
   vite-plus: 0.2.5
   vitest: 4.1.10
 
