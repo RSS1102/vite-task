@@ -1,5 +1,6 @@
 # Changelog
 
+- **Fixed** `vp run` no longer fails while setting up task communication in default Codex CLI and Claude Code sandboxes that block Unix domain sockets ([#562](https://github.com/voidzero-dev/vite-task/issues/562), [#569](https://github.com/voidzero-dev/vite-task/pull/569)).
 - **Fixed** Automatic file-access tracking now works inside coding-agent sandboxes, including the default Codex CLI and Claude Code sandboxes ([#563](https://github.com/voidzero-dev/vite-task/issues/563), [#576](https://github.com/voidzero-dev/vite-task/pull/576)).
 - **Added** Tasks now run with `VP_RUN=1` set, so tools can tell they are running under `vp run` instead of being invoked directly ([#570](https://github.com/voidzero-dev/vite-task/pull/570)).
 - **Fixed** The task cache now supports much larger automatically tracked input sets without hitting wincode's default 4 MiB sequence preallocation limit ([#554](https://github.com/voidzero-dev/vite-task/pull/554)).

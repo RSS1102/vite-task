@@ -2704,6 +2704,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
 
 [[package]]
+name = "pipe_socket"
+version = "0.0.0"
+dependencies = [
+ "nix 0.31.2",
+ "tempfile",
+ "tokio",
+ "uuid",
+ "vite_path",
+ "winapi",
+]
+
+[[package]]
 name = "pkg-config"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4283,10 +4295,10 @@ name = "vite_task_client"
 version = "0.0.0"
 dependencies = [
  "native_str",
+ "pipe_socket",
  "rustc-hash",
  "vite_path",
  "vite_task_ipc_shared",
- "winapi",
  "wincode",
 ]
 
@@ -4377,13 +4389,12 @@ version = "0.0.0"
 dependencies = [
  "futures",
  "native_str",
+ "pipe_socket",
  "rustc-hash",
- "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
  "tracing",
- "uuid",
  "vite_glob",
  "vite_path",
  "vite_task_client",
