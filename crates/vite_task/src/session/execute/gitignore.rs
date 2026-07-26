@@ -12,15 +12,26 @@
 //! output globs override the answer, so the proxy only has to be right for paths
 //! nobody declared.
 //!
-//! When there is no repository, every read-first overlap resolves to *input*.
-//! That is the safe direction: the task modified something it declared as a
-//! dependency, so the run is not cached. Availability degrades, correctness does
-//! not.
+//! When there is no repository, every read-first overlap resolves to *input*,
+//! apart from the always-derived directories below. That is the safe direction:
+//! the task modified something it declared as a dependency, so the run is not
+//! cached. Availability degrades, correctness does not.
 
 #![cfg(fspy)]
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use vite_path::{AbsolutePath, RelativePathBuf};
+
+/// Directories that hold derived state in every JavaScript workspace, whether or
+/// not a `.gitignore` says so.
+///
+/// `node_modules` is installed rather than authored, and `.git` is the repository
+/// itself. Relying on a `.gitignore` to say so is not enough: a package with no
+/// `.gitignore` of its own — or a workspace that is not a repository at all —
+/// would classify a tool's own cache under `node_modules` as a modified input and
+/// then never cache. Vitest keeps `node_modules/.vite/vitest/*/results.json`,
+/// which it reads and then rewrites on every run.
+const ALWAYS_IGNORED: &[&str] = &["node_modules", ".git"];
 
 /// Gitignore matching rooted at the workspace.
 pub struct WorkspaceGitignore {
@@ -52,6 +63,14 @@ impl WorkspaceGitignore {
     /// `false` when there is no matcher at all, which is the input-leaning
     /// answer.
     pub fn is_ignored(&self, path: &RelativePathBuf) -> bool {
+        if path
+            .as_path()
+            .iter()
+            .any(|component| ALWAYS_IGNORED.contains(&component.to_string_lossy().as_ref()))
+        {
+            return true;
+        }
+
         let Some(matcher) = &self.matcher else {
             return false;
         };
@@ -90,6 +109,34 @@ mod tests {
         assert!(
             !gitignore.is_ignored(&RelativePathBuf::new("packages/auth/src/index.ts").unwrap()),
             "tracked sources must not be reported as ignored"
+        );
+    }
+
+    /// A workspace with no `.gitignore` must still recognise `node_modules` as
+    /// derived. Vitest reads and then rewrites its own
+    /// `node_modules/.vite/vitest/*/results.json`, and calling that a modified
+    /// input stops the task from ever caching.
+    #[test]
+    fn node_modules_is_derived_without_any_gitignore() {
+        let temp = TempDir::new().unwrap();
+        let root = AbsolutePathBuf::new(temp.path().to_path_buf()).unwrap();
+
+        let gitignore = WorkspaceGitignore::open(&root);
+
+        assert!(
+            gitignore.is_ignored(
+                &RelativePathBuf::new("node_modules/.vite/vitest/abc/results.json").unwrap()
+            ),
+            "a tool's own cache under node_modules must not become a modified input"
+        );
+        assert!(
+            gitignore
+                .is_ignored(&RelativePathBuf::new("packages/auth/node_modules/x/cache").unwrap()),
+            "nested node_modules must be covered too"
+        );
+        assert!(
+            !gitignore.is_ignored(&RelativePathBuf::new("src/index.ts").unwrap()),
+            "sources must still be tracked when there is no .gitignore"
         );
     }
 }
