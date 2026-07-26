@@ -281,12 +281,6 @@ fn observe_fspy(
                         unexplained_for_debug,
                         read_write_overlap,
                     );
-                    let leaked: Vec<&str> = path_reads
-                        .iter()
-                        .map(|path| path.as_str())
-                        .filter(|path| path.contains("/dist/") || path.starts_with("dist/"))
-                        .collect();
-                    eprintln!("[tracking] output paths fingerprinted as inputs: {leaked:?}");
                 }
             }
             TrackingOutcome { path_reads, path_writes, read_write_overlap }

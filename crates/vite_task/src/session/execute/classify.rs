@@ -175,6 +175,57 @@ fn mutated_subtrees<'a>(
     subtrees
 }
 
+/// Whether a mutated path that is now gone can be accounted for.
+///
+/// Without an explanation the thing that produced it is missing from the archive
+/// and a cache hit would restore an incomplete tree. Being renamed or removed
+/// explains it, including by an ancestor: renaming a staging directory takes
+/// everything beneath it along, and only the directory itself carries the rename.
+fn absence_is_explained(
+    path: &RelativePathBuf,
+    history: &PathHistory,
+    retired_ancestors: &[&str],
+) -> bool {
+    history.renamed_away
+        || history.first_deletion.is_some()
+        || retired_ancestors.iter().any(|retired| {
+            path.as_str().strip_prefix(*retired).is_some_and(|tail| tail.starts_with('/'))
+        })
+}
+
+/// Re-attribute mutations recorded beneath a renamed directory to the published
+/// location.
+///
+/// A build that stages into `dist.tmp` and swaps it into place records every
+/// write against the staging path. Only the directory carries the rename, so
+/// without this the real outputs are never collected and a cache hit restores an
+/// empty tree.
+fn relocate_directory_renames(
+    histories: &FxHashMap<&RelativePathBuf, PathHistory>,
+    directory_renames: &[(&RelativePathBuf, &RelativePathBuf)],
+) -> FxHashMap<RelativePathBuf, PathHistory> {
+    let mut relocated: FxHashMap<RelativePathBuf, PathHistory> = FxHashMap::default();
+    for (source, destination) in directory_renames {
+        let source_prefix = source.as_str();
+        for (path, history) in histories {
+            if history.first_mutation.is_none() {
+                continue;
+            }
+            let Some(tail) =
+                path.as_str().strip_prefix(source_prefix).and_then(|tail| tail.strip_prefix('/'))
+            else {
+                continue;
+            };
+            let Ok(moved) = RelativePathBuf::new(vite_str::format!("{destination}/{tail}").as_str())
+            else {
+                continue;
+            };
+            relocated.entry(moved).or_default().first_mutation = history.first_mutation;
+        }
+    }
+    relocated
+}
+
 pub fn classify(
     events: &[TrackedEvent],
     context: &ClassifyContext<'_>,
@@ -183,27 +234,7 @@ pub fn classify(
     let (histories, directory_renames) = fold_events(events);
     let mut classification = Classification::default();
 
-    // Re-attribute mutations recorded beneath a renamed directory.
-    let mut relocated: FxHashMap<RelativePathBuf, PathHistory> = FxHashMap::default();
-    for (source, destination) in &directory_renames {
-        let source_prefix = source.as_str();
-        for (path, history) in &histories {
-            let Some(tail) = path.as_str().strip_prefix(source_prefix) else {
-                continue;
-            };
-            let Some(tail) = tail.strip_prefix('/') else {
-                continue;
-            };
-            if history.first_mutation.is_none() {
-                continue;
-            }
-            let Ok(moved) = RelativePathBuf::new(vite_str::format!("{destination}/{tail}").as_str())
-            else {
-                continue;
-            };
-            relocated.entry(moved).or_default().first_mutation = history.first_mutation;
-        }
-    }
+    let relocated = relocate_directory_renames(&histories, &directory_renames);
 
     let mut candidates: Vec<(&RelativePathBuf, &PathHistory)> =
         histories.iter().map(|(path, history)| (*path, history)).collect();
@@ -229,21 +260,11 @@ pub fn classify(
         let is_directory = metadata.as_ref().is_some_and(std::fs::Metadata::is_dir)
             || (history.known_directory && !exists);
 
-        if history.first_mutation.is_some() && !exists {
-            // A path that changed and then vanished needs an explanation, or the
-            // thing that produced it is missing from the archive and a cache hit
-            // would restore an incomplete tree. Being renamed or removed
-            // explains it — including by an ancestor, since renaming a staging
-            // directory takes everything beneath it along and only the directory
-            // itself carries the rename.
-            let explained = history.renamed_away
-                || history.first_deletion.is_some()
-                || retired_ancestors.iter().any(|retired| {
-                    path.as_str()
-                        .strip_prefix(*retired)
-                        .is_some_and(|tail| tail.starts_with('/'))
-                });
-            if !explained {
+        if history.first_mutation.is_some()
+            && !exists
+            && !absence_is_explained(path, history, &retired_ancestors)
+        {
+            {
                 if std::env::var_os("VITE_TASK_DEBUG_TRACKING").is_some() {
                     #[expect(clippy::print_stderr, reason = "opt-in diagnostic")]
                     {
@@ -262,9 +283,16 @@ pub fn classify(
         }
 
         let wrote_into_subtree = is_directory && mutated_subtrees.contains(path.as_str());
+        let own_derived_state = is_own_derived_state(
+            path,
+            is_directory,
+            wrote_into_subtree,
+            context,
+            &mutated_subtrees,
+        );
         let mutated = history.first_mutation.is_some() && context.infer_outputs;
         let consumed =
-            is_input_candidate(history, is_directory, wrote_into_subtree) && context.infer_inputs;
+            is_input_candidate(history, is_directory, own_derived_state) && context.infer_inputs;
 
         match (mutated, consumed) {
             (true, false) => {
@@ -279,10 +307,8 @@ pub fn classify(
                     {
                         eprintln!(
                             "[tracking] overlap {path} write_first={write_first} \
-                             gitignored={} read={:?} mutation={:?}",
+                             gitignored={}",
                             (context.is_gitignored)(path),
-                            history.first_content_read,
-                            history.first_mutation,
                         );
                     }
                 }
@@ -307,28 +333,79 @@ pub fn classify(
 
 /// Whether a path's reads make it a dependency.
 ///
-/// Directories are the interesting case. A bare stat of one carries only
-/// existence and type, which cannot detect a content change and is routinely a
-/// probe of the task's own output directory. A listing is a real dependency,
-/// unless the task wrote into that directory, in which case the entries it saw
-/// are its own product.
+/// Directories are the interesting case, and three kinds of read are rejected.
+///
+/// A bare stat carries only existence and type. It cannot detect a content
+/// change and is routinely a probe of the task's own output directory, where a
+/// stored fingerprint could never match on a clean checkout.
+///
+/// A listing of a directory the task wrote into enumerated the task's own
+/// product.
+///
+/// A listing of a *gitignored* directory enumerated derived state. Version
+/// control already says this content is not source, so depending on the set of
+/// names in it is not a source dependency — and that set moves for reasons this
+/// task does not control. In emdash, `tsdown` lists `dist/locales` while a
+/// sibling task writes into it, so without this the tsdown task invalidates
+/// every time a locale is added, even though its own inputs never changed.
 const fn is_input_candidate(
     history: &PathHistory,
     is_directory: bool,
-    wrote_into_subtree: bool,
+    own_derived_state: bool,
 ) -> bool {
     if history.first_content_read.is_none() {
+        return false;
+    }
+    if own_derived_state {
         return false;
     }
     if !is_directory {
         return true;
     }
-    if history.first_listing.is_none() {
-        // Stat only. Existence alone is not worth a fingerprint, and a stored
-        // one can never match on a clean checkout.
+    // A bare stat of a directory carries only existence and type. It cannot
+    // detect a content change and is routinely a probe of the task's own output
+    // directory, where a stored fingerprint could never match on a clean
+    // checkout.
+    history.first_listing.is_some()
+}
+
+/// Whether a read path is part of the task's own derived output tree.
+///
+/// Two signals have to agree. Version control must call the path derived, and it
+/// must sit under a directory this same task wrote into. Requiring both is what
+/// keeps the ordinary monorepo dependency intact: a package reading
+/// `node_modules/<dep>/dist/index.mjs` is reading ignored, derived content, but
+/// the reader never writes there, so it stays a real input and a change to the
+/// dependency still invalidates the consumer.
+///
+/// What it does reject is a task reading inside its own output directory.
+/// emdash's admin package is the case that forced this: `tsdown` reads
+/// `dist/locales/<locale>/messages.mjs` while a later step in the same build
+/// rewrites those files, so fingerprinting them can never settle and the task
+/// misses on every run.
+fn is_own_derived_state(
+    path: &RelativePathBuf,
+    is_directory: bool,
+    wrote_into_subtree: bool,
+    context: &ClassifyContext<'_>,
+    mutated_subtrees: &FxHashSet<&str>,
+) -> bool {
+    if is_directory {
+        // The listing enumerated names this task produced, or names version
+        // control considers derived and therefore outside the source graph.
+        return wrote_into_subtree || (context.is_gitignored)(path);
+    }
+    if !(context.is_gitignored)(path) {
         return false;
     }
-    !wrote_into_subtree
+    let mut remaining = path.as_str();
+    while let Some(separator) = remaining.rfind('/') {
+        remaining = &remaining[..separator];
+        if mutated_subtrees.contains(remaining) {
+            return true;
+        }
+    }
+    false
 }
 
 fn record_input(

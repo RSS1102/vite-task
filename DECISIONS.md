@@ -229,3 +229,46 @@ Left alone. It is orthogonal to auto-tracking, blocks only the one package whose
 build re-enters pnpm, and fixing it means changing how fspy handles a process
 reading its own executable. Verification of the tracking rules therefore excludes
 that package.
+
+## D13 — A task's own derived output tree is not an input
+
+Found by running emdash's full build, not by reasoning. With the rules as first
+written, 22 of 23 tasks cached and `@emdash-cms/admin#build`'s `tsdown` segment
+missed forever with `'messages.mjs' added in 'packages/admin/dist/locales/fa'`.
+
+**Cause.** admin's build is a compound command, and each `&&` segment is a
+separate cached task:
+
+```
+node --run locale:compile && tsdown && node --run locale:copy && npx tailwindcss
+```
+
+`tsdown` *reads* `dist/locales/<locale>/messages.mjs`, and the later
+`locale:copy` segment rewrites those files. So tsdown fingerprints content that a
+sibling task changes afterwards, and the fingerprint can never settle.
+
+**Why the existing rules could not catch it.** The "listed a directory it wrote
+into" rule does not fire, because tsdown did not write there — a sibling did.
+Rejecting on gitignore alone is not available either: a package reading
+`node_modules/<dep>/dist/index.mjs` is also reading ignored, derived content, and
+that must stay a real input or changing a dependency would stop invalidating its
+consumers. That is the central monorepo relationship.
+
+**Rule.** A read path is the task's own derived state when **both** hold: version
+control calls it derived, **and** it sits under a directory this same task wrote
+into. Requiring both distinguishes the two cases exactly — admin writes
+`dist/index.mjs`, so `packages/admin/dist` is one of its own write subtrees and
+everything ignored beneath it is its own output tree, while no package writes into
+`node_modules/<dep>/dist`, so dependency outputs stay inputs.
+
+Directory listings follow the same principle: a listing is rejected if the task
+wrote into that directory or if version control calls the directory derived.
+
+**Result on emdash, zero manual globs:**
+
+- 23/23 cache hit on the second run, stable across repeats
+- after deleting every `packages/*/dist`, 22/23 hit and all 1358 files restored
+  **byte-for-byte identical**
+- the single miss is correct: deleting `packages/core/dist` also empties
+  `node_modules/emdash/dist`, which is a genuine input of another task, so it
+  rebuilt
