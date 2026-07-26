@@ -32,6 +32,7 @@ use crate::{
 /// inspecting the rename's result: it describes an argument, and it happens
 /// before the call while the source is still there.
 unsafe fn is_directory_at(dirfd: c_int, path: *const c_char) -> bool {
+    // SAFETY: an all-zero stat is a valid initial value; fstatat overwrites it
     let mut stat_buf: libc::stat = unsafe { core::mem::zeroed() };
     // SAFETY: path is a valid C string pointer and stat_buf is a valid, owned stat struct
     let result = unsafe { libc::fstatat(dirfd, path, &raw mut stat_buf, libc::AT_SYMLINK_NOFOLLOW) };
@@ -106,7 +107,7 @@ unsafe extern "C" fn renameatx_np(
     unsafe { report_rename(old_dirfd, old_path, new_dirfd, new_path, is_directory) };
     // RENAME_SWAP mutates both sides, so the source is replaced too rather than
     // simply retired.
-    if flags & u32::try_from(libc::RENAME_SWAP).unwrap_or(0) != 0 {
+    if flags & libc::RENAME_SWAP != 0 {
         // SAFETY: old_path is a valid C string pointer provided by the caller
         unsafe {
             handle_open(

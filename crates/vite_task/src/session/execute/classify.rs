@@ -91,7 +91,7 @@ struct PathHistory {
 }
 
 impl PathHistory {
-    fn observe(&mut self, index: usize, mode: AccessMode) {
+    const fn observe(&mut self, index: usize, mode: AccessMode) {
         if mode.contains(AccessMode::IS_DIR) {
             self.known_directory = true;
         }
@@ -120,11 +120,11 @@ impl PathHistory {
 ///
 /// `already_fingerprinted` reports paths the caller hashed before the run, which
 /// do not need fingerprinting again.
-pub fn classify(
+/// Fold the event stream into per-path histories, and collect the directory
+/// renames that need writes re-attributed.
+fn fold_events(
     events: &[TrackedEvent],
-    context: &ClassifyContext<'_>,
-    already_fingerprinted: &dyn Fn(&RelativePathBuf) -> bool,
-) -> Classification {
+) -> (FxHashMap<&RelativePathBuf, PathHistory>, Vec<(&RelativePathBuf, &RelativePathBuf)>) {
     let mut histories: FxHashMap<&RelativePathBuf, PathHistory> = FxHashMap::default();
     // Directory renames, newest last. A build that stages into `dist.tmp` and
     // swaps it into place records every write against the staging path, so those
@@ -135,7 +135,7 @@ pub fn classify(
     for (index, event) in events.iter().enumerate() {
         histories.entry(&event.path).or_default().observe(index, event.mode);
 
-        // The preload reports a rename as source then destination, adjacent.
+        // A rename is reported as source then destination, adjacent.
         if event.mode.contains(AccessMode::RENAME_FROM) {
             last_rename_source = Some(&event.path);
         } else if event.mode.contains(AccessMode::RENAME_TO) {
@@ -147,7 +147,40 @@ pub fn classify(
             last_rename_source = None;
         }
     }
+    (histories, directory_renames)
+}
 
+/// Every directory the task wrote into, including ancestors.
+///
+/// A listing of one of these enumerated the task's own product, so treating it
+/// as a dependency would make the cache key depend on the output and could never
+/// match on a clean checkout where the directory does not exist yet.
+fn mutated_subtrees<'a>(
+    candidates: &[(&'a RelativePathBuf, &'a PathHistory)],
+) -> FxHashSet<&'a str> {
+    let mut subtrees: FxHashSet<&str> = FxHashSet::default();
+    for (path, history) in candidates {
+        if history.first_mutation.is_none() {
+            continue;
+        }
+        let mut remaining = path.as_str();
+        while let Some(separator) = remaining.rfind('/') {
+            remaining = &remaining[..separator];
+            if !subtrees.insert(remaining) {
+                // An ancestor already recorded, so the rest are too.
+                break;
+            }
+        }
+    }
+    subtrees
+}
+
+pub fn classify(
+    events: &[TrackedEvent],
+    context: &ClassifyContext<'_>,
+    already_fingerprinted: &dyn Fn(&RelativePathBuf) -> bool,
+) -> Classification {
+    let (histories, directory_renames) = fold_events(events);
     let mut classification = Classification::default();
 
     // Re-attribute mutations recorded beneath a renamed directory.
@@ -175,7 +208,7 @@ pub fn classify(
     let mut candidates: Vec<(&RelativePathBuf, &PathHistory)> =
         histories.iter().map(|(path, history)| (*path, history)).collect();
     let relocated_entries: Vec<(&RelativePathBuf, &PathHistory)> =
-        relocated.iter().map(|(path, history)| (path, history)).collect();
+        relocated.iter().collect();
     candidates.extend(relocated_entries);
 
     // Directories that were renamed away or removed. Anything that used to live
@@ -187,24 +220,7 @@ pub fn classify(
         .map(|(path, _)| path.as_str())
         .collect();
 
-    // Every directory this task wrote into, including ancestors. A listing of
-    // one of these enumerated the task's own product, so treating it as a
-    // dependency would make the cache key depend on the output and could never
-    // match on a clean checkout, where the directory does not exist yet.
-    let mut mutated_subtrees: FxHashSet<&str> = FxHashSet::default();
-    for (path, history) in &candidates {
-        if history.first_mutation.is_none() {
-            continue;
-        }
-        let mut remaining = path.as_str();
-        while let Some(separator) = remaining.rfind('/') {
-            remaining = &remaining[..separator];
-            if !mutated_subtrees.insert(remaining) {
-                // An ancestor already recorded, so the rest are too.
-                break;
-            }
-        }
-    }
+    let mutated_subtrees = mutated_subtrees(&candidates);
 
     for (path, history) in candidates {
         let absolute = context.workspace_root.join(path);
@@ -271,7 +287,7 @@ pub fn classify(
 /// probe of the task's own output directory. A listing is a real dependency,
 /// unless the task wrote into that directory, in which case the entries it saw
 /// are its own product.
-fn is_input_candidate(
+const fn is_input_candidate(
     history: &PathHistory,
     is_directory: bool,
     wrote_into_subtree: bool,
