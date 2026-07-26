@@ -178,6 +178,15 @@ pub fn classify(
         relocated.iter().map(|(path, history)| (path, history)).collect();
     candidates.extend(relocated_entries);
 
+    // Directories that were renamed away or removed. Anything that used to live
+    // beneath one of these is accounted for, so its absence needs no further
+    // explanation.
+    let retired_ancestors: Vec<&str> = histories
+        .iter()
+        .filter(|(_, history)| history.renamed_away || history.first_deletion.is_some())
+        .map(|(path, _)| path.as_str())
+        .collect();
+
     // Every directory this task wrote into, including ancestors. A listing of
     // one of these enumerated the task's own product, so treating it as a
     // dependency would make the cache key depend on the output and could never
@@ -204,12 +213,21 @@ pub fn classify(
         let is_directory = metadata.as_ref().is_some_and(std::fs::Metadata::is_dir)
             || (history.known_directory && !exists);
 
-        if history.first_mutation.is_some() {
-            let cleaned_up = history.first_deletion.is_some() && !exists;
-            if !exists && !history.renamed_away && !cleaned_up {
-                // Something changed and then vanished with nothing to explain
-                // where it went. Whatever produced it is not in the archive, so
-                // caching this run could restore an incomplete tree.
+        if history.first_mutation.is_some() && !exists {
+            // A path that changed and then vanished needs an explanation, or the
+            // thing that produced it is missing from the archive and a cache hit
+            // would restore an incomplete tree. Being renamed or removed
+            // explains it — including by an ancestor, since renaming a staging
+            // directory takes everything beneath it along and only the directory
+            // itself carries the rename.
+            let explained = history.renamed_away
+                || history.first_deletion.is_some()
+                || retired_ancestors.iter().any(|retired| {
+                    path.as_str()
+                        .strip_prefix(*retired)
+                        .is_some_and(|tail| tail.starts_with('/'))
+                });
+            if !explained {
                 classification.unexplained_mutation.get_or_insert_with(|| path.clone());
             }
         }
