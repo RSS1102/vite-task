@@ -20,10 +20,10 @@ mod print_color;
 mod print_cwd;
 mod print_env;
 mod print_file;
-mod read_stdin;
-mod replace_file_content;
 mod publish_dir;
+mod read_stdin;
 mod rename;
+mod replace_file_content;
 mod rm;
 #[cfg(target_os = "linux")]
 mod small_dev_shm;

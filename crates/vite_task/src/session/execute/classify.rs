@@ -216,7 +216,8 @@ fn relocate_directory_renames(
             else {
                 continue;
             };
-            let Ok(moved) = RelativePathBuf::new(vite_str::format!("{destination}/{tail}").as_str())
+            let Ok(moved) =
+                RelativePathBuf::new(vite_str::format!("{destination}/{tail}").as_str())
             else {
                 continue;
             };
@@ -238,8 +239,7 @@ pub fn classify(
 
     let mut candidates: Vec<(&RelativePathBuf, &PathHistory)> =
         histories.iter().map(|(path, history)| (*path, history)).collect();
-    let relocated_entries: Vec<(&RelativePathBuf, &PathHistory)> =
-        relocated.iter().collect();
+    let relocated_entries: Vec<(&RelativePathBuf, &PathHistory)> = relocated.iter().collect();
     candidates.extend(relocated_entries);
 
     // Directories that were renamed away or removed. Anything that used to live
@@ -323,7 +323,9 @@ pub fn classify(
                     record_input(&mut classification, path, history, already_fingerprinted);
                 }
             }
-            (false, true) => record_input(&mut classification, path, history, already_fingerprinted),
+            (false, true) => {
+                record_input(&mut classification, path, history, already_fingerprinted)
+            }
             (false, false) => {}
         }
     }

@@ -54,7 +54,7 @@ a mutation.
 - Atomic writers create temporaries with `O_CREAT | O_EXCL` and publish by
   rename, so both halves are still detected.
 - Biome's warm run opens a clean source `O_RDWR` with no truncation and does not
-  write. It is now correctly *not* a mutation, which is the false positive the
+  write. It is now correctly _not_ a mutation, which is the false positive the
   rule exists to remove.
 - Lock files across cargo, rustc and Parcel are opened `O_RDWR | O_CREAT`
   without truncation and only flocked, so they stop being collected.
@@ -79,7 +79,7 @@ directory listings including all 256 of Go's cache shards.
 **Drift.** D1 committed to all signals on all three backends. The seccomp
 supervisor responds with `SECCOMP_USER_NOTIF_FLAG_CONTINUE`
 (`fspy_seccomp_unotify/src/supervisor/listener.rs:50`), so it is notified
-*before* the syscall runs and never learns the result. Success-dependent signals
+_before_ the syscall runs and never learns the result. Success-dependent signals
 are therefore not obtainable there without emulating each syscall in the
 supervisor, which would mean reproducing the target's cwd, dirfd and credentials.
 
@@ -100,7 +100,7 @@ directory as an input. Both cost cache hits, not correctness.
 
 ## D8 — Guard: an unexplained missing mutation blocks caching
 
-**Drift.** One missing signal is *not* safe on its own. If a rename goes
+**Drift.** One missing signal is _not_ safe on its own. If a rename goes
 unobserved, the write lands on a staging path that no longer exists at archive
 time, rule 6 drops it, and the archive comes out empty — which restores nothing
 on a cache hit and leaves a wrong tree. That is exactly the `atomic-dist-swap`
@@ -120,7 +120,7 @@ missed cache entry, never a wrong tree.
 **Instruction.** Do not build rules on whether a call succeeded.
 
 **What this invalidates.** D1 through D8 assumed the tracer could report
-outcomes, which drove reporting *after* the real call so `errno` was known. That
+outcomes, which drove reporting _after_ the real call so `errno` was known. That
 is now reverted:
 
 - `AccessMode::FAILED` is removed, along with the after-the-call reporting in
@@ -243,7 +243,7 @@ separate cached task:
 node --run locale:compile && tsdown && node --run locale:copy && npx tailwindcss
 ```
 
-`tsdown` *reads* `dist/locales/<locale>/messages.mjs`, and the later
+`tsdown` _reads_ `dist/locales/<locale>/messages.mjs`, and the later
 `locale:copy` segment rewrites those files. So tsdown fingerprints content that a
 sibling task changes afterwards, and the fingerprint can never settle.
 

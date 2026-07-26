@@ -15,11 +15,9 @@ use super::{
     glob,
     spawn::ChildOutcome,
 };
-use crate::{
-    session::{
-        cache::{CacheEntryValue, ExecutionCache, archive},
-        event::{CacheErrorKind, CacheNotUpdatedReason, CacheUpdateStatus, ExecutionError},
-    },
+use crate::session::{
+    cache::{CacheEntryValue, ExecutionCache, archive},
+    event::{CacheErrorKind, CacheNotUpdatedReason, CacheUpdateStatus, ExecutionError},
 };
 
 /// Post-execution summary of what fspy observed for a single task. Fields are
@@ -264,9 +262,7 @@ fn observe_fspy(
                 .modified_input
                 .filter(|path| !excluded_from_inputs(path))
                 .or_else(|| {
-                    classification
-                        .unexplained_mutation
-                        .filter(|path| !excluded_from_outputs(path))
+                    classification.unexplained_mutation.filter(|path| !excluded_from_outputs(path))
                 });
 
             if std::env::var_os("VITE_TASK_DEBUG_TRACKING").is_some() {

@@ -35,7 +35,8 @@ unsafe fn is_directory_at(dirfd: c_int, path: *const c_char) -> bool {
     // SAFETY: an all-zero stat is a valid initial value; fstatat overwrites it
     let mut stat_buf: libc::stat = unsafe { core::mem::zeroed() };
     // SAFETY: path is a valid C string pointer and stat_buf is a valid, owned stat struct
-    let result = unsafe { libc::fstatat(dirfd, path, &raw mut stat_buf, libc::AT_SYMLINK_NOFOLLOW) };
+    let result =
+        unsafe { libc::fstatat(dirfd, path, &raw mut stat_buf, libc::AT_SYMLINK_NOFOLLOW) };
     result == 0 && (stat_buf.st_mode & libc::S_IFMT) == libc::S_IFDIR
 }
 
@@ -110,10 +111,7 @@ unsafe extern "C" fn renameatx_np(
     if flags & libc::RENAME_SWAP != 0 {
         // SAFETY: old_path is a valid C string pointer provided by the caller
         unsafe {
-            handle_open(
-                PathAt(old_dirfd, old_path),
-                AccessMode::RENAME_TO | AccessMode::WRITE,
-            );
+            handle_open(PathAt(old_dirfd, old_path), AccessMode::RENAME_TO | AccessMode::WRITE);
         }
     }
     // SAFETY: forwarding the caller's arguments to the original renameatx_np()
@@ -141,10 +139,7 @@ unsafe extern "C" fn renameat2(
     if flags & libc::RENAME_EXCHANGE != 0 {
         // SAFETY: old_path is a valid C string pointer provided by the caller
         unsafe {
-            handle_open(
-                PathAt(old_dirfd, old_path),
-                AccessMode::RENAME_TO | AccessMode::WRITE,
-            );
+            handle_open(PathAt(old_dirfd, old_path), AccessMode::RENAME_TO | AccessMode::WRITE);
         }
     }
     // SAFETY: forwarding the caller's arguments to the original renameat2()

@@ -158,8 +158,6 @@ pub unsafe fn handle_open(path: impl ToAbsolutePath, mode: impl ToAccessMode) {
     });
 }
 
-
-
 #[cfg(not(test))]
 #[ctor::ctor(unsafe)]
 fn init_client() {
