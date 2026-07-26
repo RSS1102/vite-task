@@ -212,3 +212,20 @@ binary re-reading its own embedded blob.
 
 Not a tracking defect. emdash needs `pnpm install` before the full build can be
 measured.
+
+## D12 — pnpm's single-executable binary fails under fspy; pre-existing
+
+`@emdash-cms/registry-lexicons#build` shells out to `pnpm run build:lexicons` and
+aborts with `Assertion failed: (magic) == (kMagic)` inside
+`node::sea::FindSingleExecutableResource`. pnpm 11.9.0 ships as a Node
+single-executable application, so it re-reads its own binary to find an embedded
+blob, and that read does not survive tracing.
+
+**Verified pre-existing**, not caused by this branch: a `vt` built from the base
+commit `b3ebf564` reproduces the identical assertion. Released vite-plus does not
+hit it because it supplies a managed Node and pnpm rather than the mise shim.
+
+Left alone. It is orthogonal to auto-tracking, blocks only the one package whose
+build re-enters pnpm, and fixing it means changing how fspy handles a process
+reading its own executable. Verification of the tracking rules therefore excludes
+that package.
