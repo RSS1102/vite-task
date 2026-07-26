@@ -158,6 +158,23 @@ pub unsafe fn handle_open(path: impl ToAbsolutePath, mode: impl ToAccessMode) {
     });
 }
 
+/// Report an access whose outcome is known, marking failures with
+/// [`AccessMode::FAILED`].
+///
+/// Interceptions call this *after* forwarding to the real function. A failed
+/// call still names the path, but it read nothing and wrote nothing, and
+/// consumers must be able to tell the difference: a formatter probing for a
+/// generated file that is not there yet is not depending on it.
+pub unsafe fn handle_outcome(
+    path: impl ToAbsolutePath,
+    mode: fspy_shared::ipc::AccessMode,
+    succeeded: bool,
+) {
+    let mode = if succeeded { mode } else { mode | fspy_shared::ipc::AccessMode::FAILED };
+    // SAFETY: path contains valid pointers forwarded from the interposed function's caller
+    unsafe { handle_open(path, mode) };
+}
+
 #[cfg(not(test))]
 #[ctor::ctor(unsafe)]
 fn init_client() {
