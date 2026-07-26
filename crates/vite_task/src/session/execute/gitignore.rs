@@ -62,3 +62,34 @@ impl WorkspaceGitignore {
             || matcher.matched_path_or_any_parents(path.as_path(), true).is_ignore()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use tempfile::TempDir;
+    use vite_path::AbsolutePathBuf;
+
+    use super::*;
+
+    /// A root `dist/` rule must ignore a nested build output. This is the shape
+    /// every real monorepo has, and getting it wrong turns every package's
+    /// output into a modified input.
+    #[test]
+    fn root_directory_rule_ignores_nested_output() {
+        let temp = TempDir::new().unwrap();
+        let root = AbsolutePathBuf::new(temp.path().to_path_buf()).unwrap();
+        std::fs::write(root.join(".gitignore").as_path(), "dist/\nnode_modules\n").unwrap();
+        std::fs::create_dir_all(root.join("packages/auth/dist").as_path()).unwrap();
+        std::fs::write(root.join("packages/auth/dist/index.mjs").as_path(), "x").unwrap();
+
+        let gitignore = WorkspaceGitignore::open(&root);
+
+        assert!(
+            gitignore.is_ignored(&RelativePathBuf::new("packages/auth/dist/index.mjs").unwrap()),
+            "a root `dist/` rule must cover nested package output"
+        );
+        assert!(
+            !gitignore.is_ignored(&RelativePathBuf::new("packages/auth/src/index.ts").unwrap()),
+            "tracked sources must not be reported as ignored"
+        );
+    }
+}

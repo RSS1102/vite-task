@@ -166,3 +166,49 @@ over-collects its destination, which rule 7 permits.
 **Not an outcome.** Checking whether a path exists at archive time is a
 filesystem query at decision time, not a syscall outcome, and it stays. It is
 also what filters the over-collection above.
+
+## D10 — Verified against the real emdash workload before touching Windows
+
+Reordered on request to de-risk the chain: prove the goal on macOS with a local
+`[patch]` override before investing in the Windows backend.
+
+**Setup.** A vite-plus worktree at
+`~/.local/share/opencode/worktree/vite-plus-autotrack` with the local-development
+patch section enabled, pointing every vite-task crate at this worktree.
+
+**Two traps found while doing it, both worth remembering.**
+
+The `vp` binary does not link `vite_task` at all — only `packages/cli/binding`,
+the napi addon, does. So `vp run` is JavaScript calling a native addon, and every
+early emdash run measured released vite-plus 0.2.2 rather than this branch.
+Swapping a locally built `.node` into emdash's store does not work either: the
+addon needs `--features rolldown`, and a 0.2.6 addon against a 0.2.2 JS CLI
+loads but produces no output. Verification therefore ran through `vt`, vite-task's
+own CLI, which links the crates directly.
+
+Separately, three artifacts must be rebuilt for a change to take effect, and each
+one silently reported stale results when missed: the preload dylib consumed by
+`fspy --example cli`, the `vt` binary, and the napi addon.
+
+**Result on `@emdash-cms/auth`, a plain `tsdown` build, with no manual globs:**
+
+- run 1 cold: builds, 28 outputs collected, 3074 inputs
+- run 2 unchanged: cache hit
+- run 3 after `rm -rf dist`: cache hit **and** all 28 files restored
+- restored tree is byte-for-byte identical to a fresh build, verified by shasum
+- **zero paths under the package's own `dist/` appear in the input set**
+
+That last point is the failure mode that matters: if outputs were fingerprinted
+as inputs, run 3 would miss forever on a clean checkout.
+
+## D11 — emdash's full build is blocked by its own environment, not by tracking
+
+`@emdash-cms/registry-lexicons#build` runs `pnpm run build:lexicons` and fails
+under both this branch and released vite-plus. Released vite-plus reports the
+real cause: `ERR_PNPM_VERIFY_DEPS_BEFORE_RUN`, the workspace structure changed
+since the last install. Under `vt` the same failure surfaces less legibly, as a
+pnpm SEA assertion (`(magic) == (kMagic)`) because pnpm is a single-executable
+binary re-reading its own embedded blob.
+
+Not a tracking defect. emdash needs `pnpm install` before the full build can be
+measured.

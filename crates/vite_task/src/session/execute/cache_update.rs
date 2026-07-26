@@ -255,6 +255,9 @@ fn observe_fspy(
                 .cloned()
                 .collect();
 
+            let modified_for_debug = classification.modified_input.clone();
+            let unexplained_for_debug = classification.unexplained_mutation.clone();
+
             // A modified input only blocks caching if it is still tracked as an
             // input after exclusions; excluding it is the user saying they know.
             let read_write_overlap = classification
@@ -266,6 +269,26 @@ fn observe_fspy(
                         .filter(|path| !excluded_from_outputs(path))
                 });
 
+            if std::env::var_os("VITE_TASK_DEBUG_TRACKING").is_some() {
+                #[expect(clippy::print_stderr, reason = "opt-in diagnostic")]
+                {
+                    eprintln!(
+                        "[tracking] result inputs={} outputs={} modified={:?} unexplained={:?} \
+                         overlap={:?} infer_in={infer_inputs} infer_out={infer_outputs}",
+                        classification.inputs.len(),
+                        classification.outputs.len(),
+                        modified_for_debug,
+                        unexplained_for_debug,
+                        read_write_overlap,
+                    );
+                    let leaked: Vec<&str> = path_reads
+                        .iter()
+                        .map(|path| path.as_str())
+                        .filter(|path| path.contains("/dist/") || path.starts_with("dist/"))
+                        .collect();
+                    eprintln!("[tracking] output paths fingerprinted as inputs: {leaked:?}");
+                }
+            }
             TrackingOutcome { path_reads, path_writes, read_write_overlap }
         })
     }

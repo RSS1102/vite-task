@@ -244,6 +244,19 @@ pub fn classify(
                         .is_some_and(|tail| tail.starts_with('/'))
                 });
             if !explained {
+                if std::env::var_os("VITE_TASK_DEBUG_TRACKING").is_some() {
+                    #[expect(clippy::print_stderr, reason = "opt-in diagnostic")]
+                    {
+                        eprintln!(
+                            "[tracking] unexplained {path} renamed_away={} deleted={:?} \
+                             mutation={:?} read={:?}",
+                            history.renamed_away,
+                            history.first_deletion,
+                            history.first_mutation,
+                            history.first_content_read,
+                        );
+                    }
+                }
                 classification.unexplained_mutation.get_or_insert_with(|| path.clone());
             }
         }
@@ -261,6 +274,18 @@ pub fn classify(
             }
             (true, true) => {
                 let write_first = history.first_mutation < history.first_content_read;
+                if std::env::var_os("VITE_TASK_DEBUG_TRACKING").is_some() {
+                    #[expect(clippy::print_stderr, reason = "opt-in diagnostic")]
+                    {
+                        eprintln!(
+                            "[tracking] overlap {path} write_first={write_first} \
+                             gitignored={} read={:?} mutation={:?}",
+                            (context.is_gitignored)(path),
+                            history.first_content_read,
+                            history.first_mutation,
+                        );
+                    }
+                }
                 if write_first || (context.is_gitignored)(path) {
                     if exists {
                         classification.outputs.insert(path.clone());
