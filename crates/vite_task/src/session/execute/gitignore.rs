@@ -35,7 +35,7 @@ impl WorkspaceGitignore {
     /// it walks the ones it is given, and a missing file is simply no rules.
     ///
     /// A malformed pattern is not fatal. Failing the whole task because one line
-    /// of a `.gitignore` is unparseable would be worse than treating that line as
+    /// of a `.gitignore` is unparsable would be worse than treating that line as
     /// absent, and the fallback direction is safe: fewer ignore rules means more
     /// paths look tracked, which means fewer runs are cached.
     pub fn open(workspace_root: &AbsolutePath) -> Self {
