@@ -57,14 +57,28 @@ impl SyscallHandler {
             }
             path = Cow::Owned(resolved_path);
         }
-        self.arena.add(PathAccess {
-            mode: match flags & libc::O_ACCMODE {
-                libc::O_RDWR => AccessMode::READ | AccessMode::WRITE,
-                libc::O_WRONLY => AccessMode::WRITE,
-                _ => AccessMode::READ,
-            },
-            path: path.as_os_str().into(),
-        });
+        // This supervisor is notified before the syscall runs and responds with
+        // SECCOMP_USER_NOTIF_FLAG_CONTINUE, so it never learns the outcome.
+        // Only pre-call information is available here: intent plus the creation
+        // and truncation flags. Outcome-dependent flags (FAILED, DELETED,
+        // CREATED_DIR, RENAME_*) are deliberately not emitted, because guessing
+        // them would be worse than omitting them — a failed mkdir would claim a
+        // directory this run did not create. See DECISIONS.md D7.
+        let mut mode = match flags & libc::O_ACCMODE {
+            libc::O_RDWR => AccessMode::READ | AccessMode::WRITE,
+            libc::O_WRONLY => AccessMode::WRITE,
+            _ => AccessMode::READ,
+        };
+        if flags & libc::O_CREAT != 0 {
+            mode |= AccessMode::CREATE;
+        }
+        if flags & libc::O_TRUNC != 0 {
+            mode |= AccessMode::TRUNCATE;
+        }
+        if flags & libc::O_EXCL != 0 {
+            mode |= AccessMode::EXCLUSIVE;
+        }
+        self.arena.add(PathAccess { mode, path: path.as_os_str().into() });
         Ok(())
     }
 

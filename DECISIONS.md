@@ -73,3 +73,96 @@ tell that a directory listing failed, which matters for the
 input", covers the same case using successful `mkdir`, which is far cheaper to
 intercept and which the experiment already showed absorbs 264 of 307 derived
 directory listings including all 256 of Go's cache shards.
+
+## D7 — The Linux seccomp fallback is a reduced-fidelity path
+
+**Drift.** D1 committed to all signals on all three backends. The seccomp
+supervisor responds with `SECCOMP_USER_NOTIF_FLAG_CONTINUE`
+(`fspy_seccomp_unotify/src/supervisor/listener.rs:50`), so it is notified
+*before* the syscall runs and never learns the result. Success-dependent signals
+are therefore not obtainable there without emulating each syscall in the
+supervisor, which would mean reproducing the target's cwd, dirfd and credentials.
+
+**Decision.** On the seccomp path emit only what is knowable before the call:
+read/write intent plus `CREATE`, `TRUNCATE` and `EXCLUSIVE` from the open flags.
+Do **not** emit `FAILED`, `DELETED`, `CREATED_DIR` or the rename pair, because
+emitting them unconditionally would be actively wrong — a failed `mkdir` would
+claim a pre-existing directory, and a failed `unlink` would retire a path that is
+still there.
+
+This path is the fallback for statically linked binaries where preload injection
+does not apply; the primary Linux path is the preload library, which has the full
+set.
+
+**Why the missing signals are safe.** Every one degrades toward caching less:
+absent `DELETED` leaves a listing as an input, absent `CREATED_DIR` leaves a
+directory as an input. Both cost cache hits, not correctness.
+
+## D8 — Guard: an unexplained missing mutation blocks caching
+
+**Drift.** One missing signal is *not* safe on its own. If a rename goes
+unobserved, the write lands on a staging path that no longer exists at archive
+time, rule 6 drops it, and the archive comes out empty — which restores nothing
+on a cache hit and leaves a wrong tree. That is exactly the `atomic-dist-swap`
+failure, and it would resurface on the seccomp path.
+
+**Decision.** Add a platform-agnostic guard in `vite_task`: if a recorded
+mutation targets a path that is absent at archive time and no observed rename
+explains where it went, the output set is incomplete, so refuse to cache the run.
+
+This protects correctness beyond the seccomp case. It also covers mutations
+through `clonefile`, `copyfile` and `FICLONE`, none of which is intercepted, and
+any future publish mechanism the tracer has not learned about yet. The cost is a
+missed cache entry, never a wrong tree.
+
+## D9 — Never rely on syscall outcomes; supersedes D5, D7 and D8
+
+**Instruction.** Do not build rules on whether a call succeeded.
+
+**What this invalidates.** D1 through D8 assumed the tracer could report
+outcomes, which drove reporting *after* the real call so `errno` was known. That
+is now reverted:
+
+- `AccessMode::FAILED` is removed, along with the after-the-call reporting in
+  `open.rs`, `stat.rs`, `access.rs` and `dirent.rs`. They report before the call
+  again, as they did originally.
+- `CREATED_DIR` is removed. Recording it pre-call would claim every directory a
+  caller merely ensured exists, since `mkdir` returning `EEXIST` is the normal
+  case. Output-cleanup fix 3 therefore cannot be implemented.
+- Output-cleanup fix 2, dropping a listing whose entries were then deleted, also
+  cannot be implemented: a failed `unlink` would retire a path that is still
+  there, and that direction drops a real input.
+- D7's reduced-fidelity seccomp path and D8's unexplained-mutation guard both
+  become moot.
+
+**Why this is the better design, not merely a constraint.** The Linux seccomp
+supervisor responds with `SECCOMP_USER_NOTIF_FLAG_CONTINUE` and is notified
+before the syscall, so it can never observe an outcome. Any outcome-dependent
+rule would have silently degraded there while working on macOS, Windows and the
+Linux preload — a correctness rule that holds on three backends and not the
+fourth. Restricting the rules to pre-call information gives all four identical
+behaviour and removes the asymmetry entirely.
+
+It also makes a trace a function of the call arguments alone rather than of
+filesystem state at trace time, so two runs over the same inputs record the same
+events.
+
+**What still works, using only pre-call information:**
+
+- intent from `O_ACCMODE`, plus `O_CREAT`, `O_TRUNC` and `O_EXCL`
+- mutation defined as `O_TRUNC`, or `O_CREAT | O_EXCL`, or being a rename
+  destination
+- write-first versus read-first ordering
+- the gitignore tie-break, which is not access data at all
+- rename pairs and directory-rename expansion, recorded as attempts
+- ignoring bare directory stats
+
+**Two consequences accepted.** A failed probe now counts as a read, so a tool
+that checks for a generated file before creating it looks like it read it first;
+for ignored paths the gitignore clause still resolves that to an output, and for
+tracked paths the run is conservatively not cached. And a failed rename
+over-collects its destination, which rule 7 permits.
+
+**Not an outcome.** Checking whether a path exists at archive time is a
+filesystem query at decision time, not a syscall outcome, and it stays. It is
+also what filters the over-collection above.
