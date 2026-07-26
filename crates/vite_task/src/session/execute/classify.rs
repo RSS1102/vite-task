@@ -324,7 +324,7 @@ pub fn classify(
                 }
             }
             (false, true) => {
-                record_input(&mut classification, path, history, already_fingerprinted)
+                record_input(&mut classification, path, history, already_fingerprinted);
             }
             (false, false) => {}
         }
