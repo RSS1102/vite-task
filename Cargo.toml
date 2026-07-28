@@ -72,6 +72,8 @@ materialized_artifact = { path = "crates/materialized_artifact" }
 materialized_artifact_build = { path = "crates/materialized_artifact_build" }
 flate2 = "1.0.35"
 fspy = { path = "crates/fspy" }
+fspy_benchmark_launcher = { path = "crates/fspy_benchmark_launcher", artifact = "bin" }
+fspy_benchmark_target = { path = "crates/fspy_benchmark_target", artifact = "bin" }
 fspy_detours_sys = { path = "crates/fspy_detours_sys" }
 fspy_preload_unix = { path = "crates/fspy_preload_unix", artifact = "cdylib", target = "target" }
 fspy_preload_windows = { path = "crates/fspy_preload_windows", artifact = "cdylib", target = "target" }

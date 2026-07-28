@@ -358,7 +358,9 @@ jobs:
       - run: cargo autoinherit && git diff --exit-code
       - run: cargo shear --deny-warnings
       - run: cargo fmt --check
-      - run: RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --document-private-items
+      # --exclude fspy_benchmark: documenting it would build its musl artifact
+      # dependency, which needs a rust-std this job otherwise has no use for.
+      - run: RUSTDOCFLAGS='-D warnings' cargo doc --workspace --exclude fspy_benchmark --no-deps --document-private-items
 
       - uses: crate-ci/typos@bee27e3a4fd1ea2111cf90ab89cd076c870fce14 # v1.48.0
         with:
