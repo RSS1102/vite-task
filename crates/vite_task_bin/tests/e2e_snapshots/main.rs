@@ -670,7 +670,7 @@ fn main() {
                             "macos" => cfg!(target_os = "macos"),
                             // fspy's LD_PRELOAD injection path is only active
                             // on glibc-Linux; on musl, fspy switches to
-                            // seccomp-unotify and strips LD_PRELOAD from
+                            // seccomp-filtered ptrace and strips LD_PRELOAD from
                             // spawned children, which breaks fixtures that
                             // depend on interposer ordering.
                             "linux-gnu" => cfg!(target_os = "linux") && !cfg!(target_env = "musl"),

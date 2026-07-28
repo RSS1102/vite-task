@@ -6,8 +6,10 @@ use std::{
     os::{fd::RawFd, raw::c_void},
 };
 
-use libc::{pid_t, seccomp_notif};
+use libc::pid_t;
 use nix::sys::uio::{RemoteIoVec, process_vm_readv};
+
+use super::Syscall;
 
 pub trait FromSyscallArg: Sized {
     /// Converts a raw syscall argument into this type.
@@ -185,45 +187,45 @@ impl FromSyscallArg for c_int {
     }
 }
 
-pub trait FromNotify: Sized {
-    /// Parses syscall arguments from a seccomp notification.
+pub trait FromSyscall: Sized {
+    /// Parses syscall arguments from a ptrace stop.
     ///
     /// # Errors
     /// Returns an error if any argument cannot be parsed.
-    fn from_notify(notif: &seccomp_notif) -> io::Result<Self>;
+    fn from_syscall(syscall: &Syscall) -> io::Result<Self>;
 }
 
-impl<T: FromSyscallArg> FromNotify for (T,) {
-    fn from_notify(notif: &seccomp_notif) -> io::Result<Self> {
-        Ok((T::from_syscall_arg(notif.data.args[0])?,))
+impl<T: FromSyscallArg> FromSyscall for (T,) {
+    fn from_syscall(syscall: &Syscall) -> io::Result<Self> {
+        Ok((T::from_syscall_arg(syscall.args()[0])?,))
     }
 }
 
-impl<T1: FromSyscallArg, T2: FromSyscallArg> FromNotify for (T1, T2) {
-    fn from_notify(notif: &seccomp_notif) -> io::Result<Self> {
-        Ok((T1::from_syscall_arg(notif.data.args[0])?, T2::from_syscall_arg(notif.data.args[1])?))
+impl<T1: FromSyscallArg, T2: FromSyscallArg> FromSyscall for (T1, T2) {
+    fn from_syscall(syscall: &Syscall) -> io::Result<Self> {
+        Ok((T1::from_syscall_arg(syscall.args()[0])?, T2::from_syscall_arg(syscall.args()[1])?))
     }
 }
 
-impl<T1: FromSyscallArg, T2: FromSyscallArg, T3: FromSyscallArg> FromNotify for (T1, T2, T3) {
-    fn from_notify(notif: &seccomp_notif) -> io::Result<Self> {
+impl<T1: FromSyscallArg, T2: FromSyscallArg, T3: FromSyscallArg> FromSyscall for (T1, T2, T3) {
+    fn from_syscall(syscall: &Syscall) -> io::Result<Self> {
         Ok((
-            T1::from_syscall_arg(notif.data.args[0])?,
-            T2::from_syscall_arg(notif.data.args[1])?,
-            T3::from_syscall_arg(notif.data.args[2])?,
+            T1::from_syscall_arg(syscall.args()[0])?,
+            T2::from_syscall_arg(syscall.args()[1])?,
+            T3::from_syscall_arg(syscall.args()[2])?,
         ))
     }
 }
 
-impl<T1: FromSyscallArg, T2: FromSyscallArg, T3: FromSyscallArg, T4: FromSyscallArg> FromNotify
+impl<T1: FromSyscallArg, T2: FromSyscallArg, T3: FromSyscallArg, T4: FromSyscallArg> FromSyscall
     for (T1, T2, T3, T4)
 {
-    fn from_notify(notif: &seccomp_notif) -> io::Result<Self> {
+    fn from_syscall(syscall: &Syscall) -> io::Result<Self> {
         Ok((
-            T1::from_syscall_arg(notif.data.args[0])?,
-            T2::from_syscall_arg(notif.data.args[1])?,
-            T3::from_syscall_arg(notif.data.args[2])?,
-            T4::from_syscall_arg(notif.data.args[3])?,
+            T1::from_syscall_arg(syscall.args()[0])?,
+            T2::from_syscall_arg(syscall.args()[1])?,
+            T3::from_syscall_arg(syscall.args()[2])?,
+            T4::from_syscall_arg(syscall.args()[3])?,
         ))
     }
 }

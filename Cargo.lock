@@ -1213,7 +1213,7 @@ dependencies = [
  "fspy_detours_sys",
  "fspy_preload_unix",
  "fspy_preload_windows",
- "fspy_seccomp_unotify",
+ "fspy_seccomp_ptrace",
  "fspy_shared",
  "fspy_shared_unix",
  "fspy_test_bin",
@@ -1319,14 +1319,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "fspy_seccomp_unotify"
+name = "fspy_seccomp_ptrace"
 version = "0.1.0"
 dependencies = [
  "assertables",
  "futures-util",
  "libc",
  "nix 0.31.2",
- "passfd",
+ "rustc-hash",
  "seccompiler",
  "syscalls",
  "tempfile",
@@ -1367,7 +1367,7 @@ dependencies = [
  "base64",
  "bstr",
  "elf",
- "fspy_seccomp_unotify",
+ "fspy_seccomp_ptrace",
  "fspy_shared",
  "memmap2",
  "nix 0.31.2",
@@ -3219,7 +3219,8 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 [[package]]
 name = "seccompiler"
 version = "0.5.0"
-source = "git+https://github.com/rust-vmm/seccompiler?rev=08587106340b8e3cb361c7561411510039436857#08587106340b8e3cb361c7561411510039436857"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4ae55de56877481d112a559bbc12667635fdaf5e005712fd4e2b2fa50ffc884"
 dependencies = [
  "libc",
 ]

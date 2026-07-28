@@ -1,4 +1,4 @@
-//! Tests for fspy tracing of statically-linked executables (seccomp path).
+//! Tests for fspy tracing of statically-linked executables (seccomp-filtered ptrace path).
 //! Skipped on musl: the test binary is an artifact dep targeting musl, and when
 //! the CI builds with `-crt-static` the binary becomes dynamically linked,
 //! defeating the purpose of these tests.
@@ -119,4 +119,19 @@ async fn stat() {
 async fn execve() {
     let accesses = track_test_bin(&["execve", "/hello"], None).await;
     assert_contains(&accesses, Path::new("/hello"), fspy::AccessMode::READ);
+}
+
+#[test(tokio::test)]
+async fn spawned_from_dynamic_parent() {
+    let test_bin = test_bin_path().to_str().unwrap().to_owned();
+    let accesses = track_fn!(test_bin, |test_bin: String| {
+        let status = std::process::Command::new(test_bin)
+            .args(["open_read", "/fspy-static-child"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+    })
+    .await
+    .unwrap();
+    assert_contains(&accesses, Path::new("/fspy-static-child"), fspy::AccessMode::READ);
 }

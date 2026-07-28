@@ -23,7 +23,7 @@ tokio-util = { workspace = true }
 which = { workspace = true, features = ["tracing"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-fspy_seccomp_unotify = { workspace = true, features = ["supervisor"] }
+fspy_seccomp_ptrace = { workspace = true, features = ["supervisor"] }
 nix = { workspace = true, features = ["uio"] }
 tokio = { workspace = true, features = ["bytes"] }
 

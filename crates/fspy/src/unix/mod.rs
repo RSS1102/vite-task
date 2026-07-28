@@ -7,7 +7,7 @@ mod macos_artifacts;
 use std::{io, path::Path};
 
 #[cfg(target_os = "linux")]
-use fspy_seccomp_unotify::supervisor::supervise;
+use fspy_seccomp_ptrace::supervisor::supervise;
 use fspy_shared::ipc::PathAccess;
 #[cfg(not(target_env = "musl"))]
 use fspy_shared::ipc::{NativeStr, channel::channel};
@@ -92,7 +92,7 @@ impl SpyImpl {
             preload_path: self.preload_path.clone(),
 
             #[cfg(target_os = "linux")]
-            seccomp_payload: supervisor.payload().clone(),
+            ptrace_payload: supervisor.payload().clone(),
         };
 
         let encoded_payload = encode_payload(payload);

@@ -1,6 +1,6 @@
 #![cfg(target_os = "linux")]
 
-#[cfg(any(feature = "supervisor", feature = "target"))]
+#[cfg(feature = "target")]
 mod bindings;
 pub mod payload;
 #[cfg(feature = "target")]

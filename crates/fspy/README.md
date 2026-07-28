@@ -9,11 +9,11 @@ The injection process is almost identical on both platforms other than the envir
 
 ## Linux-specific implementation for fully static binaries
 
-For fully static binaries (such as `esbuild`), `LD_PRELOAD` does not work. In this case, `seccomp_unotify` is used to intercept direct system calls. The handler is implemented in `src/unix/syscall_handler`.
+For fully static binaries (such as `esbuild`), `LD_PRELOAD` does not work. In this case, a seccomp filter routes selected system calls through a `ptrace` supervisor. The handler is implemented in `src/unix/syscall_handler`.
 
 ## Linux musl implementation
 
-On musl targets, only `seccomp_unotify`-based tracking is used (no preload library).
+On musl targets, only seccomp-filtered `ptrace` tracking is used (no preload library).
 
 ## Windows implementation
 

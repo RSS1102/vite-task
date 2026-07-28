@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use fspy_seccomp_unotify::{
+use fspy_seccomp_ptrace::{
     impl_handler,
     supervisor::handler::arg::{CStrPtr, Caller, Fd},
 };

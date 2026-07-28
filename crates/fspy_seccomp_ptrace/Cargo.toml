@@ -1,5 +1,5 @@
 [package]
-name = "fspy_seccomp_unotify"
+name = "fspy_seccomp_ptrace"
 version = "0.1.0"
 edition = "2024"
 license.workspace = true
@@ -8,8 +8,8 @@ publish = false
 [target.'cfg(target_os = "linux")'.dependencies]
 wincode = { workspace = true, features = ["derive"] }
 libc = { workspace = true }
-nix = { workspace = true, features = ["process", "fs", "poll", "socket", "uio"] }
-passfd = { workspace = true, default-features = false, optional = true }
+nix = { workspace = true, features = ["process", "fs", "ptrace", "uio"] }
+rustc-hash = { workspace = true }
 seccompiler = { workspace = true }
 syscalls = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["net", "process", "io-util", "rt", "sync"] }
@@ -25,8 +25,8 @@ test-log = { workspace = true }
 tokio = { workspace = true, features = ["macros", "time"] }
 
 [features]
-supervisor = ["dep:passfd", "passfd/async"]
-target = ["dep:passfd"]
+supervisor = []
+target = []
 
 [lints]
 workspace = true

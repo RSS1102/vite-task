@@ -1,6 +1,6 @@
 use std::{ffi::c_int, io};
 
-use fspy_seccomp_unotify::supervisor::handler::arg::{CStrPtr, Caller, Fd, Ptr};
+use fspy_seccomp_ptrace::supervisor::handler::arg::{CStrPtr, Caller, Fd, Ptr};
 
 use super::SyscallHandler;
 

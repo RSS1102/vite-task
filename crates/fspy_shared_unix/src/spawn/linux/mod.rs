@@ -1,7 +1,7 @@
 #[cfg(not(target_env = "musl"))]
 use std::{ffi::OsStr, os::unix::ffi::OsStrExt as _, path::Path};
 
-use fspy_seccomp_unotify::{payload::SeccompPayload, target::install_target};
+use fspy_seccomp_ptrace::{payload::PtracePayload, target::install_target};
 #[cfg(not(target_env = "musl"))]
 use memmap2::Mmap;
 
@@ -18,9 +18,9 @@ use crate::{
 
 const LD_PRELOAD: &str = "LD_PRELOAD";
 
-pub struct PreExec(SeccompPayload);
+pub struct PreExec(PtracePayload);
 impl PreExec {
-    /// Installs the seccomp unotify filter for the current process.
+    /// Attaches the current thread to the ptrace supervisor and installs its seccomp filter.
     ///
     /// # Errors
     ///
@@ -59,5 +59,5 @@ pub fn handle_exec(
     }
 
     command.envs.retain(|(name, _)| name != LD_PRELOAD && name != PAYLOAD_ENV_NAME);
-    Ok(Some(PreExec(encoded_payload.payload.seccomp_payload.clone())))
+    Ok(Some(PreExec(encoded_payload.payload.ptrace_payload.clone())))
 }

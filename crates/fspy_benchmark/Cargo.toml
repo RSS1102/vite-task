@@ -12,7 +12,6 @@ workspace = true
 
 [[bin]]
 name = "fspy_benchmark"
-test = false
 doctest = false
 
 [dependencies]
