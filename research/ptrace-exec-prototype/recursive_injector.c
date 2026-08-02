@@ -589,7 +589,6 @@ static void install_filter(void)
         FILTER_GATEWAY_BLOCK(SYS_execve, FILTER_TAG),
         FILTER_GATEWAY_BLOCK(SYS_execveat, FILTER_TAG),
         FILTER_GATEWAY_BLOCK(SYS_rt_sigaction, FILTER_TAG),
-        FILTER_GATEWAY_BLOCK(SYS_rt_sigprocmask, FILTER_TAG),
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
     };
     const bool minimal = getenv("FSPY_MINIMAL_FILTER") != NULL;
