@@ -2,7 +2,7 @@
 
 Research date: 2026-08-02
 
-Status: architecture and cross-compiled blob proof complete. The proof is not yet a production syscall dispatcher.
+Status: architecture, cross-compiled artifact audit, and native x86-64 execution proof complete. The proof is not yet a production syscall dispatcher.
 
 Primary audience: fspy maintainers implementing the Linux `SIGSYS` handler island and its ptrace injection protocol.
 
@@ -25,6 +25,8 @@ The cross-build currently produces these complete probe blobs:
 | AArch64 |     304 bytes | handler, restorer, raw six-argument syscall, allocator, state-pointer slot |
 
 Both outputs have no runtime relocations, undefined symbols, writable sections, GOT, PLT, TLS, or dynamic-loader dependency. The [linker script](../research/rust-injected-runtime/blob.ld) and [artifact verifier](../research/rust-injected-runtime/verify.sh) make those properties build failures.
+
+The native [CI execution proof](https://github.com/voidzero-dev/vite-task/actions/runs/30737941238) mapped the x86-64 blob RX, installed its handler and restorer through raw `rt_sigaction`, triggered a seccomp `SIGSYS`, returned through the Rust restorer, updated the RW state, and exercised the raw syscall gateway and allocator.
 
 ## How Rust code is injected
 
