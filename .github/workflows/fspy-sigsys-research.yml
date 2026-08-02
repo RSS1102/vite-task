@@ -59,6 +59,13 @@ jobs:
       - name: Install Chromium system dependencies
         run: pnpm --filter vite-task-tools exec playwright install --with-deps chromium
 
+      - name: Enable Chromium's user-namespace sandbox
+        run: |
+          set -euxo pipefail
+          sysctl kernel.unprivileged_userns_clone
+          sysctl kernel.apparmor_restrict_unprivileged_userns
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       - name: Run sandboxed Vitest browser mode through the exec bridge
         run: |
           set -euxo pipefail
