@@ -1,0 +1,84 @@
+name: fspy SIGSYS research
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/fspy-sigsys-research.yml'
+      - 'research/ptrace-exec-prototype/**'
+      - 'research/sigsys-prototype/**'
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  native-x86:
+    name: Native x86-64
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: taiki-e/checkout-action@7d1e50e93dc4fb3bba58f85018fadf77898aee8b # v1.4.2
+
+      - name: Run syscall and exec prototypes
+        run: |
+          set -euxo pipefail
+          test "$(uname -m)" = x86_64
+
+          probe_dir=$(mktemp -d)
+          cp -a research/sigsys-prototype "$probe_dir/sigsys"
+          cp -a research/ptrace-exec-prototype "$probe_dir/ptrace"
+
+          cd "$probe_dir/sigsys"
+          cc -O2 -Wall -Wextra -Werror -pthread trap_bench.c -o trap_bench
+          ./trap_bench
+          cc -O2 -Wall -Wextra -Werror unotify_bench.c -o unotify_bench
+          ./unotify_bench
+          cc -O2 -Wall -Wextra -Werror reexec_bootstrap.c -o reexec_bootstrap
+          ./reexec_bootstrap
+
+          cd "$probe_dir/ptrace"
+          make check
+          cc -O2 -Wall -Wextra -Werror -pthread -std=gnu11 \
+            nonleader_exec.c -o nonleader_exec
+          ./nonleader_exec /bin/true
+
+  docker-x86:
+    name: Docker default seccomp
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: taiki-e/checkout-action@7d1e50e93dc4fb3bba58f85018fadf77898aee8b # v1.4.2
+
+      - name: Run under an existing filter with no-new-privileges
+        run: |
+          set -euxo pipefail
+          docker run --rm \
+            --security-opt no-new-privileges \
+            -v "$PWD/research:/src:ro" \
+            gcc:14-bookworm \
+            sh -eux -c '
+              grep Seccomp /proc/self/status
+              grep NoNewPrivs /proc/self/status
+              cat /proc/self/attr/current || true
+
+              mkdir /tmp/sigsys /tmp/ptrace
+              cp /src/sigsys-prototype/trap_bench.c /tmp/sigsys/
+              cp /src/sigsys-prototype/unotify_bench.c /tmp/sigsys/
+              cp /src/sigsys-prototype/reexec_bootstrap.c /tmp/sigsys/
+              cp /src/ptrace-exec-prototype/injector.c /tmp/ptrace/
+              cp /src/ptrace-exec-prototype/target.c /tmp/ptrace/
+              cp /src/ptrace-exec-prototype/Makefile /tmp/ptrace/
+
+              cd /tmp/sigsys
+              cc -O2 -Wall -Wextra -Werror -pthread trap_bench.c -o trap_bench
+              ./trap_bench
+              cc -O2 -Wall -Wextra -Werror unotify_bench.c -o unotify_bench
+              ./unotify_bench
+              cc -O2 -Wall -Wextra -Werror reexec_bootstrap.c -o reexec_bootstrap
+              ./reexec_bootstrap
+
+              cd /tmp/ptrace
+              make check
+            '

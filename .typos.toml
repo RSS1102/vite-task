@@ -2,6 +2,9 @@
 ratatui = "ratatui"
 PUNICODE = "PUNICODE"
 
+[default.extend-identifiers]
+msg_controllen = "msg_controllen"
+
 [files]
 extend-exclude = [
   "crates/fspy_detours_sys/detours",

@@ -1,0 +1,93 @@
+Environment
+===========
+Linux lima-fspy-sigsys 6.8.0-134-generic #134-Ubuntu SMP PREEMPT_DYNAMIC Fri Jun 26 18:28:11 UTC 2026 aarch64
+Ubuntu 24.04.4 LTS; 4 vCPU; 6 GiB; GCC 13.3.0; glibc 2.39; musl 1.2.4
+
+trap_bench, five taskset -c 0 runs
+==================================
+baseline_ns=114.8 trap_emulated_ns=565.9 trap_reissued_ns=708.1 open_baseline_ns=545.2 open_trapped_ns=1457.1
+baseline_ns=115.8 trap_emulated_ns=574.0 trap_reissued_ns=713.7 open_baseline_ns=526.9 open_trapped_ns=1449.6
+baseline_ns=115.6 trap_emulated_ns=564.3 trap_reissued_ns=718.8 open_baseline_ns=531.7 open_trapped_ns=1466.6
+baseline_ns=116.8 trap_emulated_ns=564.3 trap_reissued_ns=760.7 open_baseline_ns=530.3 open_trapped_ns=1439.5
+baseline_ns=114.4 trap_emulated_ns=565.8 trap_reissued_ns=703.7 open_baseline_ns=533.4 open_trapped_ns=1451.7
+
+Representative complete validation output
+=========================================
+environment: pid=5873 arch=aarch64 dynamic_probe=yes
+filesystem: rewrite=/virtual/fspy-hostname->/etc/hostname bytes=17 errno_passthrough=ENOENT
+multithreading: threads=4 calls=200000 failures=0
+benchmark: iterations=200000 baseline_ns=114.6 trap_emulated_ns=556.6 trap_reissued_ns=700.6 emulated_overhead_x=4.86 reissued_overhead_x=6.12
+openat_benchmark: iterations=100000 baseline_open_close_ns=530.6 trap_reissued_open_close_ns=1442.2 overhead_x=2.72
+traps: total=700032 getpid=600005 openat=100002 sigaction=4 sigprocmask=21
+altstack: on_alt=200013 on_normal=4 lazy_installed=4
+result: PASS
+
+Real exec into static-musl host bootstrap
+========================================
+reexec_bootstrap_musl: ELF 64-bit LSB executable, ARM aarch64, statically linked
+reexec-bootstrap: handler reinstalled before trapped syscall PASS
+status=0
+
+Static musl representative
+==========================
+trap_bench_musl_static: ELF 64-bit LSB executable, ARM aarch64, statically linked
+baseline_ns=115.1 trap_emulated_ns=554.3 trap_reissued_ns=708.5
+open_baseline_ns=547.8 open_trapped_ns=1470.5
+altstack: on_alt=200013 on_normal=4 lazy_installed=4
+result: PASS
+
+unotify_bench, five runs
+========================
+emulated_ns=13991.5 continue_ns=13846.4
+emulated_ns=13922.7 continue_ns=14009.8
+emulated_ns=13885.2 continue_ns=13931.4
+emulated_ns=13896.1 continue_ns=13824.1
+emulated_ns=14100.5 continue_ns=14226.6
+result: PASS (all runs)
+
+Minimal LD_PRELOAD openat+close, alternating plain/preloaded
+============================================================
+plain_ns=546.6 preloaded_ns=527.6
+plain_ns=521.3 preloaded_ns=524.6
+plain_ns=529.4 preloaded_ns=526.0
+plain_ns=523.6 preloaded_ns=533.7
+plain_ns=547.4 preloaded_ns=528.4
+
+Signal persistence controls
+===========================
+PURE_LOADER
+sigsys-survived handler=1 altstack=1 trapped_getpid=424242 exe=/tmp/fspy-loader-probe.o8BDFe/sigsys-test/libreflect_sigsys
+REAL_EXEC
+Bad system call (core dumped)
+real_exec_status=159
+
+Current esbuild 0.28.1 through libreflect + trap_preload
+=======================================================
+PLAIN_VERSION
+0.28.1
+plain_status=0
+FILTERED_VERSION
+fspy-sigsys-probe: fs=5 getpid=0 sigaction=2 sigprocmask=14
+0.28.1
+filtered_status=0
+FILTERED_BUNDLE
+fspy-sigsys-probe: fs=72 getpid=0 sigaction=2 sigprocmask=14
+(()=>{console.log(12**2);})();
+bundle_status=0
+
+Anvil esbuild version matrix before AT_RANDOM fix
+================================================
+0.17.19 Go 1.20.4  status=0
+0.19.12 Go 1.20.12 status=0
+0.21.5  Go 1.20.12 status=0
+0.24.2  Go 1.23.1  status=139
+0.25.12 Go 1.23.12 status=139
+0.27.3  Go 1.25.7  status=139
+0.28.1  Go 1.26.4  status=139
+
+After dedicated 16-byte AT_RANDOM fix
+=====================================
+0.28.1
+fspy-sigsys-probe: fs=422 getpid=2 sigaction=6 sigprocmask=23
+fspy-sigsys-probe: fs=489 getpid=2 sigaction=6 sigprocmask=23
+(()=>{console.log(12**2);})();
