@@ -94,6 +94,8 @@ __asm__(
     "  je .Lfspy_sigaction\n"
     "  cmp $14, %eax\n" /* __NR_rt_sigprocmask */
     "  je .Lfspy_sigprocmask\n"
+    "  cmp $47, %eax\n" /* __NR_recvmsg; diagnostic for Chromium zygote */
+    "  je .Lfspy_recvmsg\n"
     "  cmp $217, %eax\n" /* __NR_getdents64 */
     "  je .Lfspy_passthrough\n"
     "  cmp $257, %eax\n" /* __NR_openat */
@@ -139,6 +141,52 @@ __asm__(
     "  mov $39, %eax\n"
     "  mov fspy_recursive_slot_magic(%rip), %r9\n"
     "  syscall\n"
+    "  jmp .Lfspy_store_result\n"
+
+    /* Chromium's namespace sandbox performs a blocking recvmsg immediately
+     * after launching its zygote. Keep this diagnostic in the research proof
+     * until the transient-ptrace compatibility question is resolved. */
+    ".Lfspy_recvmsg:\n"
+    "  mov fspy_recursive_slot_rdi(%rip), %rcx\n"
+    "  mov (%r13,%rcx), %rdi\n"
+    "  mov fspy_recursive_slot_rsi(%rip), %rcx\n"
+    "  mov (%r13,%rcx), %rsi\n"
+    "  mov fspy_recursive_slot_rdx(%rip), %rcx\n"
+    "  mov (%r13,%rcx), %rdx\n"
+    "  mov fspy_recursive_slot_magic(%rip), %r9\n"
+    "  mov $47, %eax\n" /* __NR_recvmsg */
+    "  syscall\n"
+    "  mov %rax, %r15\n"
+    "  test %rax, %rax\n"
+    "  js .Lfspy_recvmsg_error\n"
+    "  jz .Lfspy_recvmsg_eof\n"
+    "  lea .Lfspy_recvmsg_positive_message(%rip), %rsi\n"
+    "  mov $32, %edx\n"
+    "  jmp .Lfspy_recvmsg_log\n"
+    ".Lfspy_recvmsg_eof:\n"
+    "  lea .Lfspy_recvmsg_eof_message(%rip), %rsi\n"
+    "  mov $27, %edx\n"
+    "  jmp .Lfspy_recvmsg_log\n"
+    ".Lfspy_recvmsg_error:\n"
+    "  cmp $-4, %rax\n" /* -EINTR */
+    "  je .Lfspy_recvmsg_eintr\n"
+    "  cmp $-2, %rax\n" /* -ENOENT */
+    "  je .Lfspy_recvmsg_enoent\n"
+    "  lea .Lfspy_recvmsg_error_message(%rip), %rsi\n"
+    "  mov $29, %edx\n"
+    "  jmp .Lfspy_recvmsg_log\n"
+    ".Lfspy_recvmsg_eintr:\n"
+    "  lea .Lfspy_recvmsg_eintr_message(%rip), %rsi\n"
+    "  mov $29, %edx\n"
+    "  jmp .Lfspy_recvmsg_log\n"
+    ".Lfspy_recvmsg_enoent:\n"
+    "  lea .Lfspy_recvmsg_enoent_message(%rip), %rsi\n"
+    "  mov $30, %edx\n"
+    ".Lfspy_recvmsg_log:\n"
+    "  mov $2, %edi\n"
+    "  mov $1, %eax\n" /* __NR_write */
+    "  syscall\n"
+    "  mov %r15, %rax\n"
     "  jmp .Lfspy_store_result\n"
 
     ".Lfspy_passthrough:\n"
@@ -337,6 +385,11 @@ __asm__(
     "  mov $15, %eax\n" /* __NR_rt_sigreturn */
     "  syscall\n"
     "  ud2\n"
+    ".Lfspy_recvmsg_positive_message: .ascii \"fspy: recvmsg returned positive\\n\"\n"
+    ".Lfspy_recvmsg_eof_message: .ascii \"fspy: recvmsg returned EOF\\n\"\n"
+    ".Lfspy_recvmsg_error_message: .ascii \"fspy: recvmsg returned error\\n\"\n"
+    ".Lfspy_recvmsg_eintr_message: .ascii \"fspy: recvmsg returned EINTR\\n\"\n"
+    ".Lfspy_recvmsg_enoent_message: .ascii \"fspy: recvmsg returned ENOENT\\n\"\n"
     ".balign 8\n"
     "fspy_recursive_slot_rax: .quad 0\n"
     "fspy_recursive_slot_rdi: .quad 0\n"
@@ -523,6 +576,7 @@ static void install_filter(void)
         FILTER_GATEWAY_BLOCK(SYS_faccessat2, FILTER_TAG),
         FILTER_GATEWAY_BLOCK(SYS_rt_sigaction, FILTER_TAG),
         FILTER_GATEWAY_BLOCK(SYS_rt_sigprocmask, FILTER_TAG),
+        FILTER_GATEWAY_BLOCK(SYS_recvmsg, FILTER_TAG),
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
     };
     struct sock_fprog program = {
