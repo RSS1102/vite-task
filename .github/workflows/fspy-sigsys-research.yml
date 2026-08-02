@@ -8,6 +8,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/fspy-sigsys-research.yml'
+      - 'crates/vite_task_bin/tests/e2e_snapshots/fixtures/vitest_browser_cache/**'
       - 'research/ptrace-exec-prototype/**'
       - 'research/sigsys-prototype/**'
 
@@ -47,7 +48,7 @@ jobs:
           ./nonleader_exec /bin/true
 
   vitest-browser-x86:
-    name: Vitest browser under transient ptrace
+    name: Sandboxed Vitest browser under transient ptrace
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -58,7 +59,7 @@ jobs:
       - name: Install Chromium system dependencies
         run: pnpm --filter vite-task-tools exec playwright install --with-deps chromium
 
-      - name: Run Vitest browser mode through the exec bridge
+      - name: Run sandboxed Vitest browser mode through the exec bridge
         run: |
           set -euxo pipefail
           test "$(uname -m)" = x86_64
@@ -72,10 +73,68 @@ jobs:
           injector="$PWD/research/ptrace-exec-prototype/recursive_injector"
           vitest="$PWD/packages/tools/node_modules/.bin/vitest"
           cd "$probe_dir/fixture"
-          timeout 120s "$injector" "$vitest" run 2>&1 | tee "$probe_dir/bridge.log"
+
+          sandbox_record="$probe_dir/chromium-sandbox.txt"
+          no_sandbox_record="$probe_dir/chromium-no-sandbox.txt"
+          (
+            set +x
+            while :; do
+              for cmdline_file in /proc/[0-9]*/cmdline; do
+                test -r "$cmdline_file" || continue
+                command_line=$(tr '\0' ' ' < "$cmdline_file" 2>/dev/null || true)
+                case "$command_line" in
+                  *chrome-headless-shell*) ;;
+                  *) continue ;;
+                esac
+                case "$command_line" in
+                  *--no-sandbox*)
+                    printf '%s\n' "$command_line" > "$no_sandbox_record"
+                    ;;
+                esac
+                case "$command_line" in
+                  *--type=renderer*) ;;
+                  *) continue ;;
+                esac
+
+                pid=${cmdline_file#/proc/}
+                pid=${pid%/cmdline}
+                filters=$(awk '/^Seccomp_filters:/ { print $2 }' \
+                  "/proc/$pid/status" 2>/dev/null || true)
+                if test "${filters:-0}" -ge 2; then
+                  {
+                    printf 'pid=%s\ncmdline=%s\n' "$pid" "$command_line"
+                    awk '/^(NoNewPrivs|Seccomp|Seccomp_filters):/ { print }' \
+                      "/proc/$pid/status" 2>/dev/null || true
+                  } > "$sandbox_record"
+                  exit 0
+                fi
+              done
+              sleep 0.02
+            done
+          ) &
+          observer_pid=$!
+
+          set +e
+          VITEST_CHROMIUM_SANDBOX=true \
+            DEBUG=vitest:browser:playwright,pw:browser \
+            timeout 120s "$injector" "$vitest" run \
+            2>&1 | tee "$probe_dir/bridge.log"
+          run_status=${PIPESTATUS[0]}
+          set -e
+
+          kill "$observer_pid" 2>/dev/null || true
+          wait "$observer_pid" 2>/dev/null || true
+          test "$run_status" -eq 0
 
           test -s dist/result.json
           grep -F '"success":true' dist/result.json
+          grep -F 'chromiumSandbox: true' "$probe_dir/bridge.log"
+          test ! -s "$no_sandbox_record"
+          test -s "$sandbox_record"
+          grep -F $'NoNewPrivs:\t1' "$sandbox_record"
+          grep -F $'Seccomp:\t2' "$sandbox_record"
+          grep -E $'Seccomp_filters:\t([2-9]|[1-9][0-9]+)' "$sandbox_record"
+          cat "$sandbox_record"
           grep -E 'bridge: injected exec .*exe=.*/(chrome|headless_shell)' \
             "$probe_dir/bridge.log"
           grep -E 'bridge: summary injected_execs=[2-9][0-9]* failed_execs=' \

@@ -13,7 +13,11 @@ export default defineConfig({
     browser: {
       enabled: true,
       headless: true,
-      provider: playwright(),
+      provider: playwright({
+        launchOptions: {
+          chromiumSandbox: process.env.VITEST_CHROMIUM_SANDBOX === 'true',
+        },
+      }),
       instances: [{ browser: 'chromium' }],
     },
   },
