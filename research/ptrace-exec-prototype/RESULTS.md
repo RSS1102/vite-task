@@ -57,7 +57,7 @@ cc -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
 ASAN_OPTIONS=detect_leaks=1 ./injector-asan "$(realpath ./target)"
 ```
 
-## x86-64 build check
+## Native x86-64 and Docker
 
 The x86-64 implementation was cross-compiled on macOS with Zig 0.15.2:
 
@@ -68,11 +68,17 @@ zig cc -target x86_64-linux-gnu -O2 -g -Wall -Wextra -Werror \
   -std=gnu11 -o /tmp/target-x86_64 target.c
 ```
 
-Both outputs were valid dynamically linked x86-64 ELF executables. There was no
-native x86-64 Linux VM or full-system x86 emulator installed, so this branch is
-build-checked but not runtime-validated. A native `ubuntu-latest` x86-64 CI job
-can run the same `make check` command without special privileges on a runner
-whose ptrace policy permits parent-child tracing.
+Both outputs were valid dynamically linked x86-64 ELF executables. The native
+Ubuntu 24.04 and Docker jobs in [GitHub Actions run
+30734549943](https://github.com/voidzero-dev/vite-task/actions/runs/30734549943)
+then ran `make check` successfully. The Docker process had one existing seccomp
+filter, `no_new_privs=1`, and the enforced `docker-default` AppArmor profile.
+
+The first native x86-64 run caught an architecture-sensitive ordering bug.
+`PTRACE_EVENT_EXEC` stopped before the pending `execve` return had written zero
+to `rax`, overwriting the prepared `SYS_mmap` number. The corrected injector
+uses `PTRACE_SYSCALL` once to rendezvous at that syscall's exit stop before
+preparing any remote syscall. The same sequence now runs on both architectures.
 
 ## What the result establishes
 
@@ -84,4 +90,5 @@ whose ptrace policy permits parent-child tracing.
   seccomp-generated `SIGSYS` signals.
 - The target observed `TracerPid=0` before entering its trapped syscall, so the
   emulated result came from the injected handler rather than tracer mediation.
-- The proof works for both dynamic and static AArch64 executables.
+- The injection proof works on native AArch64 and x86-64 and under Docker's
+  default Linux security profiles.

@@ -2,7 +2,7 @@
 
 Research date: 2026-08-02
 
-Status: feasibility proven on Linux AArch64; native x86-64 CI pending
+Status: feasibility proven on native Linux AArch64 and x86-64, including Docker's default seccomp and AppArmor profiles
 
 Primary audience: fspy maintainers deciding whether to replace the Linux `LD_PRELOAD` and seccomp user-notification backends.
 
@@ -57,12 +57,12 @@ The ptrace attachment must be temporary. A permanently traced process stops in t
 
 ## What the prototypes established
 
-The experiments ran on Ubuntu 24.04 AArch64, Linux 6.8, in a four-vCPU Lima VM. The same syscall and injection probes also passed inside a rootless container that already had a seccomp filter, both with and without `no_new_privs=1` at container entry.
+The primary experiments ran on Ubuntu 24.04 AArch64, Linux 6.8, in a four-vCPU Lima VM. The same syscall and injection probes passed on a native Ubuntu 24.04 x86-64 GitHub runner and inside both rootless containerd and Docker containers with an existing seccomp filter. The Docker case also had `no_new_privs=1` and `docker-default (enforce)` AppArmor.
 
 | Question                                                                 | Result                                                                                               |
 | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
 | Can `RET_TRAP` catch direct and libc syscalls?                           | Yes; dynamic glibc, static glibc, and static musl probes passed                                      |
-| Can the handler execute the denied syscall?                              | Yes; the sixth-argument gateway passed on AArch64 and the dual-arch source cross-builds for x86-64   |
+| Can the handler execute the denied syscall?                              | Yes; the sixth-argument gateway passed natively on AArch64 and x86-64                                |
 | Can it return `EFAULT` instead of crashing on a bad pointer?             | Yes, using self `process_vm_readv`/`process_vm_writev`                                               |
 | Can nested and concurrent traps work?                                    | Yes; `SA_NODEFER`, a nested trap, and 200,000 calls from four threads passed                         |
 | Can Go replace or block `SIGSYS` without breaking fspy?                  | The prototype virtualized the tested `rt_sigaction` and `rt_sigprocmask` operations; esbuild passed  |
@@ -220,16 +220,19 @@ The static host also needs a target-independent payload ABI. The current `Payloa
 
 ## Environment compatibility
 
-| Environment          | RET_TRAP syscall path | Temporary ptrace exec                 | Evidence or required handling                                         |
-| -------------------- | --------------------- | ------------------------------------- | --------------------------------------------------------------------- |
-| Native Linux AArch64 | Passed                | Passed                                | Ubuntu 24.04/Linux 6.8; dynamic, static, esbuild, and non-leader exec |
-| Native Linux x86-64  | Source/build checked  | Source/build checked                  | Native draft-PR job runs both prototypes                              |
-| WSL2                 | Expected              | Expected, untested                    | Avoid `NEW_LISTENER`; test mirrored networking and ptrace policy      |
-| Rootless containerd  | Passed                | Passed                                | Existing seccomp filter; also passed with `no_new_privs=1`            |
-| Docker default       | Expected              | Profile permits it on current kernels | Draft-PR job tests default seccomp, AppArmor, and no-new-privileges   |
-| Kubernetes           | Runtime-dependent     | Runtime and LSM-dependent             | Probe and fall back; test containerd/CRI-O RuntimeDefault profiles    |
-| Hosted CI            | Provider-dependent    | Provider-dependent                    | Run the capability probe and report the selected exec bridge          |
-| Custom sandbox       | Policy-dependent      | Often denied                          | Use the userland fallback or report an actionable error               |
+| Environment                  | RET_TRAP syscall path | Temporary ptrace exec     | Evidence or required handling                                         |
+| ---------------------------- | --------------------- | ------------------------- | --------------------------------------------------------------------- |
+| Native Linux AArch64         | Passed                | Passed                    | Ubuntu 24.04/Linux 6.8; dynamic, static, esbuild, and non-leader exec |
+| Native Linux x86-64          | Passed                | Passed                    | Ubuntu 24.04 GitHub runner; dynamic and non-leader exec               |
+| WSL2                         | Expected              | Expected, untested        | Avoid `NEW_LISTENER`; test mirrored networking and ptrace policy      |
+| Rootless containerd          | Passed                | Passed                    | Existing seccomp filter; also passed with `no_new_privs=1`            |
+| Docker default on Linux      | Passed                | Passed                    | Existing filter, `no_new_privs=1`, enforced default AppArmor          |
+| Docker Desktop amd64/Rosetta | Unsupported           | Not reached               | Local `PR_SET_SECCOMP` returned `EINVAL`; use a native-arch image     |
+| Kubernetes                   | Runtime-dependent     | Runtime and LSM-dependent | Probe and fall back; test containerd/CRI-O RuntimeDefault profiles    |
+| Hosted CI                    | Passed on GitHub      | Passed on GitHub          | Other providers still need the startup probe                          |
+| Custom sandbox               | Policy-dependent      | Often denied              | Use the userland fallback or report an actionable error               |
+
+The native x86-64 and Docker evidence is recorded in [GitHub Actions run 30734549943](https://github.com/voidzero-dev/vite-task/actions/runs/30734549943). The Rosetta result is an emulation limitation, not a failure of native x86-64 Docker.
 
 The open [WSL issue about seccomp notification](https://github.com/microsoft/WSL/issues/9548) concerns the single `NEW_LISTENER` restriction when WSL mirrored networking already owns a listener. It does not prevent stacking a normal `RET_TRAP` filter. The current WSL kernel configuration enables seccomp filtering.
 
@@ -258,6 +261,8 @@ Five pinned runs of the controlled AArch64 prototype produced these medians:
 | User notification with `CONTINUE`                   | 13,931.4 ns | about 123x the direct-syscall baseline |
 
 The representative filesystem trap was about 9.6 times faster than the user-notification round trip. It excludes absolute-path normalization and shared-memory recording, so it is a lower bound for the new backend. The user-notification probe also excludes fspy path processing, making the process-boundary comparison conservative.
+
+One native x86-64 GitHub runner produced the same ordering: 133.0 ns for direct `getpid`, 2,782.5 ns for trap and reissue, and 29,798.4 ns for user notification with `CONTINUE`. On that runner the in-process path was 10.7 times faster than user notification. Trapped `openat` plus `close` took 6,956.1 ns versus a 2,611.5 ns unfiltered baseline, or 2.66x. These are single-run CI observations rather than pinned-run medians.
 
 The minimal preload interposer was indistinguishable from the untracked `openat` baseline, about 0.53 microseconds. That is only dispatch cost; it does not record an event and direct syscalls bypass it. `LD_PRELOAD` remains the performance floor.
 
