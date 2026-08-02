@@ -41,7 +41,7 @@ jobs:
 
           cd "$probe_dir/ptrace"
           make check
-          ./recursive_injector /bin/true
+          timeout 30s ./recursive_injector /bin/true
           cc -O2 -Wall -Wextra -Werror -pthread -std=gnu11 \
             nonleader_exec.c -o nonleader_exec
           ./nonleader_exec /bin/true
@@ -104,6 +104,7 @@ jobs:
               cp /src/sigsys-prototype/unotify_bench.c /tmp/sigsys/
               cp /src/sigsys-prototype/reexec_bootstrap.c /tmp/sigsys/
               cp /src/ptrace-exec-prototype/injector.c /tmp/ptrace/
+              cp /src/ptrace-exec-prototype/recursive_injector.c /tmp/ptrace/
               cp /src/ptrace-exec-prototype/target.c /tmp/ptrace/
               cp /src/ptrace-exec-prototype/Makefile /tmp/ptrace/
 

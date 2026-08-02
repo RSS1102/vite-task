@@ -345,7 +345,8 @@ static void patch_u64(unsigned char *blob, const unsigned char *slot,
     memcpy(blob + blob_offset(slot), &value, sizeof(value));
 }
 
-static unsigned char *prepare_blob(uintptr_t state_address)
+static unsigned char *prepare_blob(uintptr_t state_address,
+                                   pid_t supervisor_pid)
 {
     const size_t blob_size =
         (size_t)(fspy_recursive_blob_end - fspy_recursive_blob_start);
@@ -377,7 +378,8 @@ static unsigned char *prepare_blob(uintptr_t state_address)
                   offsetof(mcontext_t, gregs[REG_R9]));
     patch_u64(blob, fspy_recursive_slot_sigmask,
               offsetof(ucontext_t, uc_sigmask));
-    patch_u64(blob, fspy_recursive_slot_supervisor, (uint64_t)getpid());
+    patch_u64(blob, fspy_recursive_slot_supervisor,
+              (uint64_t)supervisor_pid);
     patch_u64(blob, fspy_recursive_slot_signal, BRIDGE_SIGNAL);
     patch_u64(blob, fspy_recursive_slot_state, state_address);
     patch_u64(blob, fspy_recursive_slot_magic, GATEWAY_MAGIC);
@@ -409,7 +411,7 @@ static void install_initial_handler(void)
                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (mapping == MAP_FAILED)
         fatal("mmap initial handler");
-    blob = prepare_blob((uintptr_t)mapping + page_size);
+    blob = prepare_blob((uintptr_t)mapping + page_size, getppid());
     memcpy(mapping, blob, blob_size);
     free(blob);
     action = make_install_action((uintptr_t)mapping);
@@ -574,7 +576,7 @@ static void inject_handler(pid_t pid)
     }
     remote_code = (uintptr_t)result;
     remote_state = remote_code + page_size;
-    blob = prepare_blob(remote_state);
+    blob = prepare_blob(remote_state, getpid());
     remote_write(pid, remote_code, blob, blob_size);
     free(blob);
     action = make_install_action(remote_code);
