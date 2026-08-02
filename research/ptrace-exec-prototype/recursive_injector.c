@@ -255,6 +255,18 @@ __asm__(
     "  syscall\n"
     "  jmp .Lfspy_wait_for_supervisor\n"
     ".Lfspy_exec_ready:\n"
+    /* A successful exec never reaches rt_sigreturn, so undo the kernel's
+     * automatic SIGSYS block before replacing the image. */
+    "  movq $0x40000000, -56(%rbp)\n"
+    "  mov $1, %edi\n" /* SIG_UNBLOCK */
+    "  lea -56(%rbp), %rsi\n"
+    "  xor %edx, %edx\n"
+    "  mov $8, %r10d\n"
+    "  mov fspy_recursive_slot_magic(%rip), %r9\n"
+    "  mov $14, %eax\n" /* __NR_rt_sigprocmask */
+    "  syscall\n"
+    "  test %rax, %rax\n"
+    "  js .Lfspy_bridge_failed\n"
     "  mov 24(%r12), %ebx\n"
     "  mov fspy_recursive_slot_rdi(%rip), %rcx\n"
     "  mov (%r13,%rcx), %rdi\n"
