@@ -464,7 +464,7 @@ static struct kernel_sigaction_wire make_install_action(uintptr_t code_address)
     struct kernel_sigaction_wire action = {0};
 
     action.handler = code_address + blob_offset(fspy_recursive_handler);
-    action.flags = SA_SIGINFO | 0x04000000UL; /* SA_RESTORER */
+    action.flags = SA_SIGINFO | SA_NODEFER | 0x04000000UL; /* SA_RESTORER */
     action.restorer = code_address + blob_offset(fspy_recursive_restorer);
     return action;
 }
@@ -727,6 +727,7 @@ static void print_exec_path(pid_t pid, unsigned int count, pid_t former_tid)
     char proc_path[64];
     char executable[4096];
     char command_line[4096];
+    char descriptor_target[4096];
     int command_line_fd;
     ssize_t command_line_length;
     ssize_t length;
@@ -754,6 +755,18 @@ static void print_exec_path(pid_t pid, unsigned int count, pid_t former_tid)
             }
             command_line[command_line_length] = '\0';
             printf("bridge: exec argv #%u %s\n", count, command_line);
+            if (strstr(command_line, "--type=zygote") != NULL) {
+                snprintf(proc_path, sizeof(proc_path), "/proc/%d/fd/3", pid);
+                length = readlink(proc_path, descriptor_target,
+                                  sizeof(descriptor_target) - 1);
+                if (length >= 0) {
+                    descriptor_target[length] = '\0';
+                    printf("bridge: zygote fd 3=%s\n", descriptor_target);
+                } else {
+                    printf("bridge: zygote fd 3=<readlink failed: %s>\n",
+                           strerror(errno));
+                }
+            }
         }
     }
     fflush(stdout);

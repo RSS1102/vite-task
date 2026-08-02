@@ -184,6 +184,7 @@ jobs:
               cp /src/sigsys-prototype/unotify_bench.c /tmp/sigsys/
               cp /src/sigsys-prototype/reexec_bootstrap.c /tmp/sigsys/
               cp /src/ptrace-exec-prototype/injector.c /tmp/ptrace/
+              cp /src/ptrace-exec-prototype/nested_trap.c /tmp/ptrace/
               cp /src/ptrace-exec-prototype/recursive_injector.c /tmp/ptrace/
               cp /src/ptrace-exec-prototype/target.c /tmp/ptrace/
               cp /src/ptrace-exec-prototype/Makefile /tmp/ptrace/
