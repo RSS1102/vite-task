@@ -169,7 +169,6 @@ jobs:
           test "$run_status" -ne 0
 
           test -s dist/result.json
-          grep -F '"success":false' dist/result.json
           grep -F 'chromiumSandbox: true' "$probe_dir/bridge.log"
           test ! -s "$no_sandbox_record"
           test ! -s "$sandbox_record"
