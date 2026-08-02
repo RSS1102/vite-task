@@ -41,9 +41,45 @@ jobs:
 
           cd "$probe_dir/ptrace"
           make check
+          ./recursive_injector /bin/true
           cc -O2 -Wall -Wextra -Werror -pthread -std=gnu11 \
             nonleader_exec.c -o nonleader_exec
           ./nonleader_exec /bin/true
+
+  vitest-browser-x86:
+    name: Vitest browser under transient ptrace
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: taiki-e/checkout-action@7d1e50e93dc4fb3bba58f85018fadf77898aee8b # v1.4.2
+
+      - uses: oxc-project/setup-node@4c588e9266bd930b6ddc34307df0659ed511d187 # v1.3.1
+
+      - name: Install Chromium system dependencies
+        run: pnpm --filter vite-task-tools exec playwright install-deps chromium
+
+      - name: Run Vitest browser mode through the exec bridge
+        run: |
+          set -euxo pipefail
+          test "$(uname -m)" = x86_64
+
+          make -C research/ptrace-exec-prototype recursive_injector
+          probe_dir=$(mktemp -d)
+          cp -a crates/vite_task_bin/tests/e2e_snapshots/fixtures/vitest_browser_cache \
+            "$probe_dir/fixture"
+          ln -s "$PWD/packages/tools/node_modules" "$probe_dir/node_modules"
+
+          injector="$PWD/research/ptrace-exec-prototype/recursive_injector"
+          vitest="$PWD/packages/tools/node_modules/.bin/vitest"
+          cd "$probe_dir/fixture"
+          timeout 120s "$injector" "$vitest" run 2>&1 | tee "$probe_dir/bridge.log"
+
+          test -s dist/result.json
+          grep -F '"success":true' dist/result.json
+          grep -E 'bridge: injected exec .*exe=.*/(chrome|headless_shell)' \
+            "$probe_dir/bridge.log"
+          grep -E 'bridge: summary injected_execs=[2-9][0-9]* failed_execs=' \
+            "$probe_dir/bridge.log"
 
   docker-x86:
     name: Docker default seccomp
