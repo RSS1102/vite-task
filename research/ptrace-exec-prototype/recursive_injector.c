@@ -557,7 +557,7 @@ static void install_initial_handler(void)
 
 static void install_filter(void)
 {
-    struct sock_filter instructions[] = {
+    struct sock_filter full_instructions[] = {
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
                  offsetof(struct seccomp_data, arch)),
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0),
@@ -579,11 +579,28 @@ static void install_filter(void)
         FILTER_GATEWAY_BLOCK(SYS_recvmsg, FILTER_TAG),
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
     };
+    struct sock_filter minimal_instructions[] = {
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                 offsetof(struct seccomp_data, arch)),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                 offsetof(struct seccomp_data, nr)),
+        FILTER_GATEWAY_BLOCK(SYS_execve, FILTER_TAG),
+        FILTER_GATEWAY_BLOCK(SYS_execveat, FILTER_TAG),
+        FILTER_GATEWAY_BLOCK(SYS_rt_sigaction, FILTER_TAG),
+        FILTER_GATEWAY_BLOCK(SYS_rt_sigprocmask, FILTER_TAG),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+    };
+    const bool minimal = getenv("FSPY_MINIMAL_FILTER") != NULL;
     struct sock_fprog program = {
-        .len = (unsigned short)ARRAY_LEN(instructions),
-        .filter = instructions,
+        .len = (unsigned short)(minimal ? ARRAY_LEN(minimal_instructions)
+                                       : ARRAY_LEN(full_instructions)),
+        .filter = minimal ? minimal_instructions : full_instructions,
     };
 
+    fprintf(stderr, "bridge: installing %s syscall filter\n",
+            minimal ? "minimal exec/signal" : "full research");
     if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0)
         fatal("PR_SET_NO_NEW_PRIVS");
     if (syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, 0, &program) != 0)
