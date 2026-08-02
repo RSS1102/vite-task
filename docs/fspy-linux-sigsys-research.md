@@ -21,8 +21,9 @@ The preferred ptrace bridge is:
 2. The handler asks the existing fspy supervisor to attach to that thread with `PTRACE_SEIZE` and `PTRACE_O_TRACEEXEC`.
 3. The handler reissues the original syscall through a trusted gateway.
 4. Linux performs the requested exec and stops at `PTRACE_EVENT_EXEC` before target code runs.
-5. The supervisor maps the handler island into the new address space, reinstalls the physical `SIGSYS` action, and detaches.
-6. File-system syscalls run with no tracer attached. Their `SIGSYS` handling stays in process.
+5. The supervisor advances once to the pending exec syscall-exit stop.
+6. The supervisor maps the handler island into the new address space, reinstalls the physical `SIGSYS` action, and detaches.
+7. File-system syscalls run with no tracer attached. Their `SIGSYS` handling stays in process.
 
 Keep the custom loader in-house. The reference loaders were useful for finding requirements, but neither is suitable for production. Current esbuild 0.28.1, Node, shells, glibc, static musl, and static Go all passed a pure userland handoff after correcting reference-loader defects.
 
@@ -43,8 +44,9 @@ flowchart TD
     G --> H["Temporary PTRACE_SEIZE"]
     H --> I["Real kernel exec"]
     I --> J["PTRACE_EVENT_EXEC before target entry"]
-    J --> K["Map handler, install SIGSYS action, detach"]
-    K --> L["Target starts with no active tracer"]
+    J --> K["Exec syscall-exit rendezvous"]
+    K --> L["Map handler, install SIGSYS action, detach"]
+    L --> P["Target starts with no active tracer"]
 
     G -->|"ptrace denied or occupied"| M["Real exec of static fspy_host"]
     M --> N["Earliest-entry handler bootstrap"]
@@ -130,7 +132,7 @@ Copy target pointers with bounded self `process_vm_readv`. Direct loads can turn
 
 ## Real exec with a temporary ptrace attachment
 
-`PTRACE_EVENT_EXEC` occurs after Linux has installed the new image and reset exec-owned state, but before the new program executes an instruction. The ordering is visible in [`fs/exec.c`](https://github.com/torvalds/linux/blob/master/fs/exec.c#L1747).
+`PTRACE_EVENT_EXEC` occurs after Linux has installed the new image and reset exec-owned state, but before the new program executes an instruction. It also occurs before the pending exec syscall finishes returning. The ordering is visible in [`fs/exec.c`](https://github.com/torvalds/linux/blob/master/fs/exec.c#L1747) and the [x86-64 syscall return path](https://github.com/torvalds/linux/blob/master/arch/x86/entry/syscall_64.c).
 
 The exec handler can use this sequence:
 
@@ -138,10 +140,11 @@ The exec handler can use this sequence:
 2. Wait for the supervisor to call `PTRACE_SEIZE` with `PTRACE_O_TRACEEXEC`.
 3. Reissue the original `execve` or `execveat` with the sixth-argument gateway marker. Preserve the original path, argv, environment, fd, and flags.
 4. On success, handle the exec event under the post-exec thread-group-leader TID. `PTRACE_GETEVENTMSG` reports the former TID for a nonleader exec.
-5. Remote-map a sealed, position-independent handler artifact and its state mapping.
-6. Install the physical `SIGSYS` action and force the physical mask to unblock `SIGSYS`.
-7. Restore the target's entry registers and any instruction bytes overwritten for injection.
-8. Detach with no delivered signal.
+5. Resume once with `PTRACE_SYSCALL` and `PTRACE_O_TRACESYSGOOD`, then require the pending exec syscall-exit stop. This prevents the late exec return from overwriting registers prepared for the first injected syscall; x86-64 uses `rax` for both the syscall number and return value.
+6. Remote-map a sealed, position-independent handler artifact and its state mapping.
+7. Install the physical `SIGSYS` action and force the physical mask to unblock `SIGSYS`.
+8. Restore the target's entry registers and any instruction bytes overwritten for injection.
+9. Detach with no delivered signal.
 
 Remote injection syscalls are also evaluated by inherited seccomp filters. Set the gateway marker on remote `mmap`, `mprotect`, and `rt_sigaction` calls that fspy itself traps. A stronger target or outer filter can still reject an operation.
 

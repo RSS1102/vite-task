@@ -6,13 +6,17 @@ This proves the kernel ordering needed by a hybrid fspy design:
    `getpid` and then performs a real `execve`.
 2. Its parent catches `PTRACE_EVENT_EXEC`, after the new image exists but before
    its first user-space instruction.
-3. The parent executes remote `mmap`, `rt_sigaction`, and `mprotect` syscalls at
+3. The parent advances once to the pending `execve` syscall-exit stop.
+4. The parent executes remote `mmap`, `rt_sigaction`, and `mprotect` syscalls at
    the stopped entry PC, copies in a freestanding handler, and detaches.
-4. The target verifies `TracerPid: 0` and calls `getpid`. The injected in-process
+5. The target verifies `TracerPid: 0` and calls `getpid`. The injected in-process
    handler changes the saved return register to `0x51515151`.
 
 The source has native AArch64 and x86-64 register/trampoline implementations.
 It uses only libc/kernel headers and is suitable for a native Linux CI job.
+The syscall-exit rendezvous is required because the exec event occurs before
+the original syscall finishes returning. In particular, the x86-64 return path
+would otherwise overwrite the first injected syscall number in `rax`.
 
 ## Run
 

@@ -384,11 +384,28 @@ static void wait_for_exec_stop(pid_t child)
     }
 }
 
+static void finish_exec_syscall(pid_t child)
+{
+    int status;
+
+    /* PTRACE_EVENT_EXEC happens before the original execve returns. Wait for
+     * its syscall-exit stop so that the kernel cannot overwrite registers
+     * prepared for the first injected syscall. */
+    if (ptrace(PTRACE_SYSCALL, child, NULL, NULL) < 0)
+        fatal("PTRACE_SYSCALL after exec event");
+    if (waitpid(child, &status, 0) < 0)
+        fatal("waitpid exec syscall exit");
+    if (!WIFSTOPPED(status) || WSTOPSIG(status) != (SIGTRAP | 0x80) ||
+        (unsigned int)status >> 16 != 0)
+        fatal_message("child did not reach the exec syscall-exit stop");
+}
+
 int main(int argc, char **argv)
 {
     pid_t child;
     int status;
-    unsigned long options = PTRACE_O_TRACEEXEC | PTRACE_O_EXITKILL;
+    unsigned long options =
+        PTRACE_O_TRACEEXEC | PTRACE_O_EXITKILL | PTRACE_O_TRACESYSGOOD;
 
     if (argc != 2) {
         fprintf(stderr, "usage: %s /absolute/path/to/target\n", argv[0]);
@@ -413,6 +430,7 @@ int main(int argc, char **argv)
 
     wait_for_exec_stop(child);
     puts("injector: caught PTRACE_EVENT_EXEC before target entry");
+    finish_exec_syscall(child);
     inject_sigsys_handler(child);
 
     if (ptrace(PTRACE_DETACH, child, NULL, NULL) < 0)
