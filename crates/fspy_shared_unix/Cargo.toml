@@ -18,7 +18,6 @@ stackalloc = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 elf = { workspace = true }
-fspy_seccomp_unotify = { workspace = true, features = ["target"] }
 memmap2 = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]

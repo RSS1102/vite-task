@@ -1,4 +1,3 @@
-#[cfg(not(target_env = "musl"))]
 pub mod channel;
 mod native_path;
 use std::fmt::Debug;

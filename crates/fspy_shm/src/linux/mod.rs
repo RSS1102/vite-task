@@ -2,7 +2,11 @@
 
 mod broker;
 
-use std::{io, os::fd::OwnedFd, slice};
+use std::{
+    io,
+    os::fd::{AsFd, BorrowedFd, OwnedFd},
+    slice,
+};
 
 use memfd::{FileSeal, MemfdOptions};
 use memmap2::{MmapOptions, MmapRaw};
@@ -13,6 +17,9 @@ use tokio_util::sync::DropGuard;
 pub struct Shm {
     id: String,
     mapping: MmapRaw,
+    /// Kept open so an owner may pass the mapping into a process stopped at
+    /// exec. The broker owns a second descriptor.
+    memfd: OwnedFd,
     /// Stops the owner's broker on drop. `None` for opened views.
     _service: Option<DropGuard>,
 }
@@ -47,11 +54,13 @@ pub fn create(size: usize) -> io::Result<Shm> {
         .add_seals(&[FileSeal::SealGrow, FileSeal::SealShrink, FileSeal::SealSeal])
         .map_err(memfd_error)?;
     let mapping = MmapOptions::new().len(size).map_raw(memfd.as_file())?;
-    let memfd: OwnedFd = memfd.into_file().into();
-    let (id, service, guard) = broker::new(memfd)?;
+    let memfd = memfd.into_file();
+    let broker_memfd: OwnedFd = memfd.try_clone()?.into();
+    let memfd: OwnedFd = memfd.into();
+    let (id, service, guard) = broker::new(broker_memfd)?;
     runtime.spawn(service);
 
-    Ok(Shm { id, mapping, _service: Some(guard) })
+    Ok(Shm { id, mapping, memfd, _service: Some(guard) })
 }
 
 /// Opens a view of the memfd mapping identified by `id` through its broker.
@@ -73,7 +82,7 @@ pub fn open(id: &str) -> io::Result<Shm> {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "shared-memory size is zero"));
     }
     let mapping = MmapOptions::new().len(size).map_raw(&memfd)?;
-    Ok(Shm { id: id.to_owned(), mapping, _service: None })
+    Ok(Shm { id: id.to_owned(), mapping, memfd, _service: None })
 }
 
 fn valid_size(size: usize) -> io::Result<u64> {
@@ -126,5 +135,11 @@ impl Shm {
         // SAFETY: The mapping is valid for its full length, and the caller
         // guarantees that it is not mutated while the slice is borrowed.
         unsafe { slice::from_raw_parts(self.mapping.as_ptr(), self.mapping.len()) }
+    }
+}
+
+impl AsFd for Shm {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.memfd.as_fd()
     }
 }

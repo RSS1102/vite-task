@@ -146,6 +146,7 @@ fn fetch_macos_binaries(out_dir: &Path) -> anyhow::Result<()> {
 fn register_preload_cdylib() -> anyhow::Result<()> {
     let env_name = match env::var("CARGO_CFG_TARGET_OS").unwrap().as_str() {
         "windows" => "CARGO_CDYLIB_FILE_FSPY_PRELOAD_WINDOWS",
+        "linux" => return Ok(()),
         _ if env::var("CARGO_CFG_TARGET_ENV").unwrap() == "musl" => return Ok(()),
         _ => "CARGO_CDYLIB_FILE_FSPY_PRELOAD_UNIX",
     };
@@ -157,8 +158,24 @@ fn register_preload_cdylib() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn build_linux_sigsys_injector() {
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("linux")
+        || env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok("x86_64")
+    {
+        return;
+    }
+
+    println!("cargo:rerun-if-changed=src/unix/sigsys_x86_64.c");
+    cc::Build::new()
+        .file("src/unix/sigsys_x86_64.c")
+        .flag_if_supported("-std=c11")
+        .warnings(true)
+        .compile("fspy_sigsys_x86_64");
+}
+
 fn main() -> anyhow::Result<()> {
     println!("cargo:rerun-if-changed=build.rs");
+    build_linux_sigsys_injector();
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap());
     fetch_macos_binaries(&out_dir).context("Failed to fetch macOS binaries")?;
     register_preload_cdylib().context("Failed to register preload cdylib")?;

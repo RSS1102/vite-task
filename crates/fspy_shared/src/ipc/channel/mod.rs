@@ -2,6 +2,8 @@
 
 mod shm_io;
 
+#[cfg(target_os = "linux")]
+use std::os::fd::{AsFd, BorrowedFd};
 use std::{env::temp_dir, fs::File, io, mem::MaybeUninit, ops::Deref, path::PathBuf, sync::Arc};
 
 use fspy_shm::Shm;
@@ -174,6 +176,20 @@ impl Receiver {
         // The lock ensures all prior writes are visible to this thread.
         let reader = ShmReader::new(unsafe { self.shm.as_slice() });
         Ok(ReceiverLockGuard { reader, lock_file: &self.lock_file })
+    }
+
+    /// Returns the channel's backing memfd for mapping into a Linux tracee.
+    #[cfg(target_os = "linux")]
+    #[must_use]
+    pub fn shm_fd(&self) -> BorrowedFd<'_> {
+        self.shm.as_fd()
+    }
+
+    /// Returns the channel's mapped capacity.
+    #[cfg(target_os = "linux")]
+    #[must_use]
+    pub fn shm_len(&self) -> usize {
+        self.shm.len()
     }
 }
 

@@ -2,29 +2,22 @@ use std::os::unix::ffi::OsStringExt;
 
 use base64::{Engine as _, prelude::BASE64_STANDARD_NO_PAD};
 use bstr::BString;
-#[cfg(not(target_env = "musl"))]
+#[cfg(target_os = "macos")]
 use fspy_shared::ipc::NativeStr;
-#[cfg(not(target_env = "musl"))]
+#[cfg(target_os = "macos")]
 use fspy_shared::ipc::channel::ChannelConf;
 use wincode::{SchemaRead, SchemaWrite};
 
 #[derive(Debug, SchemaWrite, SchemaRead)]
 pub struct Payload {
-    #[cfg(not(target_env = "musl"))]
+    #[cfg(target_os = "macos")]
     pub ipc_channel_conf: ChannelConf,
 
-    #[cfg(not(target_env = "musl"))]
+    #[cfg(target_os = "macos")]
     pub preload_path: Box<NativeStr>,
 
     #[cfg(target_os = "macos")]
     pub artifacts: Artifacts,
-
-    #[cfg(target_os = "linux")]
-    #[cfg_attr(
-        not(target_env = "musl"),
-        expect(clippy::struct_field_names, reason = "descriptive field name for clarity")
-    )]
-    pub seccomp_payload: fspy_seccomp_unotify::payload::SeccompPayload,
 }
 
 #[cfg(target_os = "macos")]

@@ -1,16 +1,16 @@
 #[cfg(target_os = "linux")]
-mod syscall_handler;
+mod sigsys;
 
 #[cfg(target_os = "macos")]
 mod macos_artifacts;
 
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd as _;
 use std::{io, path::Path};
 
-#[cfg(target_os = "linux")]
-use fspy_seccomp_unotify::supervisor::supervise;
-use fspy_shared::ipc::PathAccess;
-#[cfg(not(target_env = "musl"))]
-use fspy_shared::ipc::{NativeStr, channel::channel};
+#[cfg(target_os = "macos")]
+use fspy_shared::ipc::NativeStr;
+use fspy_shared::ipc::{PathAccess, channel::channel};
 #[cfg(target_os = "macos")]
 use fspy_shared_unix::payload::Artifacts;
 use fspy_shared_unix::{
@@ -19,31 +19,39 @@ use fspy_shared_unix::{
     spawn::handle_exec,
 };
 use futures_util::FutureExt;
-#[cfg(target_os = "linux")]
-use syscall_handler::SyscallHandler;
 use tokio::task::spawn_blocking;
 use tokio_util::sync::CancellationToken;
 
-#[cfg(not(target_env = "musl"))]
-use crate::ipc::{OwnedReceiverLockGuard, SHM_CAPACITY};
-use crate::{ChildTermination, Command, TrackedChild, arena::PathAccessArena, error::SpawnError};
+use crate::{
+    ChildTermination, Command, TrackedChild,
+    arena::PathAccessArena,
+    error::SpawnError,
+    ipc::{OwnedReceiverLockGuard, SHM_CAPACITY},
+};
 
 #[derive(Debug)]
 pub struct SpyImpl {
     #[cfg(target_os = "macos")]
     artifacts: Artifacts,
 
-    #[cfg(not(target_env = "musl"))]
+    #[cfg(target_os = "macos")]
     preload_path: Box<NativeStr>,
 }
 
 impl SpyImpl {
-    /// Initialize the fs access spy by writing the preload library on disk.
-    ///
-    /// On musl targets, we don't build a preload library —
-    /// only seccomp-based tracking is used.
-    pub fn init_in(#[cfg_attr(target_env = "musl", allow(unused))] dir: &Path) -> io::Result<Self> {
-        #[cfg(not(target_env = "musl"))]
+    /// Initializes platform artifacts. Linux injects its handler at exec and
+    /// does not materialize a preload library.
+    #[cfg(target_os = "linux")]
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "keeps initialization uniform with the fallible macOS backend"
+    )]
+    pub const fn init_in(_dir: &Path) -> io::Result<Self> {
+        Ok(Self {})
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn init_in(dir: &Path) -> io::Result<Self> {
         let preload_path = {
             use materialized_artifact::{Artifact, artifact};
 
@@ -54,7 +62,7 @@ impl SpyImpl {
         };
 
         Ok(Self {
-            #[cfg(not(target_env = "musl"))]
+            #[cfg(target_os = "macos")]
             preload_path,
             #[cfg(target_os = "macos")]
             artifacts: {
@@ -74,25 +82,21 @@ impl SpyImpl {
         mut command: Command,
         cancellation_token: CancellationToken,
     ) -> Result<TrackedChild, SpawnError> {
-        #[cfg(target_os = "linux")]
-        let supervisor = supervise::<SyscallHandler>().map_err(SpawnError::Supervisor)?;
-
-        #[cfg(not(target_env = "musl"))]
+        #[cfg(target_os = "macos")]
         let (ipc_channel_conf, ipc_receiver) =
             channel(SHM_CAPACITY).map_err(SpawnError::ChannelCreation)?;
+        #[cfg(target_os = "linux")]
+        let (_, ipc_receiver) = channel(SHM_CAPACITY).map_err(SpawnError::ChannelCreation)?;
 
         let payload = Payload {
-            #[cfg(not(target_env = "musl"))]
+            #[cfg(target_os = "macos")]
             ipc_channel_conf,
 
             #[cfg(target_os = "macos")]
             artifacts: self.artifacts.clone(),
 
-            #[cfg(not(target_env = "musl"))]
+            #[cfg(target_os = "macos")]
             preload_path: self.preload_path.clone(),
-
-            #[cfg(target_os = "linux")]
-            seccomp_payload: supervisor.payload().clone(),
         };
 
         let encoded_payload = encode_payload(payload);
@@ -108,14 +112,25 @@ impl SpyImpl {
             },
         )
         .map_err(|err| SpawnError::Injection(err.into()))?;
+        #[cfg(target_os = "linux")]
+        debug_assert!(pre_exec.is_none());
         command.set_exec(exec);
         command.env("FSPY", "1");
 
         let mut tokio_command = command.into_tokio_command();
 
-        // SAFETY: the pre_exec closure only calls pre_exec.run() which is safe to call in a fork context
+        #[cfg(target_os = "linux")]
+        let shm_fd = ipc_receiver.shm_fd().as_raw_fd();
+        #[cfg(target_os = "linux")]
+        let shm_len = ipc_receiver.shm_len();
+
+        // SAFETY: both platform hooks are restricted to async-signal-safe raw
+        // operations in the post-fork child.
         unsafe {
             tokio_command.pre_exec(move || {
+                #[cfg(target_os = "linux")]
+                sigsys::prepare(shm_fd)?;
+                #[cfg(target_os = "macos")]
                 if let Some(pre_exec) = pre_exec.as_ref() {
                     pre_exec.run()?;
                 }
@@ -123,13 +138,25 @@ impl SpyImpl {
             });
         }
 
-        // tokio_command.spawn blocks while executing the `pre_exec` closure.
-        // Run it inside spawn_blocking to avoid blocking the tokio runtime, especially the supervisor loop,
-        // which needs to accept incoming connections while `pre_exec` is connecting to it.
-        let mut child = spawn_blocking(move || tokio_command.spawn())
-            .await
-            .map_err(|err| SpawnError::OsSpawn(err.into()))?
-            .map_err(SpawnError::OsSpawn)?;
+        // Spawn and the post-exec ptrace handshake are blocking operations.
+        let mut child = spawn_blocking(move || {
+            let child = tokio_command.spawn().map_err(SpawnError::OsSpawn)?;
+            #[cfg(target_os = "linux")]
+            let child = {
+                let mut child = child;
+                let pid = child.id().ok_or_else(|| {
+                    SpawnError::Injection(io::Error::other("spawned child has no process id"))
+                })?;
+                if let Err(error) = sigsys::inject(pid, shm_fd, shm_len) {
+                    let _ = child.start_kill();
+                    return Err(SpawnError::Injection(error));
+                }
+                child
+            };
+            Ok(child)
+        })
+        .await
+        .map_err(|err| SpawnError::OsSpawn(err.into()))??;
 
         Ok(TrackedChild {
             stdin: child.stdin.take(),
@@ -146,28 +173,13 @@ impl SpyImpl {
                     }
                 };
 
-                let arenas = std::iter::once(exec_resolve_accesses);
-                // Stop the supervisor and collect path accesses from it.
-                #[cfg(target_os = "linux")]
-                let arenas = arenas.chain(
-                    supervisor
-                        .stop()
-                        .await?
-                        .into_iter()
-                        .map(syscall_handler::SyscallHandler::into_arena),
-                );
-                let arenas = arenas.collect::<Vec<_>>();
+                let arenas = vec![exec_resolve_accesses];
 
                 // Lock the ipc channel after the child has exited.
                 // We are not interested in path accesses from descendants after the main child has exited.
-                #[cfg(not(target_env = "musl"))]
                 let ipc_receiver_lock_guard =
                     OwnedReceiverLockGuard::lock_async(ipc_receiver).await?;
-                let path_accesses = PathAccessIterable {
-                    arenas,
-                    #[cfg(not(target_env = "musl"))]
-                    ipc_receiver_lock_guard,
-                };
+                let path_accesses = PathAccessIterable { arenas, ipc_receiver_lock_guard };
 
                 io::Result::Ok(ChildTermination { status, path_accesses })
             })
@@ -179,7 +191,6 @@ impl SpyImpl {
 
 pub struct PathAccessIterable {
     arenas: Vec<PathAccessArena>,
-    #[cfg(not(target_env = "musl"))]
     ipc_receiver_lock_guard: OwnedReceiverLockGuard,
 }
 
@@ -188,14 +199,7 @@ impl PathAccessIterable {
         let accesses_in_arena =
             self.arenas.iter().flat_map(|arena| arena.borrow_accesses().iter()).copied();
 
-        #[cfg(not(target_env = "musl"))]
-        {
-            let accesses_in_shm = self.ipc_receiver_lock_guard.iter_path_accesses();
-            accesses_in_shm.chain(accesses_in_arena)
-        }
-        #[cfg(target_env = "musl")]
-        {
-            accesses_in_arena
-        }
+        let accesses_in_shm = self.ipc_receiver_lock_guard.iter_path_accesses();
+        accesses_in_shm.chain(accesses_in_arena)
     }
 }

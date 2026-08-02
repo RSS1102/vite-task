@@ -23,7 +23,6 @@ tokio-util = { workspace = true }
 which = { workspace = true, features = ["tracing"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-fspy_seccomp_unotify = { workspace = true, features = ["supervisor"] }
 nix = { workspace = true, features = ["uio"] }
 tokio = { workspace = true, features = ["bytes"] }
 
@@ -61,6 +60,7 @@ fspy_test_bin = { path = "../fspy_test_bin", artifact = "bin", target = "x86_64-
 # builds are cheap.
 [build-dependencies]
 anyhow = { workspace = true }
+cc = { workspace = true }
 materialized_artifact_build = { workspace = true }
 flate2 = { workspace = true }
 fspy_preload_unix = { workspace = true }

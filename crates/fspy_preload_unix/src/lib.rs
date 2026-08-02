@@ -1,13 +1,11 @@
-// Compile as an empty crate on non-unix targets and on musl (where seccomp
-// alone handles access tracking). Guarding the feature gate keeps rustc from
-// warning about unused features on those targets.
-#![cfg_attr(all(unix, not(target_env = "musl")), feature(c_variadic))]
+// Linux uses the ptrace/SIGSYS backend. Keep this cdylib only for macOS.
+#![cfg_attr(target_os = "macos", feature(c_variadic))]
 
-#[cfg(all(unix, not(target_env = "musl")))]
+#[cfg(target_os = "macos")]
 mod client;
-#[cfg(all(unix, not(target_env = "musl")))]
+#[cfg(target_os = "macos")]
 mod interceptions;
-#[cfg(all(unix, not(target_env = "musl")))]
+#[cfg(target_os = "macos")]
 mod libc;
-#[cfg(all(unix, not(target_env = "musl")))]
+#[cfg(target_os = "macos")]
 mod macros;
