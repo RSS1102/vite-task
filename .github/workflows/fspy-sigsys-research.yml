@@ -118,4 +118,5 @@ jobs:
 
               cd /tmp/ptrace
               make check
+              timeout 30s ./recursive_injector /bin/true
             '

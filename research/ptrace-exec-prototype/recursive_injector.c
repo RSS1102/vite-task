@@ -89,12 +89,43 @@ __asm__(
     "  je .Lfspy_sigaction\n"
     "  cmp $14, %eax\n" /* __NR_rt_sigprocmask */
     "  je .Lfspy_sigprocmask\n"
+    "  cmp $217, %eax\n" /* __NR_getdents64 */
+    "  je .Lfspy_passthrough\n"
+    "  cmp $257, %eax\n" /* __NR_openat */
+    "  je .Lfspy_passthrough\n"
+    "  cmp $262, %eax\n" /* __NR_newfstatat */
+    "  je .Lfspy_passthrough\n"
+    "  cmp $269, %eax\n" /* __NR_faccessat */
+    "  je .Lfspy_passthrough\n"
+    "  cmp $332, %eax\n" /* __NR_statx */
+    "  je .Lfspy_passthrough\n"
+    "  cmp $437, %eax\n" /* __NR_openat2 */
+    "  je .Lfspy_passthrough\n"
+    "  cmp $439, %eax\n" /* __NR_faccessat2 */
+    "  je .Lfspy_passthrough\n"
     "  mov $-38, %rax\n" /* -ENOSYS */
     "  jmp .Lfspy_store_result\n"
 
     ".Lfspy_getpid:\n"
     "  mov $39, %eax\n"
     "  mov fspy_recursive_slot_magic(%rip), %r9\n"
+    "  syscall\n"
+    "  jmp .Lfspy_store_result\n"
+
+    ".Lfspy_passthrough:\n"
+    "  mov %eax, %ebx\n"
+    "  mov fspy_recursive_slot_rdi(%rip), %rcx\n"
+    "  mov (%r13,%rcx), %rdi\n"
+    "  mov fspy_recursive_slot_rsi(%rip), %rcx\n"
+    "  mov (%r13,%rcx), %rsi\n"
+    "  mov fspy_recursive_slot_rdx(%rip), %rcx\n"
+    "  mov (%r13,%rcx), %rdx\n"
+    "  mov fspy_recursive_slot_r10(%rip), %rcx\n"
+    "  mov (%r13,%rcx), %r10\n"
+    "  mov fspy_recursive_slot_r8(%rip), %rcx\n"
+    "  mov (%r13,%rcx), %r8\n"
+    "  mov fspy_recursive_slot_magic(%rip), %r9\n"
+    "  mov %ebx, %eax\n"
     "  syscall\n"
     "  jmp .Lfspy_store_result\n"
 
@@ -453,6 +484,13 @@ static void install_filter(void)
         FILTER_GATEWAY_BLOCK(SYS_execve, FILTER_TAG),
         FILTER_GATEWAY_BLOCK(SYS_execveat, FILTER_TAG),
         FILTER_GATEWAY_BLOCK(SYS_getpid, FILTER_TAG),
+        FILTER_GATEWAY_BLOCK(SYS_getdents64, FILTER_TAG),
+        FILTER_GATEWAY_BLOCK(SYS_openat, FILTER_TAG),
+        FILTER_GATEWAY_BLOCK(SYS_openat2, FILTER_TAG),
+        FILTER_GATEWAY_BLOCK(SYS_newfstatat, FILTER_TAG),
+        FILTER_GATEWAY_BLOCK(SYS_statx, FILTER_TAG),
+        FILTER_GATEWAY_BLOCK(SYS_faccessat, FILTER_TAG),
+        FILTER_GATEWAY_BLOCK(SYS_faccessat2, FILTER_TAG),
         FILTER_GATEWAY_BLOCK(SYS_rt_sigaction, FILTER_TAG),
         FILTER_GATEWAY_BLOCK(SYS_rt_sigprocmask, FILTER_TAG),
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
