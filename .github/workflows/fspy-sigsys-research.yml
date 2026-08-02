@@ -56,7 +56,7 @@ jobs:
       - uses: oxc-project/setup-node@4c588e9266bd930b6ddc34307df0659ed511d187 # v1.3.1
 
       - name: Install Chromium system dependencies
-        run: pnpm --filter vite-task-tools exec playwright install-deps chromium
+        run: pnpm --filter vite-task-tools exec playwright install --with-deps chromium
 
       - name: Run Vitest browser mode through the exec bridge
         run: |
