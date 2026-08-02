@@ -129,6 +129,8 @@ The production handler should run on the interrupted target stack and keep its s
 
 The handler cannot call the current preload client. It must avoid libc, allocation, TLS, locks, unwinding, and callbacks into the target runtime.
 
+The injected artifact can be written in freestanding Rust. The [Rust injected-runtime design](fspy-rust-injected-runtime.md) includes a cross-compiled relocation-free blob, raw syscall and restorer assembly, a separate state ABI, and the fixed-capacity lock-free allocator decision. Allocation remains prohibited in the `SIGSYS` fast path.
+
 Use a target-independent shared-memory ABI with fixed-size records and a bounded byte area for paths. Reserve records with lock-free atomics; wake the supervisor with raw `futex` or `eventfd` operations. If the ring fills, block on a raw primitive and never drop a cache-relevant access. Partitioning record lanes by TID reduces contention and simplifies nested delivery.
 
 Copy target pointers with bounded self `process_vm_readv`. Direct loads can turn a target `EFAULT` into a recursive fault in the handler. The full `openat` prototype copied the path this way and reissued the syscall, but it did not normalize the path or record an event. Production must resolve cwd/dirfd state before returning to the target or capture enough stable fd identity for the supervisor; deferring a raw pointer or fd introduces close/reuse races.

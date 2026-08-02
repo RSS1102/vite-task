@@ -1,0 +1,18 @@
+[package]
+name = "fspy-rust-injected-runtime"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+opt-level = "z"
+panic = "abort"
+
+# Keep this research artifact independent from the repository workspace. Its
+# linker contract is deliberately much narrower than an ordinary Rust crate.
+[workspace]
