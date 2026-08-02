@@ -2,6 +2,7 @@
 
 #include <elf.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <linux/audit.h>
 #include <linux/filter.h>
 #include <linux/futex.h>
@@ -74,10 +75,14 @@ __asm__(
     "  push %r13\n"
     "  push %r14\n"
     "  push %r15\n"
-    "  sub $160, %rsp\n"
+    "  sub $168, %rsp\n" /* keep the stack aligned for a logical handler */
     "  mov %rsi, %r12\n" /* siginfo_t * */
     "  mov %rdx, %r13\n" /* ucontext_t * */
     "  mov fspy_recursive_slot_state(%rip), %r14\n"
+    /* A stacked filter may also return TRAP. Only fspy's filter tag belongs to
+     * this dispatcher; all other traps belong to the target's logical action. */
+    "  cmpl $0x4653, 4(%r12)\n" /* siginfo_t.si_errno */
+    "  jne .Lfspy_logical_sigsys\n"
     "  mov 24(%r12), %eax\n" /* siginfo_t.si_syscall */
     "  cmp $39, %eax\n"      /* __NR_getpid */
     "  je .Lfspy_getpid\n"
@@ -105,6 +110,30 @@ __asm__(
     "  je .Lfspy_passthrough\n"
     "  mov $-38, %rax\n" /* -ENOSYS */
     "  jmp .Lfspy_store_result\n"
+
+    ".Lfspy_logical_sigsys:\n"
+    "  mov 0(%r14), %rax\n" /* virtual sa_handler/sa_sigaction */
+    "  test %rax, %rax\n"   /* SIG_DFL */
+    "  je .Lfspy_logical_default\n"
+    "  cmp $1, %rax\n" /* SIG_IGN */
+    "  je .Lfspy_return\n"
+    "  mov 8(%r14), %rcx\n" /* virtual sa_flags */
+    "  test $4, %ecx\n"     /* SA_SIGINFO */
+    "  je .Lfspy_logical_one_arg\n"
+    "  mov $31, %edi\n"
+    "  mov %r12, %rsi\n"
+    "  mov %r13, %rdx\n"
+    "  call *%rax\n"
+    "  jmp .Lfspy_return\n"
+    ".Lfspy_logical_one_arg:\n"
+    "  mov $31, %edi\n"
+    "  call *%rax\n"
+    "  jmp .Lfspy_return\n"
+    ".Lfspy_logical_default:\n"
+    "  mov $159, %edi\n" /* prototype equivalent of default SIGSYS death */
+    "  mov $231, %eax\n" /* __NR_exit_group */
+    "  syscall\n"
+    "  ud2\n"
 
     ".Lfspy_getpid:\n"
     "  mov $39, %eax\n"
@@ -294,7 +323,8 @@ __asm__(
     ".Lfspy_store_result:\n"
     "  mov fspy_recursive_slot_rax(%rip), %rcx\n"
     "  mov %rax, (%r13,%rcx)\n"
-    "  add $160, %rsp\n"
+    ".Lfspy_return:\n"
+    "  add $168, %rsp\n"
     "  pop %r15\n"
     "  pop %r14\n"
     "  pop %r13\n"
@@ -696,6 +726,9 @@ static void print_exec_path(pid_t pid, unsigned int count, pid_t former_tid)
 {
     char proc_path[64];
     char executable[4096];
+    char command_line[4096];
+    int command_line_fd;
+    ssize_t command_line_length;
     ssize_t length;
 
     snprintf(proc_path, sizeof(proc_path), "/proc/%d/exe", pid);
@@ -708,6 +741,21 @@ static void print_exec_path(pid_t pid, unsigned int count, pid_t former_tid)
     }
     printf("bridge: injected exec #%u pid=%d former_tid=%d exe=%s\n", count,
            pid, former_tid, executable);
+    snprintf(proc_path, sizeof(proc_path), "/proc/%d/cmdline", pid);
+    command_line_fd = open(proc_path, O_RDONLY | O_CLOEXEC);
+    if (command_line_fd >= 0) {
+        command_line_length =
+            read(command_line_fd, command_line, sizeof(command_line) - 1);
+        close(command_line_fd);
+        if (command_line_length > 0) {
+            for (ssize_t index = 0; index < command_line_length; index++) {
+                if (command_line[index] == '\0')
+                    command_line[index] = ' ';
+            }
+            command_line[command_line_length] = '\0';
+            printf("bridge: exec argv #%u %s\n", count, command_line);
+        }
+    }
     fflush(stdout);
 }
 

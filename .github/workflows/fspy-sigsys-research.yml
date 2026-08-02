@@ -66,6 +66,20 @@ jobs:
           sysctl kernel.apparmor_restrict_unprivileged_userns
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
+      - name: Verify the CI host can launch sandboxed Chromium
+        run: |
+          set -euxo pipefail
+          pnpm --filter vite-task-tools exec node --input-type=module --eval '
+            const { chromium } = await import("playwright");
+            const browser = await chromium.launch({
+              headless: true,
+              chromiumSandbox: true,
+            });
+            const page = await browser.newPage();
+            await page.setContent("<p>sandbox control</p>");
+            await browser.close();
+          '
+
       - name: Run sandboxed Vitest browser mode through the exec bridge
         run: |
           set -euxo pipefail
