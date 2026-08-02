@@ -141,7 +141,7 @@ jobs:
           observer_pid=$!
 
           set +e
-          FSPY_MINIMAL_FILTER=true VITEST_CHROMIUM_SANDBOX=true \
+          VITEST_CHROMIUM_SANDBOX=true \
             DEBUG=vitest:browser:playwright,pw:browser \
             timeout 120s "$injector" "$vitest" run \
             2>&1 | tee "$probe_dir/bridge.log"
