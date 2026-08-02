@@ -2,7 +2,7 @@
 
 Research date: 2026-08-02
 
-Status: feasibility proven on native Linux AArch64 and x86-64, including Docker's default seccomp and AppArmor profiles
+Status: feasibility proven on native Linux AArch64 and x86-64, including Vitest browser mode and Docker's default seccomp and AppArmor profiles
 
 Primary audience: fspy maintainers deciding whether to replace the Linux `LD_PRELOAD` and seccomp user-notification backends.
 
@@ -19,7 +19,7 @@ The preferred ptrace bridge is:
 
 1. The in-process handler traps `execve` or `execveat`.
 2. The handler asks the existing fspy supervisor to attach to that thread with `PTRACE_SEIZE` and `PTRACE_O_TRACEEXEC`.
-3. The handler reissues the original syscall through a trusted gateway.
+3. The handler explicitly unblocks physical `SIGSYS`, then reissues the original syscall through a trusted gateway.
 4. Linux performs the requested exec and stops at `PTRACE_EVENT_EXEC` before target code runs.
 5. The supervisor advances once to the pending exec syscall-exit stop.
 6. The supervisor maps the handler island into the new address space, reinstalls the physical `SIGSYS` action, and detaches.
@@ -67,6 +67,7 @@ The primary experiments ran on Ubuntu 24.04 AArch64, Linux 6.8, in a four-vCPU L
 | Can nested and concurrent traps work?                                    | Yes; `SA_NODEFER`, a nested trap, and 200,000 calls from four threads passed                         |
 | Can Go replace or block `SIGSYS` without breaking fspy?                  | The prototype virtualized the tested `rt_sigaction` and `rt_sigprocmask` operations; esbuild passed  |
 | Can a real exec regain the handler before target entry?                  | Yes; post-exec ptrace injection passed for dynamic, static, non-leader, and esbuild execs            |
+| Can a recursive on-demand ptrace bridge run Vitest browser mode?         | Yes; Vitest 4.1.10 and Playwright Chromium passed through nine exec reinjections on native x86-64    |
 | Can the proposed static-host cycle bootstrap under the inherited filter? | Yes; a real exec into a static-musl second stage reinstalled the handler through the trusted gateway |
 | Can a pure handoff run frontend tools?                                   | Yes; Node and esbuild 0.28.1 CLI/API paths, static Go, static musl, shells, and coreutils passed     |
 
@@ -138,7 +139,7 @@ The exec handler can use this sequence:
 
 1. Write an exec request containing the current TID and logical signal state to a preinitialized channel.
 2. Wait for the supervisor to call `PTRACE_SEIZE` with `PTRACE_O_TRACEEXEC`.
-3. Reissue the original `execve` or `execveat` with the sixth-argument gateway marker. Preserve the original path, argv, environment, fd, and flags.
+3. Unblock physical `SIGSYS`, then reissue the original `execve` or `execveat` with the sixth-argument gateway marker. Preserve the original path, argv, environment, fd, and flags.
 4. On success, handle the exec event under the post-exec thread-group-leader TID. `PTRACE_GETEVENTMSG` reports the former TID for a nonleader exec.
 5. Resume once with `PTRACE_SYSCALL` and `PTRACE_O_TRACESYSGOOD`, then require the pending exec syscall-exit stop. This prevents the late exec return from overwriting registers prepared for the first injected syscall; x86-64 uses `rax` for both the syscall number and return value.
 6. Remote-map a sealed, position-independent handler artifact and its state mapping.
@@ -152,7 +153,13 @@ If exec fails, the old address space and signal frame remain. The handler report
 
 The AArch64 proof passed dynamic and static targets, 20 repeated launches, sanitizers, and a non-leader pthread exec. At non-leader exec, Linux reported the event under the thread-group leader TID and `PTRACE_GETEVENTMSG` returned the former worker TID, so the supervisor must re-key per-thread state. The latest-esbuild proof measured the interval from `PTRACE_EVENT_EXEC` to detach over 30 runs: 78.7 microseconds p50, 101.8 microseconds p95, and 84.7 microseconds mean. This is the exec-only cost; no tracer remained for file syscalls.
 
-The proof launchers used `PTRACE_TRACEME` before exec to isolate post-exec injection. Production still needs an end-to-end test of the handler request, on-demand `PTRACE_SEIZE`, successful exec, and failed-exec detach protocol.
+The recursive x86-64 proof now exercises the production-shaped success path end to end. The handler sends a queued real-time signal containing its TID and a release-word address, waits in a futex, and lets an ancestor supervisor attach with on-demand `PTRACE_SEIZE`. The supervisor releases the handler, observes `PTRACE_EVENT_EXEC`, injects an RX code page plus a separate RW state page, and detaches. No inherited control fd is required, so `posix_spawn` close actions cannot sever the bridge. Failed-exec behavior is implemented but still needs a dedicated compatibility matrix.
+
+A subtle signal-mask rule is mandatory. `SIGSYS` is automatically blocked while its handler runs. If that handler successfully calls `execve`, there is no later `rt_sigreturn` to restore the old mask, and the new image inherits `SIGSYS` blocked. Its first trapped syscall is then fatal. The handler must explicitly unblock physical `SIGSYS` immediately before the gateway exec. This was the only ptrace-protocol defect exposed by the shell-to-Node startup chain.
+
+The native x86-64 [Vitest browser validation](https://github.com/voidzero-dev/vite-task/actions/runs/30735989574) ran the repository's real fixture with Node 22.19.0, Vitest 4.1.10, `@vitest/browser-playwright` 4.1.10, Playwright 1.61.1, and Chrome Headless Shell 149.0.7827.55. It reinjected nine successful images—dash, sed, dirname, uname, Node, and four Chromium processes—with zero failed execs. The browser test and JSON report passed while the inherited filter trapped and reissued the representative file-syscall set: `openat`, `openat2`, `newfstatat`, `statx`, `getdents64`, `faccessat`, and `faccessat2`.
+
+This proves compatibility with Vitest's default Playwright Chromium launch, which disables Chromium's sandbox unless `chromiumSandbox: true` is requested. It does not yet prove coexistence with Chromium's own sandbox seccomp policy and `SIGSYS` handler.
 
 This path preserves the parts of exec that frontend tools depend on:
 
@@ -223,7 +230,7 @@ The static host also needs a target-independent payload ABI. The current `Payloa
 | Environment                  | RET_TRAP syscall path | Temporary ptrace exec     | Evidence or required handling                                         |
 | ---------------------------- | --------------------- | ------------------------- | --------------------------------------------------------------------- |
 | Native Linux AArch64         | Passed                | Passed                    | Ubuntu 24.04/Linux 6.8; dynamic, static, esbuild, and non-leader exec |
-| Native Linux x86-64          | Passed                | Passed                    | Ubuntu 24.04 GitHub runner; dynamic and non-leader exec               |
+| Native Linux x86-64          | Passed                | Passed                    | Ubuntu 24.04 GitHub runner; dynamic, non-leader, Node, and Chromium   |
 | WSL2                         | Expected              | Expected, untested        | Avoid `NEW_LISTENER`; test mirrored networking and ptrace policy      |
 | Rootless containerd          | Passed                | Passed                    | Existing seccomp filter; also passed with `no_new_privs=1`            |
 | Docker default on Linux      | Passed                | Passed                    | Existing filter, `no_new_privs=1`, enforced default AppArmor          |
@@ -232,7 +239,7 @@ The static host also needs a target-independent payload ABI. The current `Payloa
 | Hosted CI                    | Passed on GitHub      | Passed on GitHub          | Other providers still need the startup probe                          |
 | Custom sandbox               | Policy-dependent      | Often denied              | Use the userland fallback or report an actionable error               |
 
-The native x86-64 and Docker evidence is recorded in [GitHub Actions run 30734549943](https://github.com/voidzero-dev/vite-task/actions/runs/30734549943). The Rosetta result is an emulation limitation, not a failure of native x86-64 Docker.
+The latest native x86-64, Vitest browser, and Docker evidence is recorded in [GitHub Actions run 30735989574](https://github.com/voidzero-dev/vite-task/actions/runs/30735989574). The Docker recursive bridge passed with `Seccomp: 2`, `NoNewPrivs: 1`, and `docker-default (enforce)`. The Rosetta result is an emulation limitation, not a failure of native x86-64 Docker.
 
 The open [WSL issue about seccomp notification](https://github.com/microsoft/WSL/issues/9548) concerns the single `NEW_LISTENER` restriction when WSL mirrored networking already owns a listener. It does not prevent stacking a normal `RET_TRAP` filter. The current WSL kernel configuration enables seccomp filtering.
 
