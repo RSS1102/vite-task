@@ -76,9 +76,26 @@ never reaches `rt_sigreturn`, so the new image otherwise inherits `SIGSYS`
 blocked and dies on its first trapped syscall. The handler must explicitly
 unblock physical `SIGSYS` immediately before issuing the gateway exec.
 
-The Vitest fixture uses Playwright's default unsandboxed Chromium launch. A
-future test must enable `chromiumSandbox: true` to validate interaction with
-Chromium's own seccomp policy and logical `SIGSYS` handler.
+The default-browser result does not extend to Playwright's
+`chromiumSandbox: true`. Native Ubuntu 24.04 controls launched sandboxed
+Chromium both normally and under `no_new_privs`. Through the bridge, however,
+the namespace zygote exec leaves fd 3 present while the browser side of the
+boot socket observes EOF. Chromium aborts at
+`zygote_host_impl_linux.cc:207`; the zygote later reaches `ZygoteMain` and gets
+`EPIPE` after the browser closes its end.
+
+The [full-filter run](https://github.com/voidzero-dev/vite-task/actions/runs/30737025514)
+captured that sequence. An
+[exec-and-signal-only run](https://github.com/voidzero-dev/vite-task/actions/runs/30737143580)
+failed at the same boundary, so the file-syscall passthrough is not the cause.
+The failure precedes Chromium's own seccomp setup. The nested-filter test still
+proves that fspy can identify its filter tag, forward a foreign seccomp trap to
+the target's logical `SIGSYS` action, and permit reentrant delivery with
+`SA_NODEFER`.
+
+Do not use this ptrace bridge for Chromium namespace-zygote execs. A production
+hybrid must select the static-host userland loader before attempting that exec,
+or reject the launch with an actionable compatibility error.
 
 ## Prototype boundaries
 
@@ -102,6 +119,7 @@ Chromium's own seccomp policy and logical `SIGSYS` handler.
 - The recursive prototype uses direct pointer loads while virtualizing signal
   APIs and only reissues file syscalls; it does not yet perform fault-safe path
   capture or write fspy events to shared memory.
-- Its logical `SIGSYS` model is intentionally incomplete. Per-thread virtual
-  masks, delivery to a target-installed logical handler, and coexistence with
-  another seccomp `TRAP` producer remain production work.
+- Its logical `SIGSYS` model is intentionally incomplete. The prototype
+  forwards a tagged foreign trap to the tested target handler, but per-thread
+  virtual masks, complete action semantics, and general coexistence with other
+  seccomp producers remain production work.

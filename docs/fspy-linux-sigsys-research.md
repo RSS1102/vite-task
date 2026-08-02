@@ -2,7 +2,7 @@
 
 Research date: 2026-08-02
 
-Status: feasibility proven on native Linux AArch64 and x86-64, including Vitest browser mode and Docker's default seccomp and AppArmor profiles
+Status: feasibility proven on native Linux AArch64 and x86-64, including default Vitest browser mode and Docker's default seccomp and AppArmor profiles. Playwright's `chromiumSandbox: true` is a confirmed compatibility boundary for the current ptrace exec bridge.
 
 Primary audience: fspy maintainers deciding whether to replace the Linux `LD_PRELOAD` and seccomp user-notification backends.
 
@@ -13,7 +13,8 @@ The design is feasible for fspy's unprivileged build-tool workload. Use `SECCOMP
 Use two exec bridges, selected by a startup probe:
 
 1. Prefer a temporary ptrace attachment around a real target exec. This preserves kernel ELF, script, identity, and failure semantics.
-2. If ptrace is denied or already owned, real-exec a static `fspy_host` and load the target in user space. This path works for the tested frontend workload but has a narrower, documented exec contract.
+2. Do not use that bridge for Chromium's namespace-sandbox zygote exec. The current bridge breaks Chromium's synchronous zygote boot handshake before Chromium installs its seccomp policy.
+3. If ptrace is denied, already owned, or incompatible with a namespace-sandbox launch, real-exec a static `fspy_host` and load the target in user space. This path works for the tested frontend workload but has a narrower, documented exec contract. Sandboxed Chromium still needs a dedicated userland-loader validation.
 
 The preferred ptrace bridge is:
 
@@ -67,7 +68,8 @@ The primary experiments ran on Ubuntu 24.04 AArch64, Linux 6.8, in a four-vCPU L
 | Can nested and concurrent traps work?                                    | Yes; `SA_NODEFER`, a nested trap, and 200,000 calls from four threads passed                         |
 | Can Go replace or block `SIGSYS` without breaking fspy?                  | The prototype virtualized the tested `rt_sigaction` and `rt_sigprocmask` operations; esbuild passed  |
 | Can a real exec regain the handler before target entry?                  | Yes; post-exec ptrace injection passed for dynamic, static, non-leader, and esbuild execs            |
-| Can a recursive on-demand ptrace bridge run Vitest browser mode?         | Yes; Vitest 4.1.10 and Playwright Chromium passed through nine exec reinjections on native x86-64    |
+| Can a recursive on-demand ptrace bridge run Vitest browser mode?         | Yes with Playwright's default `--no-sandbox`; nine exec reinjections passed on native x86-64         |
+| Does the same bridge support `chromiumSandbox: true`?                    | No; the namespace zygote handshake reaches EOF at its ptrace exec boundary before Chromium seccomp   |
 | Can the proposed static-host cycle bootstrap under the inherited filter? | Yes; a real exec into a static-musl second stage reinstalled the handler through the trusted gateway |
 | Can a pure handoff run frontend tools?                                   | Yes; Node and esbuild 0.28.1 CLI/API paths, static Go, static musl, shells, and coreutils passed     |
 
@@ -159,7 +161,33 @@ A subtle signal-mask rule is mandatory. `SIGSYS` is automatically blocked while 
 
 The native x86-64 [Vitest browser validation](https://github.com/voidzero-dev/vite-task/actions/runs/30735989574) ran the repository's real fixture with Node 22.19.0, Vitest 4.1.10, `@vitest/browser-playwright` 4.1.10, Playwright 1.61.1, and Chrome Headless Shell 149.0.7827.55. It reinjected nine successful images—dash, sed, dirname, uname, Node, and four Chromium processes—with zero failed execs. The browser test and JSON report passed while the inherited filter trapped and reissued the representative file-syscall set: `openat`, `openat2`, `newfstatat`, `statx`, `getdents64`, `faccessat`, and `faccessat2`.
 
-This proves compatibility with Vitest's default Playwright Chromium launch, which disables Chromium's sandbox unless `chromiumSandbox: true` is requested. It does not yet prove coexistence with Chromium's own sandbox seccomp policy and `SIGSYS` handler.
+This proves compatibility with Vitest's default Playwright Chromium launch, which disables Chromium's sandbox unless `chromiumSandbox: true` is requested.
+
+### `chromiumSandbox: true` fails at the namespace-zygote exec boundary
+
+The current ptrace exec bridge does not support Playwright's `chromiumSandbox: true`. This is a confirmed negative result, not a missing host prerequisite.
+
+The native Ubuntu 24.04 validation established these controls:
+
+- A direct Playwright launch with `chromiumSandbox: true` passed.
+- The same direct launch under `setpriv --no-new-privs` passed.
+- The full bridge continued to pass Vitest with Playwright's default `chromiumSandbox: false`.
+- The sandboxed launch used no `--no-sandbox` argument.
+
+Ubuntu 24.04's AppArmor policy restricts unprivileged user namespaces by default on the GitHub runner. The validation explicitly set `kernel.apparmor_restrict_unprivileged_userns=0`. Without that host setup, Chromium fails earlier with `No usable sandbox`; that is a separate environment failure.
+
+With the host prerequisite satisfied, the bridged launch fails in this order:
+
+1. The bridge injects the main Chrome image successfully.
+2. Chrome creates its namespace zygote and the bridge injects that exec successfully. `/proc/<zygote>/fd/3` still reports the inherited Unix socket.
+3. The browser's blocking `recvmsg` returns zero at the zygote exec boundary. Chromium fails `ReceiveFixedMessage` at `zygote_host_impl_linux.cc:207` before receiving `ZYGOTE_BOOT`.
+4. The zygote reaches `ZygoteMain` after detach. Its later control-socket write reports `EPIPE` because the browser has already abandoned the handshake.
+
+The [full-filter diagnostic run](https://github.com/voidzero-dev/vite-task/actions/runs/30737025514) captured the zero-length receive, the preserved fd 3, and the later broken pipe. An [exec-and-signal-only filter run](https://github.com/voidzero-dev/vite-task/actions/runs/30737143580) failed at the same point. The representative file-syscall traps are therefore not the cause.
+
+Chromium's own seccomp policy is not active at this failure point. Forwarding a foreign `SECCOMP_RET_TRAP` to the target's logical `SIGSYS` handler and installing fspy's physical handler with `SA_NODEFER` are still required. The standalone nested-filter test validates those mechanics, but they do not fix this earlier zygote handshake.
+
+Treat namespace-sandbox zygote exec as a ptrace incompatibility until a different rendezvous proves otherwise. A production hybrid should route this exec through the static-host userland loader or decline tracing with an actionable error. It must make that choice before attempting the ptrace exec because Chromium treats the failed boot handshake as fatal.
 
 This path preserves the parts of exec that frontend tools depend on:
 
@@ -230,16 +258,16 @@ The static host also needs a target-independent payload ABI. The current `Payloa
 | Environment                  | RET_TRAP syscall path | Temporary ptrace exec     | Evidence or required handling                                         |
 | ---------------------------- | --------------------- | ------------------------- | --------------------------------------------------------------------- |
 | Native Linux AArch64         | Passed                | Passed                    | Ubuntu 24.04/Linux 6.8; dynamic, static, esbuild, and non-leader exec |
-| Native Linux x86-64          | Passed                | Passed                    | Ubuntu 24.04 GitHub runner; dynamic, non-leader, Node, and Chromium   |
+| Native Linux x86-64          | Passed                | Passed with boundary      | Ubuntu 24.04; default Chromium passes, namespace-sandbox zygote fails |
 | WSL2                         | Expected              | Expected, untested        | Avoid `NEW_LISTENER`; test mirrored networking and ptrace policy      |
 | Rootless containerd          | Passed                | Passed                    | Existing seccomp filter; also passed with `no_new_privs=1`            |
 | Docker default on Linux      | Passed                | Passed                    | Existing filter, `no_new_privs=1`, enforced default AppArmor          |
 | Docker Desktop amd64/Rosetta | Unsupported           | Not reached               | Local `PR_SET_SECCOMP` returned `EINVAL`; use a native-arch image     |
 | Kubernetes                   | Runtime-dependent     | Runtime and LSM-dependent | Probe and fall back; test containerd/CRI-O RuntimeDefault profiles    |
-| Hosted CI                    | Passed on GitHub      | Passed on GitHub          | Other providers still need the startup probe                          |
+| Hosted CI                    | Passed on GitHub      | Passed with boundary      | GitHub passes except sandboxed Chromium; other providers need a probe |
 | Custom sandbox               | Policy-dependent      | Often denied              | Use the userland fallback or report an actionable error               |
 
-The latest native x86-64, Vitest browser, and Docker evidence is recorded in [GitHub Actions run 30735989574](https://github.com/voidzero-dev/vite-task/actions/runs/30735989574). The Docker recursive bridge passed with `Seccomp: 2`, `NoNewPrivs: 1`, and `docker-default (enforce)`. The Rosetta result is an emulation limitation, not a failure of native x86-64 Docker.
+The default-browser native x86-64 and Docker evidence is recorded in [GitHub Actions run 30735989574](https://github.com/voidzero-dev/vite-task/actions/runs/30735989574). The Docker recursive bridge passed with `Seccomp: 2`, `NoNewPrivs: 1`, and `docker-default (enforce)`. The sandboxed-Chromium boundary is recorded separately in [run 30737025514](https://github.com/voidzero-dev/vite-task/actions/runs/30737025514). The Rosetta result is an emulation limitation, not a failure of native x86-64 Docker.
 
 The open [WSL issue about seccomp notification](https://github.com/microsoft/WSL/issues/9548) concerns the single `NEW_LISTENER` restriction when WSL mirrored networking already owns a listener. It does not prevent stacking a normal `RET_TRAP` filter. The current WSL kernel configuration enables seccomp filtering.
 
