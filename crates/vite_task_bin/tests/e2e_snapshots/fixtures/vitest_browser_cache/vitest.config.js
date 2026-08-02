@@ -6,6 +6,8 @@ class NoTestSummaryReporter extends DefaultReporter {
   reportTestSummary() {}
 }
 
+const chromiumSandbox = process.env.VITEST_CHROMIUM_SANDBOX === 'true';
+
 export default defineConfig({
   test: {
     reporters: [new NoTestSummaryReporter({ summary: false }), 'json'],
@@ -15,7 +17,8 @@ export default defineConfig({
       headless: true,
       provider: playwright({
         launchOptions: {
-          chromiumSandbox: process.env.VITEST_CHROMIUM_SANDBOX === 'true',
+          chromiumSandbox,
+          args: chromiumSandbox ? ['--enable-logging=stderr', '--v=1'] : [],
         },
       }),
       instances: [{ browser: 'chromium' }],

@@ -69,7 +69,7 @@ jobs:
       - name: Verify the CI host can launch sandboxed Chromium
         run: |
           set -euxo pipefail
-          pnpm --filter vite-task-tools exec node --input-type=module --eval '
+          sandbox_control='
             const { chromium } = await import("playwright");
             const browser = await chromium.launch({
               headless: true,
@@ -79,6 +79,11 @@ jobs:
             await page.setContent("<p>sandbox control</p>");
             await browser.close();
           '
+          pnpm --filter vite-task-tools exec node --input-type=module \
+            --eval "$sandbox_control"
+          setpriv --no-new-privs \
+            pnpm --filter vite-task-tools exec node --input-type=module \
+            --eval "$sandbox_control"
 
       - name: Run sandboxed Vitest browser mode through the exec bridge
         run: |
@@ -145,6 +150,9 @@ jobs:
 
           kill "$observer_pid" 2>/dev/null || true
           wait "$observer_pid" 2>/dev/null || true
+          if test "$run_status" -ne 0; then
+            sudo dmesg | tail -200 || true
+          fi
           test "$run_status" -eq 0
 
           test -s dist/result.json
