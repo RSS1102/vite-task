@@ -21,6 +21,7 @@ use raw_exec::RawExec;
 
 pub struct Client {
     encoded_payload: EncodedPayload,
+    process_id: u32,
 }
 
 // SAFETY: Client fields are only mutated during initialization in the ctor; after that, all access is read-only
@@ -42,7 +43,7 @@ impl Client {
         use fspy_shared_unix::payload::decode_payload_from_env;
 
         let encoded_payload = decode_payload_from_env().unwrap();
-        Self { encoded_payload }
+        Self { encoded_payload, process_id: std::process::id() }
     }
 
     fn send(&self, mode: fspy_shared::ipc::AccessMode, path: &Path) {
@@ -55,6 +56,19 @@ impl Client {
         }
         let path_access = PathAccess { mode, path: path.into() };
         let process_id = std::process::id();
+
+        // A spawn implementation can repurpose inherited descriptors before
+        // calling exec. Dropping or reconnecting the inherited pipe client in
+        // that window could close one of the repurposed descriptors. The
+        // exec'd process gets fresh TLS and establishes its own client.
+        if PRE_EXEC_CHILD.get()
+            || POSIX_SPAWN_PARENT_PID
+                .get()
+                .is_some_and(|parent_process_id| parent_process_id != process_id)
+        {
+            return;
+        }
+
         THREAD_CLIENT.with(|thread_client| {
             // Connecting the pipe opens files and can re-enter an interposed
             // function. The nested report is transport noise, so skip it.
@@ -97,6 +111,12 @@ impl Client {
         raw_exec: RawExec,
         f: impl FnOnce(RawExec, Option<PreExec>) -> nix::Result<R>,
     ) -> nix::Result<R> {
+        // fork-based spawn implementations call exec after setting up the
+        // child's descriptors. Suppress reports in that transient child so
+        // the inherited TLS client is neither dropped nor reconnected before
+        // exec replaces it.
+        let _pre_exec_child = (self.process_id != std::process::id()).then(enter_pre_exec_child);
+
         // SAFETY: raw_exec contains valid pointers to C strings and null-terminated arrays, as provided by the caller
         let mut exec = unsafe { raw_exec.to_exec() };
         let pre_exec = handle_exec(&mut exec, config, &self.encoded_payload, |mode, path| {
@@ -137,6 +157,32 @@ enum ThreadClient {
 
 thread_local! {
     static THREAD_CLIENT: RefCell<ThreadClient> = const { RefCell::new(ThreadClient::Uninitialized) };
+    static POSIX_SPAWN_PARENT_PID: Cell<Option<u32>> = const { Cell::new(None) };
+    static PRE_EXEC_CHILD: Cell<bool> = const { Cell::new(false) };
+}
+
+struct PreExecChildGuard(bool);
+
+impl Drop for PreExecChildGuard {
+    fn drop(&mut self) {
+        PRE_EXEC_CHILD.set(self.0);
+    }
+}
+
+fn enter_pre_exec_child() -> PreExecChildGuard {
+    PreExecChildGuard(PRE_EXEC_CHILD.replace(true))
+}
+
+pub struct PosixSpawnGuard(Option<u32>);
+
+impl Drop for PosixSpawnGuard {
+    fn drop(&mut self) {
+        POSIX_SPAWN_PARENT_PID.set(self.0);
+    }
+}
+
+pub fn enter_posix_spawn() -> PosixSpawnGuard {
+    PosixSpawnGuard(POSIX_SPAWN_PARENT_PID.replace(Some(std::process::id())))
 }
 
 #[expect(
