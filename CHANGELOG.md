@@ -1,5 +1,6 @@
 # Changelog
 
+- **Fixed** Vite+ diagnostics now display individual paths and working directories without Rust debug formatting such as quoted paths or escaped Windows backslashes ([#534](https://github.com/voidzero-dev/vite-task/pull/534)).
 - **Fixed** Broad workspace globs no longer discover and run package scripts inside `node_modules` ([#539](https://github.com/voidzero-dev/vite-task/pull/539)).
 - **Added** Tasks now run with `VP_RUN=1` set, so tools can tell they are running under `vp run` instead of being invoked directly ([#570](https://github.com/voidzero-dev/vite-task/pull/570)).
 - **Fixed** The task cache now supports much larger automatically tracked input sets without hitting wincode's default 4 MiB sequence preallocation limit ([#554](https://github.com/voidzero-dev/vite-task/pull/554)).

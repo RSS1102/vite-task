@@ -410,8 +410,8 @@ pub fn fingerprint_path(
             }
             if err.kind() != io::ErrorKind::NotFound {
                 tracing::trace!(
-                    "Uncommon error when opening {:?} for fingerprinting: {}",
-                    std_path,
+                    "Uncommon error when opening {} for fingerprinting: {}",
+                    std_path.display(),
                     err
                 );
             }

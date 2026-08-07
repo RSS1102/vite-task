@@ -3,7 +3,10 @@ use std::{ffi::OsString, path::PathBuf};
 #[derive(thiserror::Error, Debug)]
 pub enum SpawnError {
     #[error(
-        "could not resolve the full path of program '{program:?}' with PATH={path:?} under cwd({cwd:?})"
+        "could not resolve the full path of program '{}' with PATH={} under cwd({})",
+        .program.display(),
+        .path.as_deref().unwrap_or_else(|| std::ffi::OsStr::new("<not set>")).display(),
+        .cwd.display()
     )]
     Which {
         program: OsString,

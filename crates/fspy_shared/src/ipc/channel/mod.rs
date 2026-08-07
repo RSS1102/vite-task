@@ -97,7 +97,8 @@ pub struct Sender {
 impl Drop for Sender {
     fn drop(&mut self) {
         if let Err(err) = self.lock_file.unlock() {
-            debug!("Failed to unlock the shared IPC lock {:?}: {}", self.lock_file_path, err);
+            let lock_file_path = self.lock_file_path.to_cow_os_str();
+            debug!("Failed to unlock the shared IPC lock {}: {}", lock_file_path.display(), err);
         }
     }
 }
@@ -147,7 +148,7 @@ unsafe impl Sync for Receiver {}
 impl Drop for Receiver {
     fn drop(&mut self) {
         if let Err(err) = std::fs::remove_file(&self.lock_file_path) {
-            debug!("Failed to remove IPC lock file {:?}: {}", self.lock_file_path, err);
+            debug!("Failed to remove IPC lock file {}: {}", self.lock_file_path.display(), err);
         }
     }
 }

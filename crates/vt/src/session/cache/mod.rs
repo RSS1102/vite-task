@@ -286,7 +286,7 @@ pub fn cache_schema_dir_name() -> Str {
 impl ExecutionCache {
     #[tracing::instrument(level = "debug", skip_all)]
     pub fn load_from_path(path: &AbsolutePath) -> anyhow::Result<Self> {
-        tracing::info!("Creating task cache directory at {:?}", path);
+        tracing::info!("Creating task cache directory at {}", path.as_path().display());
         std::fs::create_dir_all(path)?;
 
         // Use file lock to prevent race conditions when multiple processes initialize the database

@@ -93,7 +93,7 @@ pub enum TaskGraphLoadError {
     #[error("Failed to load package graph")]
     PackageGraphLoadError(#[from] vt_workspace::Error),
 
-    #[error("Failed to load task config file for package at {package_path:?}")]
+    #[error("Failed to load task config file for package at {}", .package_path.as_path().display())]
     ConfigLoadError {
         package_path: Arc<AbsolutePath>,
         #[source]

@@ -47,7 +47,11 @@ impl std::fmt::Display for WhichError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum PathFingerprintErrorKind {
-    #[error("Path {path:?} is outside of the workspace {workspace_path:?}")]
+    #[error(
+        "Path {} is outside of the workspace {}",
+        .path.as_path().display(),
+        .workspace_path.as_path().display()
+    )]
     PathOutsideWorkspace { path: Arc<AbsolutePath>, workspace_path: Arc<AbsolutePath> },
     #[error("Path {path:?} contains characters that make it non-portable")]
     NonPortableRelativePath {
@@ -119,7 +123,10 @@ pub enum Error {
     #[error(transparent)]
     TaskRecursionDetected(#[from] TaskRecursionError),
 
-    #[error("Invalid vite task command: {program} with args {args:?} under cwd {cwd:?}")]
+    #[error(
+        "Invalid vite task command: {program} with args {args:?} under cwd {}",
+        .cwd.as_path().display()
+    )]
     ParsePlanRequest {
         program: Str,
         args: Arc<[Str]>,

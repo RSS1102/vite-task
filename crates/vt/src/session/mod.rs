@@ -616,7 +616,7 @@ impl<'a> Session<'a> {
         let path = self.summary_file_path();
         Box::new(move |summary: &LastRunSummary| {
             if let Err(err) = summary.write_atomic(&path) {
-                tracing::warn!("Failed to write summary to {path:?}: {err}");
+                tracing::warn!("Failed to write summary to {}: {err}", path.as_path().display());
             }
         })
     }
