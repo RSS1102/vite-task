@@ -350,6 +350,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bump-scope"
+version = "2.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4747cadbe8ffeff2a58cb86bcb35f9ec490f2329e12a88a696bccfd3dc97bf4d"
+dependencies = [
+ "allocator-api2",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.19.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1295,6 +1304,7 @@ dependencies = [
 name = "fspy_preload_unix"
 version = "0.0.0"
 dependencies = [
+ "allocator-api2",
  "anyhow",
  "artifact_profile",
  "bstr",
@@ -1303,6 +1313,7 @@ dependencies = [
  "fspy_shared_unix",
  "libc",
  "nix 0.31.2",
+ "sigsafe",
  "wincode",
 ]
 
@@ -3426,6 +3437,15 @@ checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
 dependencies = [
  "errno",
  "libc",
+]
+
+[[package]]
+name = "sigsafe"
+version = "0.0.0"
+dependencies = [
+ "allocator-api2",
+ "bump-scope",
+ "rustix",
 ]
 
 [[package]]
