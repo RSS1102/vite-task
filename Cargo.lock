@@ -4149,6 +4149,7 @@ dependencies = [
  "ctrlc",
  "derive_more",
  "fspy",
+ "fspy_shared",
  "futures-util",
  "materialized_artifact",
  "materialized_artifact_build",
