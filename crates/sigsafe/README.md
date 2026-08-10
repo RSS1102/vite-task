@@ -28,9 +28,9 @@ rustix can be built with a libc backend instead of raw syscalls, and anything in
 
 Functions whose rustix implementation already meets the rules are re-exposed as-is; being listed in a module here is what marks a call as allowed, and the backend check above is what keeps that true.
 
-- `mm` — anonymous memory mappings: `mmap_anonymous`, `munmap`.
+- `mm` — anonymous and file-backed memory mappings, protection changes, and unmapping.
 - `env` — allocation-free iteration over process arguments and environment entries.
-- `fs` — caller-buffer filesystem operations: `getcwd`, plus macOS `fcntl_getpath`.
+- `fs` — caller-buffer and descriptor operations such as `openat`, `fstat`, `getcwd`, and `readlinkat`.
 - `param` — `page_size`.
 
 Allocation without malloc lives in [`sigsafe_alloc`](../sigsafe_alloc).

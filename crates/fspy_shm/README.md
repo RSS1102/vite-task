@@ -28,14 +28,14 @@ One implementation serves every platform: a sparse file named `vite-task-fspy-<u
 
 Only written pages ever occupy memory or disk. The multi-gigabyte capacity fspy asks for therefore costs about as much as the data a run actually records.
 
-Mapping goes through `memmap2` on every platform. The remaining platform-specific parts are three short passages:
+Unix opens and maps through `sigsafe`; on Linux, its raw-syscall backend works before libc initialization. Windows maps through `memmap2`. The remaining platform-specific parts are short passages:
 
 | Concern           | Unix                                     | Windows                                                                     |
 | ----------------- | ---------------------------------------- | --------------------------------------------------------------------------- |
 | Same-user access  | `mode(0o600)` on the backing file        | the per-user `%TEMP%` ACL                                                   |
 | Sparseness        | file holes, produced by setting a length | `FSCTL_SET_SPARSE` before setting a length, or NTFS allocates every cluster |
 | Keeper cleanup    | unlink the path                          | unlink the path; see the fallback below                                     |
-| Descriptor safety | `O_CLOEXEC`, the Rust standard default   | non-inheritable handles, the Rust standard default                          |
+| Descriptor safety | raw `openat` with `O_CLOEXEC`            | non-inheritable handles, the Rust standard default                          |
 
 `FILE_ATTRIBUTE_TEMPORARY` asks Windows to keep the data in memory when it can. Creation fails on a volume without sparse-file support.
 
