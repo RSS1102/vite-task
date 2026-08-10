@@ -2,7 +2,7 @@
 
 use core::mem::MaybeUninit;
 
-pub use rustix::fs::{Mode, OFlags};
+pub use rustix::fs::{Mode, OFlags, Stat, fstat};
 
 use crate::{BorrowedFd, CStr, Fat, OwnedFd, Result};
 
