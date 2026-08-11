@@ -10,14 +10,15 @@ The public API is defined in [`src/lib.rs`](src/lib.rs).
 
 | API                   | Contract                                                                                |
 | --------------------- | --------------------------------------------------------------------------------------- |
-| `create(path, size)`  | Creates a zero-initialized backing file and returns its `ShmKeeper` and an `ShmHandle`. |
+| `create(path, size)`  | Creates a zero-initialized backing file and returns an `ShmHandle`.                     |
 | `open(path)`          | Opens an `ShmHandle` on the shared memory at the same path.                             |
+| `remove(path)`        | Removes the name while preserving existing handles and mappings.                        |
 | `ShmHandle::map()`    | Maps the shared bytes. Callable more than once.                                         |
 | `Mapping::len()`      | Returns the mapped size.                                                                |
 | `Mapping::as_ptr()`   | Returns a mutable raw pointer to the first byte.                                        |
 | `Mapping::as_slice()` | Returns the bytes as a shared slice. The caller must prevent mutation for its lifetime. |
 
-`ShmKeeper` owns the name's lifetime: while it lives, `open` succeeds, and dropping it removes the backing file. `ShmHandle` is the opened file: `create` returns one so the creator never looks its own file up by name, and `open` returns one to everybody else. `Mapping` is the bytes: it keeps them alive until dropped and can do nothing else. None of the three synchronizes memory access. The fspy channel adds that on top with atomic frame headers and a lock file: senders hold a shared file lock while writing, and the receiver takes the exclusive lock before reading, which waits for existing senders and rejects new ones.
+The caller owns the backing-file name and decides when to remove it. `ShmHandle` is the opened file: `create` returns one so the creator never looks its own file up by name, and `open` returns one to everybody else. `Mapping` is the bytes: it keeps them alive until dropped and can do nothing else. Neither type synchronizes memory access. The fspy channel adds that on top with atomic frame headers and a lock file: senders hold a shared file lock while writing, and the receiver takes the exclusive lock before reading, which waits for existing senders and rejects new ones.
 
 Every byte in a mapping returned by `create` is initially zero. `open` exposes the mapping's current contents and does not reinitialize them.
 
@@ -27,18 +28,18 @@ One implementation serves every platform: a sparse file at the full path supplie
 
 Only written pages ever occupy memory or disk. The multi-gigabyte capacity fspy asks for therefore costs about as much as the data a run actually records.
 
-Unix opens and maps through `sigsafe`; on Linux, its raw-syscall backend works before libc initialization. Windows maps through `memmap2`. The remaining platform-specific parts are short passages:
+Unix creates, sizes, opens, maps, and unlinks through `sigsafe`; on Linux, its raw-syscall backend works before libc initialization. Windows maps through `memmap2`. The remaining platform-specific parts are short passages:
 
 | Concern           | Unix                                     | Windows                                                                     |
 | ----------------- | ---------------------------------------- | --------------------------------------------------------------------------- |
 | Same-user access  | `mode(0o600)` on the backing file        | the per-user `%TEMP%` ACL                                                   |
 | Sparseness        | file holes, produced by setting a length | `FSCTL_SET_SPARSE` before setting a length, or NTFS allocates every cluster |
-| Keeper cleanup    | unlink the path                          | unlink the path; see the fallback below                                     |
+| Explicit removal  | unlink the path                          | unlink the path; see the fallback below                                     |
 | Descriptor safety | raw `openat` with `O_CLOEXEC`            | non-inheritable handles, the Rust standard default                          |
 
 `FILE_ATTRIBUTE_TEMPORARY` asks Windows to keep the data in memory when it can. Creation fails on a volume without sparse-file support.
 
-The keeper removes the name with `remove_file` on every platform. Modern Windows deletes with POSIX semantics: the name goes away at once, while [existing handles keep working](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddk/ns-ntddk-_file_disposition_information_ex) and [mapped views keep the data alive](https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-createfilemappingw) until the last one goes away. The first page also reserves the right to fail the delete while a mapped view exists, and Windows versions without POSIX delete do fail it. The keeper then falls back to reopening the file with `FILE_FLAG_DELETE_ON_CLOSE` and closing it, which deletes the file once every handle to it is closed.
+Unix `remove` unlinks through `sigsafe`. Windows first uses `remove_file`. Modern Windows deletes with POSIX semantics: the name goes away at once, while [existing handles keep working](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddk/ns-ntddk-_file_disposition_information_ex) and [mapped views keep the data alive](https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-createfilemappingw) until the last one goes away. The first page also reserves the right to fail the delete while a mapped view exists, and Windows versions without POSIX delete do fail it. `remove` then falls back to reopening the file with `FILE_FLAG_DELETE_ON_CLOSE` and closing it, which deletes the file once every handle to it is closed.
 
 ## Options considered
 
@@ -60,12 +61,12 @@ Earlier revisions rejected temporary files because dirty pages can reach disk. O
 
 ## Lifetime semantics
 
-`create(path, size)` returns the only keeper. `open(path)` returns `ShmHandle`s.
+`create(path, size)` and `open(path)` return `ShmHandle`s. The caller retains the path and passes it to `remove` at the end of the attachment window.
 
-- While the keeper is alive, a process that knows the path can open the shared memory.
-- Dropping the keeper removes the backing file's name, so later opens fail. This is cleanup, not a stop signal: processes that already opened the shared memory keep reading and writing. The fspy channel stops writers with the close gate it stores in the shared bytes.
-- An `ShmHandle` and its `Mapping`s stay usable after the keeper is gone. They keep the bytes alive and cannot extend the path's validity.
+- Until `remove` succeeds, a process that knows the path can open the shared memory.
+- Removal makes later opens fail. This is cleanup, not a stop signal: processes that already opened the shared memory keep reading and writing. The fspy channel stops writers with the close gate it stores in the shared bytes.
+- An `ShmHandle` and its `Mapping`s stay usable after removal. They keep the bytes alive and cannot restore the path.
 
-The channel guards the same window from its own side: [`ChannelConf::sender`](../fspy_shared/src/ipc/channel/mod.rs) opens and locks the receiver's exact lock-file path before it calls `fspy_shm::open`, and the receiver removes that path before dropping the keeper, so a sender that starts later fails before opening shared memory.
+The channel guards the same window from its own side: [`ChannelConf::sender`](../fspy_shared/src/ipc/channel/mod.rs) opens and locks the receiver's exact lock-file path before it calls `fspy_shm::open`, and the receiver removes the lock path before removing the shared-memory path, so a sender that starts later fails before opening shared memory.
 
-If the keeper's process is killed, its `Drop` never runs and the file stays behind. The fspy channel places it in the system temporary directory, where Unix temporary-file reapers or Windows cleanup tools can remove it. The file costs about as much disk as the run wrote into it.
+If the receiver's process is killed, cleanup never runs and the file stays behind. The fspy channel places it in the system temporary directory, where Unix temporary-file reapers or Windows cleanup tools can remove it. The file costs about as much disk as the run wrote into it.

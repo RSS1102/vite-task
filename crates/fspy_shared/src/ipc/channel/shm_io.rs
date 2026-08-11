@@ -675,7 +675,7 @@ mod tests {
         let shm_path = std::path::absolute(std::env::temp_dir())
             .unwrap()
             .join(format!("fspy_ipc_test_{}.shm", uuid::Uuid::new_v4()));
-        let (_keeper, handle) = fspy_shm::create(shm_path.as_os_str(), SHM_SIZE).unwrap();
+        let handle = fspy_shm::create(shm_path.as_os_str(), SHM_SIZE).unwrap();
         let shm_name = shm_path.to_str().expect("test temp dir is UTF-8").to_owned();
         // Map before the children run. Windows keeps views coherent while they
         // exist at the same time; a view created after every writer exited can
@@ -720,5 +720,6 @@ mod tests {
                 assert!(frames.contains(&BStr::new(frame_data.as_bytes())));
             }
         }
+        fspy_shm::remove(shm_path.as_os_str()).unwrap();
     }
 }

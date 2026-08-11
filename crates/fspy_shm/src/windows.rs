@@ -5,7 +5,6 @@ use std::{
     fs::{self, File, OpenOptions},
     io,
     os::windows::{fs::OpenOptionsExt as _, io::AsRawHandle as _},
-    path::PathBuf,
 };
 
 use memmap2::{MmapOptions, MmapRaw};
@@ -26,15 +25,6 @@ const TEMPORARY: u32 = FILE_ATTRIBUTE_TEMPORARY;
 const DELETE_ON_CLOSE: u32 = FILE_FLAG_DELETE_ON_CLOSE;
 const DELETE_ACCESS: u32 = windows_sys::Win32::Storage::FileSystem::DELETE;
 
-/// Keeps the shared memory's backing-file name alive and removes it on drop.
-///
-/// Removal is cleanup, not a stop signal: later opens fail, but existing
-/// [`ShmHandle`]s and [`Mapping`]s keep reading and writing. To stop them,
-/// store a flag in the shared bytes, as the fspy channel's close gate does.
-pub struct ShmKeeper {
-    path: PathBuf,
-}
-
 /// Opened shared memory that is not mapped yet.
 ///
 /// [`map`](Self::map) can be called more than once; every call returns another
@@ -54,8 +44,9 @@ pub struct Mapping {
 
 /// Creates `size` bytes of zero-initialized shared memory at `path`.
 ///
-/// Returns its [`ShmKeeper`] and an already opened [`ShmHandle`], so the
-/// creating process never has to go through [`open`].
+/// Returns an already opened [`ShmHandle`], so the creating process never has
+/// to go through [`open`]. The caller owns the backing path and must eventually
+/// pass it to [`remove`].
 ///
 /// Only pages that are actually written occupy memory or disk, so a large
 /// capacity is cheap.
@@ -64,7 +55,7 @@ pub struct Mapping {
 ///
 /// Returns an error if the shared memory cannot be created or sized, or the
 /// containing volume does not support sparse files.
-pub fn create(path: &OsStr, size: usize) -> io::Result<(ShmKeeper, ShmHandle)> {
+pub fn create(path: &OsStr, size: usize) -> io::Result<ShmHandle> {
     if size == 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -74,8 +65,6 @@ pub fn create(path: &OsStr, size: usize) -> io::Result<(ShmKeeper, ShmHandle)> {
     let size_u64 = u64::try_from(size).map_err(|_| {
         io::Error::new(io::ErrorKind::InvalidInput, "shared-memory size exceeds u64")
     })?;
-    let path = PathBuf::from(path);
-
     let file = OpenOptions::new()
         .read(true)
         .write(true)
@@ -83,26 +72,30 @@ pub fn create(path: &OsStr, size: usize) -> io::Result<(ShmKeeper, ShmHandle)> {
         .share_mode(SHARE_ALL)
         // Ask Windows to keep the data in memory when it can.
         .attributes(TEMPORARY)
-        .open(&path)?;
-    // The keeper exists from here on, so every error path below cleans up.
-    let keeper = ShmKeeper { path };
+        .open(path)?;
 
     // NTFS allocates clusters for the whole logical size unless the file is
     // marked sparse first, which would turn the capacity into real disk usage.
     // Volumes without sparse-file support fail here.
-    set_sparse(&file)?;
-    // Every byte reads as zero because the file is all holes.
-    file.set_len(size_u64)?;
+    let initialized = set_sparse(&file).and_then(|()| {
+        // Every byte reads as zero because the file is all holes.
+        file.set_len(size_u64)
+    });
+    if let Err(error) = initialized {
+        drop(file);
+        let _ = remove(path);
+        return Err(error);
+    }
 
-    Ok((keeper, ShmHandle { file, size }))
+    Ok(ShmHandle { file, size })
 }
 
 /// Opens the shared memory at `path`.
 ///
 /// # Errors
 ///
-/// Returns an error if the shared memory is unavailable, which is the common
-/// case once its keeper has been dropped.
+/// Returns an error if the shared memory is unavailable, including after its
+/// backing-file name has been removed.
 pub fn open(path: &OsStr) -> io::Result<ShmHandle> {
     // Rust handles are non-inheritable, and its default share mode permits
     // concurrent read, write and delete access.
@@ -118,20 +111,28 @@ pub fn open(path: &OsStr) -> io::Result<ShmHandle> {
     Ok(ShmHandle { file, size })
 }
 
-impl Drop for ShmKeeper {
-    fn drop(&mut self) {
-        // Windows versions without POSIX delete refuse to remove the name of a
-        // mapped file. Arm the deferred delete instead: a handle opened with
-        // `FILE_FLAG_DELETE_ON_CLOSE` deletes the file once every handle to it
-        // is closed.
-        if fs::remove_file(&self.path).is_err() {
-            let _ = OpenOptions::new()
-                .access_mode(DELETE_ACCESS)
-                .share_mode(SHARE_ALL)
-                .custom_flags(DELETE_ON_CLOSE)
-                .open(&self.path);
-        }
+/// Removes the shared memory's backing-file name.
+///
+/// Existing handles and mappings remain usable, but later calls to [`open`]
+/// fail once removal succeeds.
+///
+/// # Errors
+///
+/// Returns an error if removal cannot be performed or scheduled.
+pub fn remove(path: &OsStr) -> io::Result<()> {
+    if fs::remove_file(path).is_ok() {
+        return Ok(());
     }
+
+    // Windows versions without POSIX delete refuse to remove the name of a
+    // mapped file. Arm the deferred delete instead: closing this handle deletes
+    // the file once every other handle to it is closed.
+    OpenOptions::new()
+        .access_mode(DELETE_ACCESS)
+        .share_mode(SHARE_ALL)
+        .custom_flags(DELETE_ON_CLOSE)
+        .open(path)
+        .map(drop)
 }
 
 impl ShmHandle {

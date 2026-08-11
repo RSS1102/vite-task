@@ -1,8 +1,8 @@
 //! Filesystem calls with caller-owned storage.
 
-use core::mem::MaybeUninit;
+use core::{ffi::CStr as CoreCStr, mem::MaybeUninit};
 
-pub use rustix::fs::{Mode, OFlags, Stat, fstat, ftruncate};
+pub use rustix::fs::{AtFlags, Mode, OFlags, Stat, fstat, ftruncate};
 
 use crate::{BorrowedFd, CStr, Fat, OwnedFd, Result};
 
@@ -35,6 +35,17 @@ pub fn openat<R>(
     mode: Mode,
 ) -> Result<OwnedFd> {
     imp::openat(dirfd, path, flags, mode)
+}
+
+/// Removes `path` relative to `dirfd`.
+///
+/// # Errors
+///
+/// Returns the error reported by `unlinkat`.
+pub fn unlinkat(dirfd: BorrowedFd<'_>, path: CStr<'_, Fat>, flags: AtFlags) -> Result<()> {
+    // SAFETY: `path` already guarantees exactly one trailing NUL.
+    let path = unsafe { CoreCStr::from_bytes_with_nul_unchecked(path.as_bytes_with_nul()) };
+    rustix::fs::unlinkat(dirfd, path, flags)
 }
 
 /// Writes the absolute pathname of the current working directory into `buf`.

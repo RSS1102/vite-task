@@ -2,21 +2,11 @@
 
 use std::{
     ffi::OsStr,
-    fs, io,
+    io,
     num::NonZeroUsize,
     os::unix::ffi::OsStrExt as _,
-    path::PathBuf,
     ptr::{self, NonNull},
 };
-
-/// Keeps the shared memory's backing-file name alive and removes it on drop.
-///
-/// Removal is cleanup, not a stop signal: later opens fail, but existing
-/// [`ShmHandle`]s and [`Mapping`]s keep reading and writing. To stop them,
-/// store a flag in the shared bytes, as the fspy channel's close gate does.
-pub struct ShmKeeper {
-    path: PathBuf,
-}
 
 /// Opened shared memory that is not mapped yet.
 ///
@@ -44,8 +34,9 @@ unsafe impl Send for Mapping {}
 unsafe impl Sync for Mapping {}
 /// Creates `size` bytes of zero-initialized shared memory at `path`.
 ///
-/// Returns its [`ShmKeeper`] and an already opened [`ShmHandle`], so the
-/// creating process never has to go through [`open`].
+/// Returns an already opened [`ShmHandle`], so the creating process never has
+/// to go through [`open`]. The caller owns the backing path and must eventually
+/// pass it to [`remove`].
 ///
 /// Only pages that are actually written occupy memory or disk, so a large
 /// capacity is cheap.
@@ -53,38 +44,37 @@ unsafe impl Sync for Mapping {}
 /// # Errors
 ///
 /// Returns an error if the shared memory cannot be created or sized.
-pub fn create(path: &OsStr, size: usize) -> io::Result<(ShmKeeper, ShmHandle)> {
+pub fn create(path: &OsStr, size: usize) -> io::Result<ShmHandle> {
     let size = NonZeroUsize::new(size).ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "shared-memory size must be nonzero")
     })?;
     let size_u64 = u64::try_from(size.get()).map_err(|_| {
         io::Error::new(io::ErrorKind::InvalidInput, "shared-memory size exceeds u64")
     })?;
-    let path = PathBuf::from(path);
-
     let file = open_file(
-        path.as_os_str(),
+        path,
         sigsafe::fs::OFlags::RDWR
             | sigsafe::fs::OFlags::CREATE
             | sigsafe::fs::OFlags::EXCL
             | sigsafe::fs::OFlags::CLOEXEC,
         sigsafe::fs::Mode::RUSR | sigsafe::fs::Mode::WUSR,
     )?;
-    // The keeper exists from here on, so every error path below cleans up.
-    let keeper = ShmKeeper { path };
-
     // Every byte reads as zero because the file is all holes.
-    sigsafe::fs::ftruncate(&file, size_u64).map_err(errno_to_io)?;
+    if let Err(error) = sigsafe::fs::ftruncate(&file, size_u64) {
+        drop(file);
+        let _ = remove(path);
+        return Err(errno_to_io(error));
+    }
 
-    Ok((keeper, ShmHandle { file, size }))
+    Ok(ShmHandle { file, size })
 }
 
 /// Opens the shared memory at `path`.
 ///
 /// # Errors
 ///
-/// Returns an error if the shared memory is unavailable, which is the common
-/// case once its keeper has been dropped.
+/// Returns an error if the shared memory is unavailable, including after its
+/// backing-file name has been removed.
 pub fn open(path: &OsStr) -> io::Result<ShmHandle> {
     let file = open_file(
         path,
@@ -100,30 +90,45 @@ pub fn open(path: &OsStr) -> io::Result<ShmHandle> {
     Ok(ShmHandle { file, size })
 }
 
+/// Removes the shared memory's backing-file name.
+///
+/// Existing handles and mappings remain usable, but later calls to [`open`]
+/// fail once removal succeeds.
+///
+/// # Errors
+///
+/// Returns an error if the backing-file name cannot be removed.
+pub fn remove(path: &OsStr) -> io::Result<()> {
+    let mut path_buf = [0_u8; sigsafe::fs::PATH_MAX];
+    let path = copy_path(path, &mut path_buf)?;
+    sigsafe::fs::unlinkat(sigsafe::CWD, path, sigsafe::fs::AtFlags::empty()).map_err(errno_to_io)
+}
+
 fn open_file(
     path: &OsStr,
     flags: sigsafe::fs::OFlags,
     mode: sigsafe::fs::Mode,
 ) -> io::Result<sigsafe::OwnedFd> {
+    let mut path_buf = [0_u8; sigsafe::fs::PATH_MAX];
+    let path = copy_path(path, &mut path_buf)?;
+    sigsafe::fs::openat(sigsafe::CWD, path, flags, mode).map_err(errno_to_io)
+}
+
+fn copy_path<'buf>(
+    path: &OsStr,
+    buf: &'buf mut [u8; sigsafe::fs::PATH_MAX],
+) -> io::Result<sigsafe::CStr<'buf, sigsafe::Fat>> {
     let path_bytes = path.as_bytes();
     let len_with_nul = path_bytes.len().checked_add(1).ok_or(io::ErrorKind::InvalidInput)?;
-    let mut path_buf = [0_u8; sigsafe::fs::PATH_MAX];
-    let path = path_buf
+    let path = buf
         .get_mut(..len_with_nul)
         .ok_or_else(|| io::Error::from_raw_os_error(sigsafe::Errno::NAMETOOLONG.raw_os_error()))?;
     path[..path_bytes.len()].copy_from_slice(path_bytes);
-    let path = sigsafe::CStr::from_bytes_with_nul(path).map_err(|_| io::ErrorKind::InvalidInput)?;
-    sigsafe::fs::openat(sigsafe::CWD, path, flags, mode).map_err(errno_to_io)
+    sigsafe::CStr::from_bytes_with_nul(path).map_err(|_| io::ErrorKind::InvalidInput.into())
 }
 
 fn errno_to_io(errno: sigsafe::Errno) -> io::Error {
     io::Error::from_raw_os_error(errno.raw_os_error())
-}
-
-impl Drop for ShmKeeper {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-    }
 }
 
 impl ShmHandle {

@@ -4,7 +4,7 @@ mod shm_io;
 
 use std::{env::temp_dir, fs::File, io, ops::Deref, path::PathBuf};
 
-use fspy_shm::{Mapping, ShmKeeper};
+use fspy_shm::Mapping;
 pub use shm_io::FrameMut;
 use shm_io::{ShmReader, ShmWriter};
 use tracing::debug;
@@ -28,15 +28,21 @@ pub fn channel(capacity: usize) -> io::Result<(ChannelConf, Receiver)> {
     let lock_file_path = temp_dir.join(format!("fspy_ipc_{id}.lock"));
     let shm_path = temp_dir.join(format!("fspy_ipc_{id}.shm"));
 
-    let (keeper, handle) = fspy_shm::create(shm_path.as_os_str(), capacity)?;
-    let mapping = handle.map()?;
+    let handle = fspy_shm::create(shm_path.as_os_str(), capacity)?;
+    let mapping = match handle.map() {
+        Ok(mapping) => mapping,
+        Err(error) => {
+            let _ = fspy_shm::remove(shm_path.as_os_str());
+            return Err(error);
+        }
+    };
 
     let conf = ChannelConf {
         lock_file_path: lock_file_path.as_os_str().into(),
         shm_path: shm_path.as_os_str().into(),
     };
 
-    let receiver = Receiver::new(lock_file_path, keeper, mapping)?;
+    let receiver = Receiver::new(lock_file_path, shm_path, mapping)?;
     Ok((conf, receiver))
 }
 
@@ -94,9 +100,8 @@ unsafe impl Sync for Sender {}
 /// Owns the lock file and removes it on drop.
 pub struct Receiver {
     lock_file_path: PathBuf,
+    shm_path: PathBuf,
     lock_file: File,
-    /// Keeps the backing file's name alive for as long as senders may attach.
-    _keeper: ShmKeeper,
     mapping: Mapping,
 }
 
@@ -111,13 +116,22 @@ impl Drop for Receiver {
         if let Err(err) = std::fs::remove_file(&self.lock_file_path) {
             debug!("Failed to remove IPC lock file {}: {}", self.lock_file_path.display(), err);
         }
+        if let Err(err) = fspy_shm::remove(self.shm_path.as_os_str()) {
+            debug!("Failed to remove IPC shared memory {}: {}", self.shm_path.display(), err);
+        }
     }
 }
 
 impl Receiver {
-    fn new(lock_file_path: PathBuf, keeper: ShmKeeper, mapping: Mapping) -> io::Result<Self> {
-        let lock_file = File::create(&lock_file_path)?;
-        Ok(Self { lock_file_path, lock_file, _keeper: keeper, mapping })
+    fn new(lock_file_path: PathBuf, shm_path: PathBuf, mapping: Mapping) -> io::Result<Self> {
+        let lock_file = match File::create(&lock_file_path) {
+            Ok(lock_file) => lock_file,
+            Err(error) => {
+                let _ = fspy_shm::remove(shm_path.as_os_str());
+                return Err(error);
+            }
+        };
+        Ok(Self { lock_file_path, shm_path, lock_file, mapping })
     }
 
     /// Lock the shared memory for unique read access.

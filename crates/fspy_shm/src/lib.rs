@@ -5,7 +5,7 @@ mod unix;
 #[cfg(windows)]
 mod windows;
 
-pub use platform::{Mapping, ShmHandle, ShmKeeper, create, open};
+pub use platform::{Mapping, ShmHandle, create, open, remove};
 #[cfg(unix)]
 use unix as platform;
 #[cfg(windows)]
@@ -27,7 +27,7 @@ mod tests {
     use subprocess_test::command_for_fn;
     use uuid::Uuid;
 
-    use super::{Mapping, ShmHandle, ShmKeeper, create as create_at, open};
+    use super::{Mapping, ShmHandle, create as create_at, open, remove};
 
     const TEST_BACKING_PREFIX: &str = "vite-task-fspy-test-";
     // Page-aligned on all supported targets.
@@ -37,7 +37,7 @@ mod tests {
 
     #[test]
     fn new_mapping_is_zero_initialized_in_all_views() {
-        let (id, _keeper, handle) = create(ZERO_INITIALIZED_SIZE);
+        let (id, _cleanup, handle) = create(ZERO_INITIALIZED_SIZE);
         let first = handle.map().unwrap();
         let second = open(&id).unwrap().map().unwrap();
 
@@ -46,8 +46,8 @@ mod tests {
     }
 
     #[test]
-    fn mappings_of_one_keeper_are_shared() {
-        let (id, _keeper, handle) = create(SIZE);
+    fn mappings_of_one_backing_file_are_shared() {
+        let (id, _cleanup, handle) = create(SIZE);
         let first = handle.map().unwrap();
         assert_eq!(first.len(), SIZE);
         assert_eq!(first.as_ptr() as usize % align_of::<usize>(), 0);
@@ -63,7 +63,7 @@ mod tests {
 
     #[test]
     fn one_handle_maps_repeatedly() {
-        let (_id, _keeper, handle) = create(SIZE);
+        let (_id, _cleanup, handle) = create(SIZE);
         let first = handle.map().unwrap();
         let second = handle.map().unwrap();
 
@@ -73,7 +73,7 @@ mod tests {
 
     #[test]
     fn mapping_is_visible_across_processes() {
-        let (id, _keeper, handle) = create(SIZE);
+        let (id, _cleanup, handle) = create(SIZE);
         let mapping = handle.map().unwrap();
         write_byte(&mapping, 0, 17);
 
@@ -89,7 +89,7 @@ mod tests {
 
     #[test]
     fn subprocess_open_ignores_changed_temp_and_working_directory() {
-        let (id, _keeper, handle) = create(SIZE);
+        let (id, _cleanup, handle) = create(SIZE);
         let mapping = handle.map().unwrap();
         let changed_cwd =
             temp_dir().join(format!("{TEST_BACKING_PREFIX}changed-cwd-{}", Uuid::new_v4()));
@@ -116,21 +116,21 @@ mod tests {
     }
 
     #[test]
-    fn keeper_drop_prevents_new_opens() {
-        let (id, keeper, handle) = create(SIZE);
+    fn remove_prevents_new_opens() {
+        let (id, _cleanup, handle) = create(SIZE);
         drop(handle);
-        drop(keeper);
+        remove(&id).unwrap();
 
         assert!(open(&id).is_err());
     }
 
     #[test]
-    fn opened_mapping_survives_keeper_drop() {
-        let (id, keeper, handle) = create(SIZE);
+    fn opened_mapping_survives_remove() {
+        let (id, _cleanup, handle) = create(SIZE);
         let opened = open(&id).unwrap().map().unwrap();
         write_byte(&opened, 0, 17);
         drop(handle);
-        drop(keeper);
+        remove(&id).unwrap();
 
         assert!(open(&id).is_err());
         assert_eq!(read_byte(&opened, 0), 17);
@@ -139,16 +139,16 @@ mod tests {
     }
 
     /// Removal semantics, part one: a mapping alone (no handle) keeps the
-    /// bytes alive across the keeper's removal of the name.
+    /// bytes alive after removal of the name.
     #[test]
-    fn keeper_drop_removes_backing_file_and_preserves_existing_mappings() {
-        let (id, keeper, handle) = create(SIZE);
+    fn remove_backing_file_preserves_existing_mappings() {
+        let (id, _cleanup, handle) = create(SIZE);
         let path = Path::new(&id).to_owned();
         let opened = open(&id).unwrap().map().unwrap();
         drop(handle);
         assert!(path.exists());
 
-        drop(keeper);
+        remove(&id).unwrap();
 
         assert!(!path.exists());
         assert!(open(&id).is_err());
@@ -159,12 +159,12 @@ mod tests {
     /// Removal semantics, part two: the name goes away even while a handle is
     /// still open, and that handle keeps mapping the same bytes afterwards.
     #[test]
-    fn keeper_drop_with_open_handle_removes_name_and_handle_still_maps() {
-        let (id, keeper, handle) = create(SIZE);
+    fn remove_with_open_handle_preserves_handle() {
+        let (id, _cleanup, handle) = create(SIZE);
         let before = handle.map().unwrap();
         write_byte(&before, 0, 17);
 
-        drop(keeper);
+        remove(&id).unwrap();
 
         assert!(!Path::new(&id).exists());
         assert!(open(&id).is_err());
@@ -182,7 +182,7 @@ mod tests {
         #[cfg(windows)]
         const MAX_ENDPOINT_ALLOCATION: u64 = 16 * 1024 * 1024;
 
-        let (id, _keeper, handle) = create(PRODUCTION_SIZE);
+        let (id, _cleanup, handle) = create(PRODUCTION_SIZE);
         #[cfg(windows)]
         {
             let (logical_size, initial_allocation) = backing_file_sizes(&id);
@@ -212,13 +212,22 @@ mod tests {
         super::windows::file_sizes(&file).unwrap()
     }
 
-    fn create(size: usize) -> (OsString, ShmKeeper, ShmHandle) {
+    struct Cleanup(OsString);
+
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = remove(&self.0);
+        }
+    }
+
+    fn create(size: usize) -> (OsString, Cleanup, ShmHandle) {
         let path = std::path::absolute(temp_dir())
             .unwrap()
             .join(format!("{TEST_BACKING_PREFIX}{}.shm", Uuid::new_v4().simple()));
         let id = path.into_os_string();
-        let (keeper, handle) = create_at(&id, size).unwrap();
-        (id, keeper, handle)
+        let handle = create_at(&id, size).unwrap();
+        let cleanup = Cleanup(id.clone());
+        (id, cleanup, handle)
     }
 
     fn read_byte(mapping: &Mapping, index: usize) -> u8 {
