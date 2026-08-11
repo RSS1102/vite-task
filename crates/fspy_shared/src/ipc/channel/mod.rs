@@ -17,21 +17,23 @@ use super::NativeStr;
 #[derive(SchemaWrite, SchemaRead, Clone, Debug)]
 pub struct ChannelConf {
     lock_file_path: Box<NativeStr>,
-    shm_id: Box<NativeStr>,
+    shm_path: Box<NativeStr>,
 }
 
 /// Creates a mpsc IPC channel with one receiver and a `ChannelConf` that can be passed around processes and used to create multiple senders
 #[expect(clippy::missing_errors_doc, reason = "non-vt crate: cannot use vt_str/vt_path types")]
 pub fn channel(capacity: usize) -> io::Result<(ChannelConf, Receiver)> {
-    // Initialize the lock file with a unique name.
-    let lock_file_path = temp_dir().join(format!("fspy_ipc_{}.lock", Uuid::new_v4()));
+    let id = Uuid::new_v4();
+    let temp_dir = std::path::absolute(temp_dir())?;
+    let lock_file_path = temp_dir.join(format!("fspy_ipc_{id}.lock"));
+    let shm_path = temp_dir.join(format!("fspy_ipc_{id}.shm"));
 
-    let (keeper, handle) = fspy_shm::create(capacity)?;
+    let (keeper, handle) = fspy_shm::create(shm_path.as_os_str(), capacity)?;
     let mapping = handle.map()?;
 
     let conf = ChannelConf {
         lock_file_path: lock_file_path.as_os_str().into(),
-        shm_id: keeper.id().into(),
+        shm_path: shm_path.as_os_str().into(),
     };
 
     let receiver = Receiver::new(lock_file_path, keeper, mapping)?;
@@ -50,7 +52,7 @@ impl ChannelConf {
         let lock_file = File::open(self.lock_file_path.to_cow_os_str())?;
         lock_file.try_lock_shared()?;
 
-        let mapping = fspy_shm::open(&self.shm_id.to_cow_os_str())?.map()?;
+        let mapping = fspy_shm::open(&self.shm_path.to_cow_os_str())?.map()?;
         // SAFETY: `mapping` is a freshly mapped shared memory region with valid
         // pointer and size. Exclusive write access is ensured by the shared
         // file lock held by this sender.
