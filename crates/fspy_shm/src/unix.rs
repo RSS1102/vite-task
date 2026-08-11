@@ -16,6 +16,11 @@ use uuid::Uuid;
 
 use crate::BACKING_PREFIX;
 
+/// Error returned by shared-memory operations on Unix.
+pub type Error = sigsafe::Error;
+/// Result returned by shared-memory operations on Unix.
+pub type Result<T> = sigsafe::Result<T>;
+
 /// Keeps the shared memory's identifier alive and removes it on drop.
 ///
 /// Removal is cleanup, not a stop signal: later opens fail, but existing
@@ -101,37 +106,30 @@ pub fn create(size: usize) -> io::Result<(ShmKeeper, ShmHandle)> {
 ///
 /// Returns an error if the shared memory is unavailable, which is the common
 /// case once its keeper has been dropped.
-pub fn open(id: &OsStr) -> io::Result<ShmHandle> {
+pub fn open(id: &OsStr) -> Result<ShmHandle> {
     let file = open_file(id)?;
     // If another process shrinks the file before `map`, mapping fails. If it
     // resizes afterwards, nothing here touches the mapped pages. A concurrent
     // resize cannot make a mapping access invalid memory.
-    let size = usize::try_from(sigsafe::fs::fstat(&file).map_err(errno_to_io)?.st_size)
-        .map_err(|_| io::ErrorKind::InvalidData)?;
-    let size = NonZeroUsize::new(size).ok_or(io::ErrorKind::InvalidData)?;
+    let size = usize::try_from(sigsafe::fs::fstat(&file)?.st_size)
+        .map_err(|_| sigsafe::Errno::OVERFLOW)?;
+    let size = NonZeroUsize::new(size).ok_or(sigsafe::Errno::INVAL)?;
     Ok(ShmHandle { file, size })
 }
 
-fn open_file(id: &OsStr) -> io::Result<sigsafe::OwnedFd> {
+fn open_file(id: &OsStr) -> Result<sigsafe::OwnedFd> {
     let id = id.as_bytes();
-    let len_with_nul = id.len().checked_add(1).ok_or(io::ErrorKind::InvalidInput)?;
+    let len_with_nul = id.len().checked_add(1).ok_or(sigsafe::Errno::NAMETOOLONG)?;
     let mut path = [0_u8; sigsafe::fs::PATH_MAX];
-    let path = path
-        .get_mut(..len_with_nul)
-        .ok_or_else(|| io::Error::from_raw_os_error(sigsafe::Errno::NAMETOOLONG.raw_os_error()))?;
+    let path = path.get_mut(..len_with_nul).ok_or(sigsafe::Errno::NAMETOOLONG)?;
     path[..id.len()].copy_from_slice(id);
-    let path = sigsafe::CStr::from_bytes_with_nul(path).map_err(|_| io::ErrorKind::InvalidInput)?;
+    let path = sigsafe::CStr::from_bytes_with_nul(path).map_err(|_| sigsafe::Errno::INVAL)?;
     sigsafe::fs::openat(
         sigsafe::CWD,
         path,
         sigsafe::fs::OFlags::RDWR | sigsafe::fs::OFlags::CLOEXEC,
         sigsafe::fs::Mode::empty(),
     )
-    .map_err(errno_to_io)
-}
-
-fn errno_to_io(errno: sigsafe::Errno) -> io::Error {
-    io::Error::from_raw_os_error(errno.raw_os_error())
 }
 
 fn into_sigsafe_fd(file: File) -> sigsafe::OwnedFd {
@@ -162,7 +160,7 @@ impl ShmHandle {
     /// # Errors
     ///
     /// Returns an error if the mapping cannot be established.
-    pub fn map(&self) -> io::Result<Mapping> {
+    pub fn map(&self) -> Result<Mapping> {
         // SAFETY: the address is only a hint, the nonzero length is the
         // validated backing-file size, the descriptor remains borrowed,
         // and the resulting shared mapping is owned by `Mapping`.
@@ -175,14 +173,13 @@ impl ShmHandle {
                 &self.file,
                 0,
             )
-        }
-        .map_err(errno_to_io)?;
+        }?;
         let Some(ptr) = NonNull::new(mapped.cast()) else {
             // A non-fixed mapping should not be placed at address zero,
             // which Rust cannot represent as a non-null allocation.
             // SAFETY: release the successful mapping before rejecting it.
             let _ = unsafe { sigsafe::mm::munmap(mapped, self.size.get()) };
-            return Err(io::ErrorKind::Other.into());
+            return Err(sigsafe::Errno::INVAL);
         };
         Ok(Mapping { ptr, len: self.size })
     }

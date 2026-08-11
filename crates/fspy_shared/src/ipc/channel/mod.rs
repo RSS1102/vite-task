@@ -27,7 +27,7 @@ pub fn channel(capacity: usize) -> io::Result<(ChannelConf, Receiver)> {
     let lock_file_path = temp_dir().join(format!("fspy_ipc_{}.lock", Uuid::new_v4()));
 
     let (keeper, handle) = fspy_shm::create(capacity)?;
-    let mapping = handle.map()?;
+    let mapping = shm_result(handle.map())?;
 
     let conf = ChannelConf {
         lock_file_path: lock_file_path.as_os_str().into(),
@@ -50,13 +50,24 @@ impl ChannelConf {
         let lock_file = File::open(self.lock_file_path.to_cow_os_str())?;
         lock_file.try_lock_shared()?;
 
-        let mapping = fspy_shm::open(&self.shm_id.to_cow_os_str())?.map()?;
+        let handle = shm_result(fspy_shm::open(&self.shm_id.to_cow_os_str()))?;
+        let mapping = shm_result(handle.map())?;
         // SAFETY: `mapping` is a freshly mapped shared memory region with valid
         // pointer and size. Exclusive write access is ensured by the shared
         // file lock held by this sender.
         let writer = unsafe { ShmWriter::new(mapping) };
         Ok(Sender { writer, lock_file, lock_file_path: self.lock_file_path.clone() })
     }
+}
+
+#[cfg(unix)]
+fn shm_result<T>(result: fspy_shm::Result<T>) -> io::Result<T> {
+    result.map_err(|error| io::Error::from_raw_os_error(error.raw_os_error()))
+}
+
+#[cfg(windows)]
+const fn shm_result<T>(result: fspy_shm::Result<T>) -> io::Result<T> {
+    result
 }
 
 pub struct Sender {
