@@ -4,7 +4,7 @@ use std::{
     ffi::OsStr,
     fs::{self, File, OpenOptions},
     io,
-    os::unix::fs::OpenOptionsExt as _,
+    os::unix::{ffi::OsStrExt as _, fs::OpenOptionsExt as _, io::FromRawFd as _},
     path::PathBuf,
 };
 
@@ -82,9 +82,7 @@ pub fn create(path: &OsStr, size: usize) -> io::Result<(ShmKeeper, ShmHandle)> {
 /// Returns an error if the shared memory is unavailable, which is the common
 /// case once its keeper has been dropped.
 pub fn open(path: &OsStr) -> io::Result<ShmHandle> {
-    // Rust opens are `O_CLOEXEC`, so a traced process never leaks this
-    // descriptor.
-    let file = OpenOptions::new().read(true).write(true).open(path)?;
+    let file = open_file(path)?;
     // If another process shrinks the file before `map`, mapping fails. If it
     // resizes afterwards, nothing here touches the mapped pages. A concurrent
     // resize cannot make a mapping access invalid memory.
@@ -94,6 +92,32 @@ pub fn open(path: &OsStr) -> io::Result<ShmHandle> {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "shared-memory size is zero"));
     }
     Ok(ShmHandle { file, size })
+}
+
+fn open_file(path: &OsStr) -> io::Result<File> {
+    let path_bytes = path.as_bytes();
+    let len_with_nul = path_bytes.len().checked_add(1).ok_or(io::ErrorKind::InvalidInput)?;
+    let mut path_buf = [0_u8; sigsafe::fs::PATH_MAX];
+    let path = path_buf
+        .get_mut(..len_with_nul)
+        .ok_or_else(|| io::Error::from_raw_os_error(sigsafe::Errno::NAMETOOLONG.raw_os_error()))?;
+    path[..path_bytes.len()].copy_from_slice(path_bytes);
+    let path = sigsafe::CStr::from_bytes_with_nul(path).map_err(|_| io::ErrorKind::InvalidInput)?;
+    let fd = sigsafe::fs::openat(
+        sigsafe::CWD,
+        path,
+        sigsafe::fs::OFlags::RDWR | sigsafe::fs::OFlags::CLOEXEC,
+        sigsafe::fs::Mode::empty(),
+    )
+    .map_err(errno_to_io)?;
+    let fd = sigsafe::IntoRawFd::into_raw_fd(fd);
+    // SAFETY: ownership of the descriptor returned by `openat` transfers to
+    // this `File` without closing or duplicating it.
+    Ok(unsafe { File::from_raw_fd(fd) })
+}
+
+fn errno_to_io(errno: sigsafe::Errno) -> io::Error {
+    io::Error::from_raw_os_error(errno.raw_os_error())
 }
 
 impl Drop for ShmKeeper {

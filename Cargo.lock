@@ -1417,6 +1417,7 @@ version = "0.0.0"
 dependencies = [
  "ctor",
  "memmap2",
+ "sigsafe",
  "subprocess_test",
  "uuid",
  "windows-sys 0.61.2",
