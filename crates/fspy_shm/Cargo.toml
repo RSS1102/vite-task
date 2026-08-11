@@ -9,7 +9,6 @@ rust-version.workspace = true
 
 [dependencies]
 memmap2 = { workspace = true }
-uuid = { workspace = true, features = ["v4"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { workspace = true, features = [
@@ -22,6 +21,7 @@ windows-sys = { workspace = true, features = [
 [dev-dependencies]
 ctor = { workspace = true }
 subprocess_test = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
 
 [lints]
 workspace = true

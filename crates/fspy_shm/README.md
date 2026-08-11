@@ -1,8 +1,8 @@
 # `fspy_shm`
 
-`fspy_shm` is the private shared-memory layer used by fspy IPC channels. It gives the channel one API for creating a mapping, passing its identifier to another process, and opening additional views of the same bytes.
+`fspy_shm` is the private shared-memory layer used by fspy IPC channels. It gives the channel one API for creating a mapping at a caller-chosen path and opening additional views of the same bytes.
 
-`fspy_shm` exposes only the operations used by fspy. Treat an identifier as an opaque `OsStr`; do not depend on how it is built.
+`fspy_shm` exposes only the operations used by fspy. The caller owns the full absolute path and passes it to both `create` and `open`.
 
 ## API
 
@@ -10,21 +10,20 @@ The public API is defined in [`src/lib.rs`](src/lib.rs).
 
 | API                   | Contract                                                                                |
 | --------------------- | --------------------------------------------------------------------------------------- |
-| `create(size)`        | Creates a zero-initialized backing file and returns its `ShmKeeper` and an `ShmHandle`. |
-| `open(id)`            | Opens an `ShmHandle` on the shared memory identified by `id`.                           |
-| `ShmKeeper::id()`     | Returns the identifier another process passes to `open`.                                |
+| `create(path, size)`  | Creates a zero-initialized backing file and returns its `ShmKeeper` and an `ShmHandle`. |
+| `open(path)`          | Opens an `ShmHandle` on the shared memory at the same path.                             |
 | `ShmHandle::map()`    | Maps the shared bytes. Callable more than once.                                         |
 | `Mapping::len()`      | Returns the mapped size.                                                                |
 | `Mapping::as_ptr()`   | Returns a mutable raw pointer to the first byte.                                        |
 | `Mapping::as_slice()` | Returns the bytes as a shared slice. The caller must prevent mutation for its lifetime. |
 
-`ShmKeeper` is the name: while it lives, `open` succeeds, and dropping it removes the backing file. `ShmHandle` is the opened file: `create` returns one so the creator never looks its own file up by name, and `open` returns one to everybody else. `Mapping` is the bytes: it keeps them alive until dropped and can do nothing else. None of the three synchronizes memory access. The fspy channel adds that on top with atomic frame headers and a lock file: senders hold a shared file lock while writing, and the receiver takes the exclusive lock before reading, which waits for existing senders and rejects new ones.
+`ShmKeeper` owns the name's lifetime: while it lives, `open` succeeds, and dropping it removes the backing file. `ShmHandle` is the opened file: `create` returns one so the creator never looks its own file up by name, and `open` returns one to everybody else. `Mapping` is the bytes: it keeps them alive until dropped and can do nothing else. None of the three synchronizes memory access. The fspy channel adds that on top with atomic frame headers and a lock file: senders hold a shared file lock while writing, and the receiver takes the exclusive lock before reading, which waits for existing senders and rejects new ones.
 
 Every byte in a mapping returned by `create` is initially zero. `open` exposes the mapping's current contents and does not reinitialize them.
 
 ## Implementation
 
-One implementation serves every platform: a sparse file named `vite-task-fspy-<uuid>.shm` directly in the system temporary directory. The identifier is the file's absolute path, so another process opens the mapping by opening that path. There is no broker, no global object name, and no asynchronous runtime. The files sit in the temporary directory itself rather than a shared subdirectory: a subdirectory would belong to whichever user created it first and block everyone else, while uniquely named `0o600` files in a sticky-bit directory work for all users.
+One implementation serves every platform: a sparse file at the full path supplied by the caller. The fspy channel chooses a unique name directly in the system temporary directory and passes that path to every process. There is no broker, no global object name, and no asynchronous runtime. On Unix, files sit in the temporary directory itself rather than a shared subdirectory: a subdirectory would belong to whichever user created it first and block everyone else, while uniquely named `0o600` files in a sticky-bit directory work for all users.
 
 Only written pages ever occupy memory or disk. The multi-gigabyte capacity fspy asks for therefore costs about as much as the data a run actually records.
 
@@ -61,12 +60,12 @@ Earlier revisions rejected temporary files because dirty pages can reach disk. O
 
 ## Lifetime semantics
 
-`create` returns the only keeper. `open` returns `ShmHandle`s.
+`create(path, size)` returns the only keeper. `open(path)` returns `ShmHandle`s.
 
-- While the keeper is alive, a process that knows the identifier can open the shared memory.
+- While the keeper is alive, a process that knows the path can open the shared memory.
 - Dropping the keeper removes the backing file's name, so later opens fail. This is cleanup, not a stop signal: processes that already opened the shared memory keep reading and writing. The fspy channel stops writers with the close gate it stores in the shared bytes.
-- An `ShmHandle` and its `Mapping`s stay usable after the keeper is gone. They keep the bytes alive and cannot extend the identifier's validity.
+- An `ShmHandle` and its `Mapping`s stay usable after the keeper is gone. They keep the bytes alive and cannot extend the path's validity.
 
 The channel guards the same window from its own side: [`ChannelConf::sender`](../fspy_shared/src/ipc/channel/mod.rs) opens and locks the receiver's exact lock-file path before it calls `fspy_shm::open`, and the receiver removes that path before dropping the keeper, so a sender that starts later fails before opening shared memory.
 
-If the keeper's process is killed, its `Drop` never runs and the file stays behind: on Unix for the system's temporary-file reaper, on Windows until a cleanup tool runs. The file costs about as much disk as the run wrote into it.
+If the keeper's process is killed, its `Drop` never runs and the file stays behind. The fspy channel places it in the system temporary directory, where Unix temporary-file reapers or Windows cleanup tools can remove it. The file costs about as much disk as the run wrote into it.

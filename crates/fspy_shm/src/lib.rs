@@ -11,13 +11,6 @@ use unix as platform;
 #[cfg(windows)]
 use windows as platform;
 
-/// Prefix of backing file names inside the system temporary directory.
-///
-/// The files sit directly in the temporary directory. A shared subdirectory
-/// would belong to whichever user created it first and block everyone else;
-/// uniquely named `0o600` files in the sticky-bit temp directory avoid that.
-const BACKING_PREFIX: &str = "vite-task-fspy-";
-
 #[cfg(test)]
 mod tests {
     #[cfg(windows)]
@@ -34,18 +27,36 @@ mod tests {
     use subprocess_test::command_for_fn;
     use uuid::Uuid;
 
-    use super::{BACKING_PREFIX, Mapping, create, open};
+    use super::{Mapping, ShmHandle, ShmKeeper, create as create_at, open};
 
+    const TEST_BACKING_PREFIX: &str = "vite-task-fspy-test-";
     // Page-aligned on all supported targets.
     const SIZE: usize = 64 * 1024;
     // Use one byte more than 64 KiB to test multiple pages and a partial last page.
     const ZERO_INITIALIZED_SIZE: usize = SIZE + 1;
 
     #[test]
+    fn create_rejects_relative_path() {
+        assert!(create_at(OsStr::new("relative.shm"), SIZE).is_err());
+    }
+
+    #[test]
+    fn open_rejects_relative_path() {
+        let path = OsString::from(format!("{TEST_BACKING_PREFIX}relative-{}.shm", Uuid::new_v4()));
+        let file = fs::OpenOptions::new().write(true).create_new(true).open(&path).unwrap();
+        file.set_len(u64::try_from(SIZE).unwrap()).unwrap();
+        drop(file);
+
+        let accepted = open(&path).is_ok();
+        fs::remove_file(&path).unwrap();
+        assert!(!accepted);
+    }
+
+    #[test]
     fn new_mapping_is_zero_initialized_in_all_views() {
-        let (keeper, handle) = create(ZERO_INITIALIZED_SIZE).unwrap();
+        let (id, _keeper, handle) = create(ZERO_INITIALIZED_SIZE);
         let first = handle.map().unwrap();
-        let second = open(keeper.id()).unwrap().map().unwrap();
+        let second = open(&id).unwrap().map().unwrap();
 
         assert_zero_initialized(&first);
         assert_zero_initialized(&second);
@@ -53,12 +64,12 @@ mod tests {
 
     #[test]
     fn mappings_of_one_keeper_are_shared() {
-        let (keeper, handle) = create(SIZE).unwrap();
+        let (id, _keeper, handle) = create(SIZE);
         let first = handle.map().unwrap();
         assert_eq!(first.len(), SIZE);
         assert_eq!(first.as_ptr() as usize % align_of::<usize>(), 0);
 
-        let second = open(keeper.id()).unwrap().map().unwrap();
+        let second = open(&id).unwrap().map().unwrap();
         assert_eq!(second.len(), SIZE);
 
         write_byte(&first, 0, 17);
@@ -69,7 +80,7 @@ mod tests {
 
     #[test]
     fn one_handle_maps_repeatedly() {
-        let (_keeper, handle) = create(SIZE).unwrap();
+        let (_id, _keeper, handle) = create(SIZE);
         let first = handle.map().unwrap();
         let second = handle.map().unwrap();
 
@@ -79,11 +90,11 @@ mod tests {
 
     #[test]
     fn mapping_is_visible_across_processes() {
-        let (keeper, handle) = create(SIZE).unwrap();
+        let (id, _keeper, handle) = create(SIZE);
         let mapping = handle.map().unwrap();
         write_byte(&mapping, 0, 17);
 
-        let id = keeper.id().to_str().expect("test temp dir is UTF-8").to_owned();
+        let id = id.to_str().expect("test temp dir is UTF-8").to_owned();
         let command = command_for_fn!(id, |id: String| {
             let opened = open(OsStr::new(&id)).unwrap().map().unwrap();
             assert_eq!(read_byte(&opened, 0), 17);
@@ -95,21 +106,21 @@ mod tests {
 
     #[test]
     fn subprocess_open_ignores_changed_temp_and_working_directory() {
-        let (keeper, handle) = create(SIZE).unwrap();
+        let (id, _keeper, handle) = create(SIZE);
         let mapping = handle.map().unwrap();
         let changed_cwd =
-            temp_dir().join(format!("{BACKING_PREFIX}changed-cwd-{}", Uuid::new_v4()));
+            temp_dir().join(format!("{TEST_BACKING_PREFIX}changed-cwd-{}", Uuid::new_v4()));
         fs::create_dir(&changed_cwd).unwrap();
         write_byte(&mapping, 0, 17);
 
-        let id = keeper.id().to_str().expect("test temp dir is UTF-8").to_owned();
+        let id = id.to_str().expect("test temp dir is UTF-8").to_owned();
         let mut command = command_for_fn!(id, |id: String| {
             let opened = open(OsStr::new(&id)).unwrap().map().unwrap();
             assert_eq!(read_byte(&opened, 0), 17);
             write_byte(&opened, SIZE - 1, 29);
         });
         command.cwd = changed_cwd.clone();
-        // The identifier is an absolute path, so a relative temporary directory
+        // The shared-memory path is absolute, so a relative temporary directory
         // in the child must make no difference on any platform.
         for name in ["TMPDIR", "TMP", "TEMP"] {
             command.envs.insert(OsString::from(name), OsString::from("changed-relative-tmp"));
@@ -123,8 +134,7 @@ mod tests {
 
     #[test]
     fn keeper_drop_prevents_new_opens() {
-        let (keeper, handle) = create(SIZE).unwrap();
-        let id = keeper.id().to_owned();
+        let (id, keeper, handle) = create(SIZE);
         drop(handle);
         drop(keeper);
 
@@ -133,8 +143,7 @@ mod tests {
 
     #[test]
     fn opened_mapping_survives_keeper_drop() {
-        let (keeper, handle) = create(SIZE).unwrap();
-        let id = keeper.id().to_owned();
+        let (id, keeper, handle) = create(SIZE);
         let opened = open(&id).unwrap().map().unwrap();
         write_byte(&opened, 0, 17);
         drop(handle);
@@ -150,8 +159,7 @@ mod tests {
     /// bytes alive across the keeper's removal of the name.
     #[test]
     fn keeper_drop_removes_backing_file_and_preserves_existing_mappings() {
-        let (keeper, handle) = create(SIZE).unwrap();
-        let id = keeper.id().to_owned();
+        let (id, keeper, handle) = create(SIZE);
         let path = Path::new(&id).to_owned();
         let opened = open(&id).unwrap().map().unwrap();
         drop(handle);
@@ -169,8 +177,7 @@ mod tests {
     /// still open, and that handle keeps mapping the same bytes afterwards.
     #[test]
     fn keeper_drop_with_open_handle_removes_name_and_handle_still_maps() {
-        let (keeper, handle) = create(SIZE).unwrap();
-        let id = keeper.id().to_owned();
+        let (id, keeper, handle) = create(SIZE);
         let before = handle.map().unwrap();
         write_byte(&before, 0, 17);
 
@@ -192,16 +199,16 @@ mod tests {
         #[cfg(windows)]
         const MAX_ENDPOINT_ALLOCATION: u64 = 16 * 1024 * 1024;
 
-        let (keeper, handle) = create(PRODUCTION_SIZE).unwrap();
+        let (id, _keeper, handle) = create(PRODUCTION_SIZE);
         #[cfg(windows)]
         {
-            let (logical_size, initial_allocation) = backing_file_sizes(keeper.id());
+            let (logical_size, initial_allocation) = backing_file_sizes(&id);
             assert_eq!(logical_size, PRODUCTION_SIZE as u64);
             assert!(initial_allocation < MAX_ENDPOINT_ALLOCATION);
         }
 
         let first = handle.map().unwrap();
-        let opened = open(keeper.id()).unwrap().map().unwrap();
+        let opened = open(&id).unwrap().map().unwrap();
         write_byte(&first, 0, 17);
         write_byte(&first, PRODUCTION_SIZE - 1, 29);
         assert_eq!(read_byte(&opened, 0), 17);
@@ -210,7 +217,7 @@ mod tests {
         // Touching both endpoints must not have allocated the range between them.
         #[cfg(windows)]
         {
-            let (logical_size, endpoint_allocation) = backing_file_sizes(keeper.id());
+            let (logical_size, endpoint_allocation) = backing_file_sizes(&id);
             assert_eq!(logical_size, PRODUCTION_SIZE as u64);
             assert!(endpoint_allocation < MAX_ENDPOINT_ALLOCATION);
         }
@@ -220,6 +227,15 @@ mod tests {
     fn backing_file_sizes(id: &OsStr) -> (u64, u64) {
         let file = File::open(id).unwrap();
         super::windows::file_sizes(&file).unwrap()
+    }
+
+    fn create(size: usize) -> (OsString, ShmKeeper, ShmHandle) {
+        let path = std::path::absolute(temp_dir())
+            .unwrap()
+            .join(format!("{TEST_BACKING_PREFIX}{}.shm", Uuid::new_v4().simple()));
+        let id = path.into_os_string();
+        let (keeper, handle) = create_at(&id, size).unwrap();
+        (id, keeper, handle)
     }
 
     fn read_byte(mapping: &Mapping, index: usize) -> u8 {

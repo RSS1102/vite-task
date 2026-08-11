@@ -672,8 +672,11 @@ mod tests {
 
         const SHM_SIZE: usize = 1024 * 1024;
 
-        let (keeper, handle) = fspy_shm::create(SHM_SIZE).unwrap();
-        let shm_name = keeper.id().to_str().expect("test temp dir is UTF-8").to_owned();
+        let shm_path = std::path::absolute(std::env::temp_dir())
+            .unwrap()
+            .join(format!("fspy_ipc_test_{}.shm", uuid::Uuid::new_v4()));
+        let (_keeper, handle) = fspy_shm::create(shm_path.as_os_str(), SHM_SIZE).unwrap();
+        let shm_name = shm_path.to_str().expect("test temp dir is UTF-8").to_owned();
         // Map before the children run. Windows keeps views coherent while they
         // exist at the same time; a view created after every writer exited can
         // observe the file before the writers' dirty pages reach it.

@@ -1,17 +1,14 @@
-//! Windows shared memory backed by a sparse temporary file and identified by
-//! its path.
+//! Windows shared memory backed by a sparse file at a caller-provided path.
 
 use std::{
-    env::temp_dir,
     ffi::OsStr,
     fs::{self, File, OpenOptions},
     io,
     os::windows::{fs::OpenOptionsExt as _, io::AsRawHandle as _},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use memmap2::{MmapOptions, MmapRaw};
-use uuid::Uuid;
 #[cfg(test)]
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_STANDARD_INFO, FileStandardInfo, GetFileInformationByHandleEx,
@@ -24,14 +21,12 @@ use windows_sys::Win32::{
     System::{IO::DeviceIoControl, Ioctl::FSCTL_SET_SPARSE},
 };
 
-use crate::BACKING_PREFIX;
-
 const SHARE_ALL: u32 = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
 const TEMPORARY: u32 = FILE_ATTRIBUTE_TEMPORARY;
 const DELETE_ON_CLOSE: u32 = FILE_FLAG_DELETE_ON_CLOSE;
 const DELETE_ACCESS: u32 = windows_sys::Win32::Storage::FileSystem::DELETE;
 
-/// Keeps the shared memory's identifier alive and removes it on drop.
+/// Keeps the shared memory's backing-file name alive and removes it on drop.
 ///
 /// Removal is cleanup, not a stop signal: later opens fail, but existing
 /// [`ShmHandle`]s and [`Mapping`]s keep reading and writing. To stop them,
@@ -52,12 +47,20 @@ pub struct ShmHandle {
 /// The mapped shared bytes.
 ///
 /// A `Mapping` keeps the bytes alive until it is dropped and cannot affect the
-/// shared memory's identifier.
+/// shared memory's path.
 pub struct Mapping {
     raw: MmapRaw,
 }
 
-/// Creates `size` bytes of zero-initialized shared memory.
+fn ensure_absolute(path: &OsStr) -> io::Result<()> {
+    if Path::new(path).is_absolute() {
+        Ok(())
+    } else {
+        Err(io::Error::new(io::ErrorKind::InvalidInput, "shared-memory path must be absolute"))
+    }
+}
+
+/// Creates `size` bytes of zero-initialized shared memory at `path`.
 ///
 /// Returns its [`ShmKeeper`] and an already opened [`ShmHandle`], so the
 /// creating process never has to go through [`open`].
@@ -67,9 +70,9 @@ pub struct Mapping {
 ///
 /// # Errors
 ///
-/// Returns an error if the shared memory cannot be created or sized. Creation
-/// fails on volumes without sparse-file support.
-pub fn create(size: usize) -> io::Result<(ShmKeeper, ShmHandle)> {
+/// Returns an error if `path` is not absolute, the shared memory cannot be
+/// created or sized, or the containing volume does not support sparse files.
+pub fn create(path: &OsStr, size: usize) -> io::Result<(ShmKeeper, ShmHandle)> {
     if size == 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -79,11 +82,9 @@ pub fn create(size: usize) -> io::Result<(ShmKeeper, ShmHandle)> {
     let size_u64 = u64::try_from(size).map_err(|_| {
         io::Error::new(io::ErrorKind::InvalidInput, "shared-memory size exceeds u64")
     })?;
+    ensure_absolute(path)?;
+    let path = PathBuf::from(path);
 
-    // The per-user `%TEMP%` ACL provides same-user gating. The identifier is
-    // absolute so it keeps working after a working-directory change.
-    let path = std::path::absolute(temp_dir())?
-        .join(format!("{BACKING_PREFIX}{}.shm", Uuid::new_v4().simple()));
     let file = OpenOptions::new()
         .read(true)
         .write(true)
@@ -105,19 +106,20 @@ pub fn create(size: usize) -> io::Result<(ShmKeeper, ShmHandle)> {
     Ok((keeper, ShmHandle { file, size }))
 }
 
-/// Opens the shared memory identified by `id`.
+/// Opens the shared memory at `path`.
 ///
-/// The identifier works from any process, regardless of the process's working
+/// The absolute path works from any process, regardless of the process's working
 /// directory or environment.
 ///
 /// # Errors
 ///
-/// Returns an error if the shared memory is unavailable, which is the common
-/// case once its keeper has been dropped.
-pub fn open(id: &OsStr) -> io::Result<ShmHandle> {
+/// Returns an error if `path` is not absolute or the shared memory is
+/// unavailable, which is the common case once its keeper has been dropped.
+pub fn open(path: &OsStr) -> io::Result<ShmHandle> {
+    ensure_absolute(path)?;
     // Rust handles are non-inheritable, and its default share mode permits
     // concurrent read, write and delete access.
-    let file = OpenOptions::new().read(true).write(true).open(id)?;
+    let file = OpenOptions::new().read(true).write(true).open(path)?;
     // If another process shrinks the file before `map`, mapping fails. If it
     // resizes afterwards, nothing here touches the mapped pages. A concurrent
     // resize cannot make a mapping access invalid memory.
@@ -142,15 +144,6 @@ impl Drop for ShmKeeper {
                 .custom_flags(DELETE_ON_CLOSE)
                 .open(&self.path);
         }
-    }
-}
-
-impl ShmKeeper {
-    /// Returns the shared memory's opaque identifier, which any process passes
-    /// to [`open`].
-    #[must_use]
-    pub fn id(&self) -> &OsStr {
-        self.path.as_os_str()
     }
 }
 

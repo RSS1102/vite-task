@@ -1,21 +1,16 @@
-//! Unix shared memory backed by a sparse temporary file and identified by its
-//! path.
+//! Unix shared memory backed by a sparse file at a caller-provided path.
 
 use std::{
-    env::temp_dir,
     ffi::OsStr,
     fs::{self, File, OpenOptions},
     io,
-    os::unix::fs::OpenOptionsExt as _,
+    os::unix::{ffi::OsStrExt as _, fs::OpenOptionsExt as _},
     path::PathBuf,
 };
 
 use memmap2::{MmapOptions, MmapRaw};
-use uuid::Uuid;
 
-use crate::BACKING_PREFIX;
-
-/// Keeps the shared memory's identifier alive and removes it on drop.
+/// Keeps the shared memory's backing-file name alive and removes it on drop.
 ///
 /// Removal is cleanup, not a stop signal: later opens fail, but existing
 /// [`ShmHandle`]s and [`Mapping`]s keep reading and writing. To stop them,
@@ -36,12 +31,20 @@ pub struct ShmHandle {
 /// The mapped shared bytes.
 ///
 /// A `Mapping` keeps the bytes alive until it is dropped and cannot affect the
-/// shared memory's identifier.
+/// shared memory's path.
 pub struct Mapping {
     raw: MmapRaw,
 }
 
-/// Creates `size` bytes of zero-initialized shared memory.
+fn ensure_absolute(path: &OsStr) -> io::Result<()> {
+    if path.as_bytes().starts_with(b"/") {
+        Ok(())
+    } else {
+        Err(io::Error::new(io::ErrorKind::InvalidInput, "shared-memory path must be absolute"))
+    }
+}
+
+/// Creates `size` bytes of zero-initialized shared memory at `path`.
 ///
 /// Returns its [`ShmKeeper`] and an already opened [`ShmHandle`], so the
 /// creating process never has to go through [`open`].
@@ -51,8 +54,9 @@ pub struct Mapping {
 ///
 /// # Errors
 ///
-/// Returns an error if the shared memory cannot be created or sized.
-pub fn create(size: usize) -> io::Result<(ShmKeeper, ShmHandle)> {
+/// Returns an error if `path` is not absolute or the shared memory cannot be
+/// created or sized.
+pub fn create(path: &OsStr, size: usize) -> io::Result<(ShmKeeper, ShmHandle)> {
     if size == 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -62,12 +66,8 @@ pub fn create(size: usize) -> io::Result<(ShmKeeper, ShmHandle)> {
     let size_u64 = u64::try_from(size).map_err(|_| {
         io::Error::new(io::ErrorKind::InvalidInput, "shared-memory size exceeds u64")
     })?;
-
-    // `temp_dir` reflects `TMPDIR` verbatim, which may be relative. The
-    // identifier travels to processes with other working directories, so
-    // resolve it against the creator's current directory first.
-    let path = std::path::absolute(temp_dir())?
-        .join(format!("{BACKING_PREFIX}{}.shm", Uuid::new_v4().simple()));
+    ensure_absolute(path)?;
+    let path = PathBuf::from(path);
 
     let file = OpenOptions::new()
         .read(true)
@@ -85,19 +85,20 @@ pub fn create(size: usize) -> io::Result<(ShmKeeper, ShmHandle)> {
     Ok((keeper, ShmHandle { file, size }))
 }
 
-/// Opens the shared memory identified by `id`.
+/// Opens the shared memory at `path`.
 ///
-/// The identifier works from any process, regardless of the process's working
+/// The absolute path works from any process, regardless of the process's working
 /// directory or environment.
 ///
 /// # Errors
 ///
-/// Returns an error if the shared memory is unavailable, which is the common
-/// case once its keeper has been dropped.
-pub fn open(id: &OsStr) -> io::Result<ShmHandle> {
+/// Returns an error if `path` is not absolute or the shared memory is
+/// unavailable, which is the common case once its keeper has been dropped.
+pub fn open(path: &OsStr) -> io::Result<ShmHandle> {
+    ensure_absolute(path)?;
     // Rust opens are `O_CLOEXEC`, so a traced process never leaks this
     // descriptor.
-    let file = OpenOptions::new().read(true).write(true).open(id)?;
+    let file = OpenOptions::new().read(true).write(true).open(path)?;
     // If another process shrinks the file before `map`, mapping fails. If it
     // resizes afterwards, nothing here touches the mapped pages. A concurrent
     // resize cannot make a mapping access invalid memory.
@@ -112,15 +113,6 @@ pub fn open(id: &OsStr) -> io::Result<ShmHandle> {
 impl Drop for ShmKeeper {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
-    }
-}
-
-impl ShmKeeper {
-    /// Returns the shared memory's opaque identifier, which any process passes
-    /// to [`open`].
-    #[must_use]
-    pub fn id(&self) -> &OsStr {
-        self.path.as_os_str()
     }
 }
 
