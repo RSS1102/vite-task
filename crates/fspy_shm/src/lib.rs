@@ -5,7 +5,7 @@ mod unix;
 #[cfg(windows)]
 mod windows;
 
-pub use platform::{Mapping, ShmHandle, ShmKeeper, create, open};
+pub use platform::{Error, Mapping, Result, ShmHandle, ShmKeeper, create, open};
 #[cfg(unix)]
 use unix as platform;
 #[cfg(windows)]

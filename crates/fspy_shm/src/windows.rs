@@ -21,6 +21,11 @@ use windows_sys::Win32::{
     System::{IO::DeviceIoControl, Ioctl::FSCTL_SET_SPARSE},
 };
 
+/// Error returned by shared-memory operations on Windows.
+pub type Error = io::Error;
+/// Result returned by shared-memory operations on Windows.
+pub type Result<T> = io::Result<T>;
+
 const SHARE_ALL: u32 = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
 const TEMPORARY: u32 = FILE_ATTRIBUTE_TEMPORARY;
 const DELETE_ON_CLOSE: u32 = FILE_FLAG_DELETE_ON_CLOSE;
@@ -52,7 +57,7 @@ pub struct Mapping {
     raw: MmapRaw,
 }
 
-fn ensure_absolute(path: &OsStr) -> io::Result<()> {
+fn ensure_absolute(path: &OsStr) -> Result<()> {
     if Path::new(path).is_absolute() {
         Ok(())
     } else {
@@ -72,7 +77,7 @@ fn ensure_absolute(path: &OsStr) -> io::Result<()> {
 ///
 /// Returns an error if `path` is not absolute, the shared memory cannot be
 /// created or sized, or the containing volume does not support sparse files.
-pub fn create(path: &OsStr, size: usize) -> io::Result<(ShmKeeper, ShmHandle)> {
+pub fn create(path: &OsStr, size: usize) -> Result<(ShmKeeper, ShmHandle)> {
     if size == 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -115,7 +120,7 @@ pub fn create(path: &OsStr, size: usize) -> io::Result<(ShmKeeper, ShmHandle)> {
 ///
 /// Returns an error if `path` is not absolute or the shared memory is
 /// unavailable, which is the common case once its keeper has been dropped.
-pub fn open(path: &OsStr) -> io::Result<ShmHandle> {
+pub fn open(path: &OsStr) -> Result<ShmHandle> {
     ensure_absolute(path)?;
     // Rust handles are non-inheritable, and its default share mode permits
     // concurrent read, write and delete access.
@@ -153,7 +158,7 @@ impl ShmHandle {
     /// # Errors
     ///
     /// Returns an error if the mapping cannot be established.
-    pub fn map(&self) -> io::Result<Mapping> {
+    pub fn map(&self) -> Result<Mapping> {
         Ok(Mapping { raw: MmapOptions::new().len(self.size).map_raw(&self.file)? })
     }
 }
@@ -187,7 +192,7 @@ impl Mapping {
 }
 
 /// Marks `file` sparse so that setting its length reserves no clusters.
-fn set_sparse(file: &File) -> io::Result<()> {
+fn set_sparse(file: &File) -> Result<()> {
     let mut bytes_returned = 0;
     // SAFETY: `file` supplies a valid synchronous file handle. FSCTL_SET_SPARSE
     // requires no input or output buffers, and `bytes_returned` is writable for
@@ -209,7 +214,7 @@ fn set_sparse(file: &File) -> io::Result<()> {
 
 /// Returns the backing file's logical size and allocated byte count.
 #[cfg(test)]
-pub fn file_sizes(file: &File) -> io::Result<(u64, u64)> {
+pub fn file_sizes(file: &File) -> Result<(u64, u64)> {
     let mut info = FILE_STANDARD_INFO::default();
     let info_size = u32::try_from(std::mem::size_of::<FILE_STANDARD_INFO>())
         .map_err(|_| io::Error::other("file size information is too large"))?;
