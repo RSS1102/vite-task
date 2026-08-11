@@ -1,17 +1,40 @@
 //! Unix shared memory backed by a sparse file at a caller-provided path.
 
-use std::{
-    ffi::OsStr,
+use core::{
     num::NonZeroUsize,
-    os::unix::ffi::OsStrExt as _,
-    path::PathBuf,
     ptr::{self, NonNull},
+    slice,
 };
+use std::{ffi::OsStr, os::unix::ffi::OsStrExt as _};
 
 /// Error returned by shared-memory operations on Unix.
 pub type Error = sigsafe::Error;
 /// Result returned by shared-memory operations on Unix.
 pub type Result<T> = sigsafe::Result<T>;
+
+struct BackingPath {
+    bytes: [u8; sigsafe::fs::PATH_MAX],
+    len_with_nul: NonZeroUsize,
+}
+
+impl BackingPath {
+    fn new(path: &OsStr) -> Result<Self> {
+        ensure_absolute(path)?;
+        let mut bytes = [0; sigsafe::fs::PATH_MAX];
+        let path = copy_path(path, &mut bytes)?;
+        let len_with_nul = NonZeroUsize::new(path.len_with_nul()).ok_or(sigsafe::Errno::INVAL)?;
+        Ok(Self { bytes, len_with_nul })
+    }
+
+    fn as_c_str(&self) -> sigsafe::CStr<'_, sigsafe::Fat> {
+        let Some(bytes) = self.bytes.get(..self.len_with_nul.get()) else {
+            unreachable!("backing path length exceeds its storage");
+        };
+        // SAFETY: `new` validates this exact prefix as one C string, and the
+        // private fields prevent its bytes or retained length from changing.
+        unsafe { sigsafe::CStr::from_bytes_with_nul_unchecked(bytes) }
+    }
+}
 
 /// Keeps the shared memory's backing-file name alive and removes it on drop.
 ///
@@ -19,7 +42,7 @@ pub type Result<T> = sigsafe::Result<T>;
 /// [`ShmHandle`]s and [`Mapping`]s keep reading and writing. To stop them,
 /// store a flag in the shared bytes, as the fspy channel's close gate does.
 pub struct ShmKeeper {
-    path: PathBuf,
+    path: BackingPath,
 }
 
 /// Opened shared memory that is not mapped yet.
@@ -66,11 +89,11 @@ unsafe impl Sync for Mapping {}
 pub fn create(path: &OsStr, size: usize) -> Result<(ShmKeeper, ShmHandle)> {
     let size = NonZeroUsize::new(size).ok_or(sigsafe::Errno::INVAL)?;
     let size_u64 = u64::try_from(size.get()).map_err(|_| sigsafe::Errno::OVERFLOW)?;
-    ensure_absolute(path)?;
-    let path = PathBuf::from(path);
+    let path = BackingPath::new(path)?;
 
-    let file = open_file(
-        path.as_os_str(),
+    let file = sigsafe::fs::openat(
+        sigsafe::CWD,
+        path.as_c_str(),
         sigsafe::fs::OFlags::RDWR
             | sigsafe::fs::OFlags::CREATE
             | sigsafe::fs::OFlags::EXCL
@@ -135,11 +158,11 @@ fn copy_path<'buf>(
 
 impl Drop for ShmKeeper {
     fn drop(&mut self) {
-        let mut path = [0_u8; sigsafe::fs::PATH_MAX];
-        let Ok(path) = copy_path(self.path.as_os_str(), &mut path) else {
-            return;
-        };
-        let _ = sigsafe::fs::unlinkat(sigsafe::CWD, path, sigsafe::fs::AtFlags::empty());
+        let _ = sigsafe::fs::unlinkat(
+            sigsafe::CWD,
+            self.path.as_c_str(),
+            sigsafe::fs::AtFlags::empty(),
+        );
     }
 }
 
@@ -206,6 +229,6 @@ impl Mapping {
     pub const unsafe fn as_slice(&self) -> &[u8] {
         // SAFETY: The mapping is valid for its full length, and the caller
         // guarantees that it is not mutated while the slice is borrowed.
-        unsafe { std::slice::from_raw_parts(self.as_ptr().cast_const(), self.len()) }
+        unsafe { slice::from_raw_parts(self.as_ptr().cast_const(), self.len()) }
     }
 }
