@@ -4,7 +4,7 @@
 use std::{
     env::temp_dir,
     ffi::OsStr,
-    fs, io,
+    io,
     num::NonZeroUsize,
     os::unix::ffi::OsStrExt as _,
     path::PathBuf,
@@ -126,13 +126,20 @@ fn open_file(
     flags: sigsafe::fs::OFlags,
     mode: sigsafe::fs::Mode,
 ) -> Result<sigsafe::OwnedFd> {
+    let mut path = [0_u8; sigsafe::fs::PATH_MAX];
+    let path = copy_path(id, &mut path)?;
+    sigsafe::fs::openat(sigsafe::CWD, path, flags, mode)
+}
+
+fn copy_path<'buf>(
+    id: &OsStr,
+    buf: &'buf mut [u8; sigsafe::fs::PATH_MAX],
+) -> Result<sigsafe::CStr<'buf, sigsafe::Fat>> {
     let id = id.as_bytes();
     let len_with_nul = id.len().checked_add(1).ok_or(sigsafe::Errno::NAMETOOLONG)?;
-    let mut path = [0_u8; sigsafe::fs::PATH_MAX];
-    let path = path.get_mut(..len_with_nul).ok_or(sigsafe::Errno::NAMETOOLONG)?;
+    let path = buf.get_mut(..len_with_nul).ok_or(sigsafe::Errno::NAMETOOLONG)?;
     path[..id.len()].copy_from_slice(id);
-    let path = sigsafe::CStr::from_bytes_with_nul(path).map_err(|_| sigsafe::Errno::INVAL)?;
-    sigsafe::fs::openat(sigsafe::CWD, path, flags, mode)
+    sigsafe::CStr::from_bytes_with_nul(path).map_err(|_| sigsafe::Errno::INVAL)
 }
 
 fn errno_to_io(errno: sigsafe::Errno) -> io::Error {
@@ -141,7 +148,11 @@ fn errno_to_io(errno: sigsafe::Errno) -> io::Error {
 
 impl Drop for ShmKeeper {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        let mut path = [0_u8; sigsafe::fs::PATH_MAX];
+        let Ok(path) = copy_path(self.path.as_os_str(), &mut path) else {
+            return;
+        };
+        let _ = sigsafe::fs::unlinkat(sigsafe::CWD, path, sigsafe::fs::AtFlags::empty());
     }
 }
 
