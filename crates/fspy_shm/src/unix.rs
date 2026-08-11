@@ -4,11 +4,11 @@ use std::{
     ffi::OsStr,
     fs::{self, File, OpenOptions},
     io,
+    num::NonZeroUsize,
     os::unix::{ffi::OsStrExt as _, fs::OpenOptionsExt as _, io::IntoRawFd as _},
     path::PathBuf,
+    ptr::{self, NonNull},
 };
-
-use memmap2::{MmapOptions, MmapRaw};
 
 /// Keeps the shared memory's backing-file name alive and removes it on drop.
 ///
@@ -25,7 +25,7 @@ pub struct ShmKeeper {
 /// view of the same bytes. Drop the handle once the mappings exist.
 pub struct ShmHandle {
     file: sigsafe::OwnedFd,
-    size: usize,
+    size: NonZeroUsize,
 }
 
 /// The mapped shared bytes.
@@ -33,7 +33,8 @@ pub struct ShmHandle {
 /// A `Mapping` keeps the bytes alive until it is dropped and cannot affect the
 /// shared memory's path.
 pub struct Mapping {
-    raw: MmapRaw,
+    ptr: NonNull<u8>,
+    len: NonZeroUsize,
 }
 
 fn ensure_absolute(path: &OsStr) -> io::Result<()> {
@@ -43,6 +44,13 @@ fn ensure_absolute(path: &OsStr) -> io::Result<()> {
         Err(io::Error::new(io::ErrorKind::InvalidInput, "shared-memory path must be absolute"))
     }
 }
+
+// SAFETY: a mapping owns no thread-affine state; access synchronization is
+// supplied by the fspy channel built on top of it.
+unsafe impl Send for Mapping {}
+// SAFETY: sharing a `Mapping` does not itself access its bytes, and all actual
+// concurrent access is synchronized by the fspy channel.
+unsafe impl Sync for Mapping {}
 
 /// Creates `size` bytes of zero-initialized shared memory at `path`.
 ///
@@ -57,13 +65,10 @@ fn ensure_absolute(path: &OsStr) -> io::Result<()> {
 /// Returns an error if `path` is not absolute or the shared memory cannot be
 /// created or sized.
 pub fn create(path: &OsStr, size: usize) -> io::Result<(ShmKeeper, ShmHandle)> {
-    if size == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "shared-memory size must be nonzero",
-        ));
-    }
-    let size_u64 = u64::try_from(size).map_err(|_| {
+    let size = NonZeroUsize::new(size).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "shared-memory size must be nonzero")
+    })?;
+    let size_u64 = u64::try_from(size.get()).map_err(|_| {
         io::Error::new(io::ErrorKind::InvalidInput, "shared-memory size exceeds u64")
     })?;
     ensure_absolute(path)?;
@@ -103,9 +108,7 @@ pub fn open(path: &OsStr) -> io::Result<ShmHandle> {
     // resize cannot make a mapping access invalid memory.
     let size = usize::try_from(sigsafe::fs::fstat(&file).map_err(errno_to_io)?.st_size)
         .map_err(|_| io::ErrorKind::InvalidData)?;
-    if size == 0 {
-        return Err(io::ErrorKind::InvalidData.into());
-    }
+    let size = NonZeroUsize::new(size).ok_or(io::ErrorKind::InvalidData)?;
     Ok(ShmHandle { file, size })
 }
 
@@ -151,8 +154,36 @@ impl ShmHandle {
     ///
     /// Returns an error if the mapping cannot be established.
     pub fn map(&self) -> io::Result<Mapping> {
-        let file = sigsafe::AsRawFd::as_raw_fd(&self.file);
-        Ok(Mapping { raw: MmapOptions::new().len(self.size).map_raw(file)? })
+        // SAFETY: the address is only a hint, the nonzero length is the
+        // validated backing-file size, the descriptor remains borrowed,
+        // and the resulting shared mapping is owned by `Mapping`.
+        let mapped = unsafe {
+            sigsafe::mm::mmap(
+                ptr::null_mut(),
+                self.size.get(),
+                sigsafe::mm::ProtFlags::READ | sigsafe::mm::ProtFlags::WRITE,
+                sigsafe::mm::MapFlags::SHARED,
+                &self.file,
+                0,
+            )
+        }
+        .map_err(errno_to_io)?;
+        let Some(ptr) = NonNull::new(mapped.cast()) else {
+            // A non-fixed mapping should not be placed at address zero,
+            // which Rust cannot represent as a non-null allocation.
+            // SAFETY: release the successful mapping before rejecting it.
+            let _ = unsafe { sigsafe::mm::munmap(mapped, self.size.get()) };
+            return Err(io::ErrorKind::Other.into());
+        };
+        Ok(Mapping { ptr, len: self.size })
+    }
+}
+
+impl Drop for Mapping {
+    fn drop(&mut self) {
+        // SAFETY: this is the complete mapping owned by `self`, and dropping
+        // it proves that no safe borrow through `self` remains.
+        let _ = unsafe { sigsafe::mm::munmap(self.ptr.as_ptr().cast(), self.len.get()) };
     }
 }
 
@@ -160,14 +191,14 @@ impl ShmHandle {
 impl Mapping {
     /// Returns the mapped length in bytes.
     #[must_use]
-    pub fn len(&self) -> usize {
-        self.raw.len()
+    pub const fn len(&self) -> usize {
+        self.len.get()
     }
 
     /// Returns a raw pointer to the first mapped byte.
     #[must_use]
-    pub fn as_ptr(&self) -> *mut u8 {
-        self.raw.as_mut_ptr()
+    pub const fn as_ptr(&self) -> *mut u8 {
+        self.ptr.as_ptr()
     }
 
     /// Returns the mapped bytes as a shared slice.
@@ -177,7 +208,7 @@ impl Mapping {
     /// The caller must ensure that no process or thread mutates the mapping for
     /// the lifetime of the returned slice.
     #[must_use]
-    pub unsafe fn as_slice(&self) -> &[u8] {
+    pub const unsafe fn as_slice(&self) -> &[u8] {
         // SAFETY: The mapping is valid for its full length, and the caller
         // guarantees that it is not mutated while the slice is borrowed.
         unsafe { std::slice::from_raw_parts(self.as_ptr().cast_const(), self.len()) }

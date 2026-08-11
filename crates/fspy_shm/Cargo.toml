@@ -7,11 +7,11 @@ license.workspace = true
 publish = false
 rust-version.workspace = true
 
-[dependencies]
-memmap2 = { workspace = true }
-
 [target.'cfg(unix)'.dependencies]
 sigsafe = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+memmap2 = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { workspace = true, features = [
