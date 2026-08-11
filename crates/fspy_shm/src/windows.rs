@@ -20,6 +20,9 @@ use windows_sys::Win32::{
     System::{IO::DeviceIoControl, Ioctl::FSCTL_SET_SPARSE},
 };
 
+/// Borrowed path accepted by shared-memory operations on Windows.
+pub type Path<'a> = &'a OsStr;
+
 const SHARE_ALL: u32 = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
 const TEMPORARY: u32 = FILE_ATTRIBUTE_TEMPORARY;
 const DELETE_ON_CLOSE: u32 = FILE_FLAG_DELETE_ON_CLOSE;
@@ -55,7 +58,7 @@ pub struct Mapping {
 ///
 /// Returns an error if the shared memory cannot be created or sized, or the
 /// containing volume does not support sparse files.
-pub fn create(path: &OsStr, size: usize) -> io::Result<ShmHandle> {
+pub fn create(path: Path<'_>, size: usize) -> io::Result<ShmHandle> {
     if size == 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -96,7 +99,7 @@ pub fn create(path: &OsStr, size: usize) -> io::Result<ShmHandle> {
 ///
 /// Returns an error if the shared memory is unavailable, including after its
 /// backing-file name has been removed.
-pub fn open(path: &OsStr) -> io::Result<ShmHandle> {
+pub fn open(path: Path<'_>) -> io::Result<ShmHandle> {
     // Rust handles are non-inheritable, and its default share mode permits
     // concurrent read, write and delete access.
     let file = OpenOptions::new().read(true).write(true).open(path)?;
@@ -119,7 +122,7 @@ pub fn open(path: &OsStr) -> io::Result<ShmHandle> {
 /// # Errors
 ///
 /// Returns an error if removal cannot be performed or scheduled.
-pub fn remove(path: &OsStr) -> io::Result<()> {
+pub fn remove(path: Path<'_>) -> io::Result<()> {
     if fs::remove_file(path).is_ok() {
         return Ok(());
     }

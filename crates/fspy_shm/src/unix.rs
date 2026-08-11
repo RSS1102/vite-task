@@ -1,12 +1,13 @@
 //! Unix shared memory backed by a sparse file at a caller-provided path.
 
 use std::{
-    ffi::OsStr,
     io,
     num::NonZeroUsize,
-    os::unix::ffi::OsStrExt as _,
     ptr::{self, NonNull},
 };
+
+/// Borrowed path accepted by shared-memory operations on Unix.
+pub type Path<'a> = sigsafe::CStr<'a, sigsafe::Thin>;
 
 /// Opened shared memory that is not mapped yet.
 ///
@@ -44,7 +45,7 @@ unsafe impl Sync for Mapping {}
 /// # Errors
 ///
 /// Returns an error if the shared memory cannot be created or sized.
-pub fn create(path: &OsStr, size: usize) -> io::Result<ShmHandle> {
+pub fn create(path: Path<'_>, size: usize) -> io::Result<ShmHandle> {
     let size = NonZeroUsize::new(size).ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "shared-memory size must be nonzero")
     })?;
@@ -75,7 +76,7 @@ pub fn create(path: &OsStr, size: usize) -> io::Result<ShmHandle> {
 ///
 /// Returns an error if the shared memory is unavailable, including after its
 /// backing-file name has been removed.
-pub fn open(path: &OsStr) -> io::Result<ShmHandle> {
+pub fn open(path: Path<'_>) -> io::Result<ShmHandle> {
     let file = open_file(
         path,
         sigsafe::fs::OFlags::RDWR | sigsafe::fs::OFlags::CLOEXEC,
@@ -98,33 +99,17 @@ pub fn open(path: &OsStr) -> io::Result<ShmHandle> {
 /// # Errors
 ///
 /// Returns an error if the backing-file name cannot be removed.
-pub fn remove(path: &OsStr) -> io::Result<()> {
-    let mut path_buf = [0_u8; sigsafe::fs::PATH_MAX];
-    let path = copy_path(path, &mut path_buf)?;
-    sigsafe::fs::unlinkat(sigsafe::CWD, path, sigsafe::fs::AtFlags::empty()).map_err(errno_to_io)
+pub fn remove(path: Path<'_>) -> io::Result<()> {
+    sigsafe::fs::unlinkat(sigsafe::CWD, path.count(), sigsafe::fs::AtFlags::empty())
+        .map_err(errno_to_io)
 }
 
 fn open_file(
-    path: &OsStr,
+    path: Path<'_>,
     flags: sigsafe::fs::OFlags,
     mode: sigsafe::fs::Mode,
 ) -> io::Result<sigsafe::OwnedFd> {
-    let mut path_buf = [0_u8; sigsafe::fs::PATH_MAX];
-    let path = copy_path(path, &mut path_buf)?;
     sigsafe::fs::openat(sigsafe::CWD, path, flags, mode).map_err(errno_to_io)
-}
-
-fn copy_path<'buf>(
-    path: &OsStr,
-    buf: &'buf mut [u8; sigsafe::fs::PATH_MAX],
-) -> io::Result<sigsafe::CStr<'buf, sigsafe::Fat>> {
-    let path_bytes = path.as_bytes();
-    let len_with_nul = path_bytes.len().checked_add(1).ok_or(io::ErrorKind::InvalidInput)?;
-    let path = buf
-        .get_mut(..len_with_nul)
-        .ok_or_else(|| io::Error::from_raw_os_error(sigsafe::Errno::NAMETOOLONG.raw_os_error()))?;
-    path[..path_bytes.len()].copy_from_slice(path_bytes);
-    sigsafe::CStr::from_bytes_with_nul(path).map_err(|_| io::ErrorKind::InvalidInput.into())
 }
 
 fn errno_to_io(errno: sigsafe::Errno) -> io::Error {

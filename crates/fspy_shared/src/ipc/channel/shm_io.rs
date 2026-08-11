@@ -675,7 +675,10 @@ mod tests {
         let shm_path = std::path::absolute(std::env::temp_dir())
             .unwrap()
             .join(format!("fspy_ipc_test_{}.shm", uuid::Uuid::new_v4()));
-        let handle = fspy_shm::create(shm_path.as_os_str(), SHM_SIZE).unwrap();
+        let handle = super::super::with_shm_path(shm_path.as_os_str(), |path| {
+            fspy_shm::create(path, SHM_SIZE)
+        })
+        .unwrap();
         let shm_name = shm_path.to_str().expect("test temp dir is UTF-8").to_owned();
         // Map before the children run. Windows keeps views coherent while they
         // exist at the same time; a view created after every writer exited can
@@ -687,8 +690,12 @@ mod tests {
                 let cmd = command_for_fn!(
                     (shm_name.clone(), child_index),
                     |(shm_name, child_index): (String, usize)| {
-                        let mapping =
-                            fspy_shm::open(std::ffi::OsStr::new(&shm_name)).unwrap().map().unwrap();
+                        let handle = super::super::with_shm_path(
+                            std::ffi::OsStr::new(&shm_name),
+                            fspy_shm::open,
+                        )
+                        .unwrap();
+                        let mapping = handle.map().unwrap();
                         // SAFETY: `mapping` is a freshly mapped shared memory region with a
                         // valid pointer and size. Concurrent write access is safe because
                         // `ShmWriter` uses atomic operations.
@@ -720,6 +727,6 @@ mod tests {
                 assert!(frames.contains(&BStr::new(frame_data.as_bytes())));
             }
         }
-        fspy_shm::remove(shm_path.as_os_str()).unwrap();
+        super::super::with_shm_path(shm_path.as_os_str(), fspy_shm::remove).unwrap();
     }
 }

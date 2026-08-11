@@ -2,7 +2,9 @@
 
 mod shm_io;
 
-use std::{env::temp_dir, fs::File, io, ops::Deref, path::PathBuf};
+use std::{env::temp_dir, ffi::OsStr, fs::File, io, ops::Deref, path::PathBuf};
+#[cfg(unix)]
+use std::{ffi::CString, os::unix::ffi::OsStrExt as _};
 
 use fspy_shm::Mapping;
 pub use shm_io::FrameMut;
@@ -28,11 +30,11 @@ pub fn channel(capacity: usize) -> io::Result<(ChannelConf, Receiver)> {
     let lock_file_path = temp_dir.join(format!("fspy_ipc_{id}.lock"));
     let shm_path = temp_dir.join(format!("fspy_ipc_{id}.shm"));
 
-    let handle = fspy_shm::create(shm_path.as_os_str(), capacity)?;
+    let handle = with_shm_path(shm_path.as_os_str(), |path| fspy_shm::create(path, capacity))?;
     let mapping = match handle.map() {
         Ok(mapping) => mapping,
         Err(error) => {
-            let _ = fspy_shm::remove(shm_path.as_os_str());
+            let _ = with_shm_path(shm_path.as_os_str(), fspy_shm::remove);
             return Err(error);
         }
     };
@@ -58,7 +60,8 @@ impl ChannelConf {
         let lock_file = File::open(self.lock_file_path.to_cow_os_str())?;
         lock_file.try_lock_shared()?;
 
-        let mapping = fspy_shm::open(&self.shm_path.to_cow_os_str())?.map()?;
+        let handle = with_shm_path(self.shm_path.to_cow_os_str().as_ref(), fspy_shm::open)?;
+        let mapping = handle.map()?;
         // SAFETY: `mapping` is a freshly mapped shared memory region with valid
         // pointer and size. Exclusive write access is ensured by the shared
         // file lock held by this sender.
@@ -116,7 +119,7 @@ impl Drop for Receiver {
         if let Err(err) = std::fs::remove_file(&self.lock_file_path) {
             debug!("Failed to remove IPC lock file {}: {}", self.lock_file_path.display(), err);
         }
-        if let Err(err) = fspy_shm::remove(self.shm_path.as_os_str()) {
+        if let Err(err) = with_shm_path(self.shm_path.as_os_str(), fspy_shm::remove) {
             debug!("Failed to remove IPC shared memory {}: {}", self.shm_path.display(), err);
         }
     }
@@ -127,7 +130,7 @@ impl Receiver {
         let lock_file = match File::create(&lock_file_path) {
             Ok(lock_file) => lock_file,
             Err(error) => {
-                let _ = fspy_shm::remove(shm_path.as_os_str());
+                let _ = with_shm_path(shm_path.as_os_str(), fspy_shm::remove);
                 return Err(error);
             }
         };
@@ -148,6 +151,28 @@ impl Receiver {
         let reader = ShmReader::new(unsafe { self.mapping.as_slice() });
         Ok(ReceiverLockGuard { reader, lock_file: &self.lock_file })
     }
+}
+
+#[cfg(unix)]
+fn with_shm_path<T>(
+    path: &OsStr,
+    call: impl FnOnce(fspy_shm::Path<'_>) -> io::Result<T>,
+) -> io::Result<T> {
+    let path = CString::new(path.as_bytes()).map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidInput, "shared-memory path contains NUL")
+    })?;
+    // SAFETY: `CString` owns an immutable NUL-terminated string through
+    // `call`.
+    let path = unsafe { fspy_shm::Path::from_ptr(path.as_ptr()) };
+    call(path)
+}
+
+#[cfg(windows)]
+fn with_shm_path<T>(
+    path: &OsStr,
+    call: impl FnOnce(fspy_shm::Path<'_>) -> io::Result<T>,
+) -> io::Result<T> {
+    call(path)
 }
 
 pub struct ReceiverLockGuard<'a> {

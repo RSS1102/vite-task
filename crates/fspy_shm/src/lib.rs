@@ -5,7 +5,7 @@ mod unix;
 #[cfg(windows)]
 mod windows;
 
-pub use platform::{Mapping, ShmHandle, create, open, remove};
+pub use platform::{Mapping, Path, ShmHandle, create, open, remove};
 #[cfg(unix)]
 use unix as platform;
 #[cfg(windows)]
@@ -18,16 +18,18 @@ mod tests {
     use std::{
         env::temp_dir,
         ffi::{OsStr, OsString},
-        fs,
+        fs, io,
         mem::align_of,
         path::Path,
         process::Command,
     };
+    #[cfg(unix)]
+    use std::{ffi::CString, os::unix::ffi::OsStrExt as _};
 
     use subprocess_test::command_for_fn;
     use uuid::Uuid;
 
-    use super::{Mapping, ShmHandle, create as create_at, open, remove};
+    use super::{Mapping, ShmHandle};
 
     const TEST_BACKING_PREFIX: &str = "vite-task-fspy-test-";
     // Page-aligned on all supported targets.
@@ -39,7 +41,7 @@ mod tests {
     fn new_mapping_is_zero_initialized_in_all_views() {
         let (id, _cleanup, handle) = create(ZERO_INITIALIZED_SIZE);
         let first = handle.map().unwrap();
-        let second = open(&id).unwrap().map().unwrap();
+        let second = with_path(&id, super::open).unwrap().map().unwrap();
 
         assert_zero_initialized(&first);
         assert_zero_initialized(&second);
@@ -52,7 +54,7 @@ mod tests {
         assert_eq!(first.len(), SIZE);
         assert_eq!(first.as_ptr() as usize % align_of::<usize>(), 0);
 
-        let second = open(&id).unwrap().map().unwrap();
+        let second = with_path(&id, super::open).unwrap().map().unwrap();
         assert_eq!(second.len(), SIZE);
 
         write_byte(&first, 0, 17);
@@ -79,7 +81,7 @@ mod tests {
 
         let id = id.to_str().expect("test temp dir is UTF-8").to_owned();
         let command = command_for_fn!(id, |id: String| {
-            let opened = open(OsStr::new(&id)).unwrap().map().unwrap();
+            let opened = with_path(OsStr::new(&id), super::open).unwrap().map().unwrap();
             assert_eq!(read_byte(&opened, 0), 17);
             write_byte(&opened, SIZE - 1, 29);
         });
@@ -98,7 +100,7 @@ mod tests {
 
         let id = id.to_str().expect("test temp dir is UTF-8").to_owned();
         let mut command = command_for_fn!(id, |id: String| {
-            let opened = open(OsStr::new(&id)).unwrap().map().unwrap();
+            let opened = with_path(OsStr::new(&id), super::open).unwrap().map().unwrap();
             assert_eq!(read_byte(&opened, 0), 17);
             write_byte(&opened, SIZE - 1, 29);
         });
@@ -119,20 +121,20 @@ mod tests {
     fn remove_prevents_new_opens() {
         let (id, _cleanup, handle) = create(SIZE);
         drop(handle);
-        remove(&id).unwrap();
+        with_path(&id, super::remove).unwrap();
 
-        assert!(open(&id).is_err());
+        assert!(with_path(&id, super::open).is_err());
     }
 
     #[test]
     fn opened_mapping_survives_remove() {
         let (id, _cleanup, handle) = create(SIZE);
-        let opened = open(&id).unwrap().map().unwrap();
+        let opened = with_path(&id, super::open).unwrap().map().unwrap();
         write_byte(&opened, 0, 17);
         drop(handle);
-        remove(&id).unwrap();
+        with_path(&id, super::remove).unwrap();
 
-        assert!(open(&id).is_err());
+        assert!(with_path(&id, super::open).is_err());
         assert_eq!(read_byte(&opened, 0), 17);
         write_byte(&opened, SIZE - 1, 29);
         assert_eq!(read_byte(&opened, SIZE - 1), 29);
@@ -144,14 +146,14 @@ mod tests {
     fn remove_backing_file_preserves_existing_mappings() {
         let (id, _cleanup, handle) = create(SIZE);
         let path = Path::new(&id).to_owned();
-        let opened = open(&id).unwrap().map().unwrap();
+        let opened = with_path(&id, super::open).unwrap().map().unwrap();
         drop(handle);
         assert!(path.exists());
 
-        remove(&id).unwrap();
+        with_path(&id, super::remove).unwrap();
 
         assert!(!path.exists());
-        assert!(open(&id).is_err());
+        assert!(with_path(&id, super::open).is_err());
         write_byte(&opened, 0, 17);
         assert_eq!(read_byte(&opened, 0), 17);
     }
@@ -164,10 +166,10 @@ mod tests {
         let before = handle.map().unwrap();
         write_byte(&before, 0, 17);
 
-        remove(&id).unwrap();
+        with_path(&id, super::remove).unwrap();
 
         assert!(!Path::new(&id).exists());
-        assert!(open(&id).is_err());
+        assert!(with_path(&id, super::open).is_err());
 
         let after = handle.map().unwrap();
         assert_eq!(read_byte(&after, 0), 17);
@@ -191,7 +193,7 @@ mod tests {
         }
 
         let first = handle.map().unwrap();
-        let opened = open(&id).unwrap().map().unwrap();
+        let opened = with_path(&id, super::open).unwrap().map().unwrap();
         write_byte(&first, 0, 17);
         write_byte(&first, PRODUCTION_SIZE - 1, 29);
         assert_eq!(read_byte(&opened, 0), 17);
@@ -216,7 +218,7 @@ mod tests {
 
     impl Drop for Cleanup {
         fn drop(&mut self) {
-            let _ = remove(&self.0);
+            let _ = with_path(&self.0, super::remove);
         }
     }
 
@@ -225,9 +227,29 @@ mod tests {
             .unwrap()
             .join(format!("{TEST_BACKING_PREFIX}{}.shm", Uuid::new_v4().simple()));
         let id = path.into_os_string();
-        let handle = create_at(&id, size).unwrap();
+        let handle = with_path(&id, |path| super::create(path, size)).unwrap();
         let cleanup = Cleanup(id.clone());
         (id, cleanup, handle)
+    }
+
+    #[cfg(unix)]
+    fn with_path<T>(
+        path: &OsStr,
+        call: impl FnOnce(super::Path<'_>) -> io::Result<T>,
+    ) -> io::Result<T> {
+        let path = CString::new(path.as_bytes()).map_err(|_| io::ErrorKind::InvalidInput)?;
+        // SAFETY: `CString` owns one NUL-terminated string for the duration of
+        // `call`.
+        let path = unsafe { super::Path::from_ptr(path.as_ptr()) };
+        call(path)
+    }
+
+    #[cfg(windows)]
+    fn with_path<T>(
+        path: &OsStr,
+        call: impl FnOnce(super::Path<'_>) -> io::Result<T>,
+    ) -> io::Result<T> {
+        call(path)
     }
 
     fn read_byte(mapping: &Mapping, index: usize) -> u8 {
