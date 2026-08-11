@@ -2,10 +2,9 @@
 
 use std::{
     ffi::OsStr,
-    fs::{self, File, OpenOptions},
-    io,
+    fs, io,
     num::NonZeroUsize,
-    os::unix::{ffi::OsStrExt as _, fs::OpenOptionsExt as _, io::IntoRawFd as _},
+    os::unix::ffi::OsStrExt as _,
     path::PathBuf,
     ptr::{self, NonNull},
 };
@@ -74,19 +73,19 @@ pub fn create(path: &OsStr, size: usize) -> io::Result<(ShmKeeper, ShmHandle)> {
     ensure_absolute(path)?;
     let path = PathBuf::from(path);
 
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        // Only the creating user may open the mapping.
-        .mode(0o600)
-        .open(&path)?;
+    let file = open_file(
+        path.as_os_str(),
+        sigsafe::fs::OFlags::RDWR
+            | sigsafe::fs::OFlags::CREATE
+            | sigsafe::fs::OFlags::EXCL
+            | sigsafe::fs::OFlags::CLOEXEC,
+        sigsafe::fs::Mode::RUSR | sigsafe::fs::Mode::WUSR,
+    )?;
     // The keeper exists from here on, so every error path below cleans up.
     let keeper = ShmKeeper { path };
 
     // Every byte reads as zero because the file is all holes.
-    file.set_len(size_u64)?;
-    let file = into_sigsafe_fd(file);
+    sigsafe::fs::ftruncate(&file, size_u64).map_err(errno_to_io)?;
 
     Ok((keeper, ShmHandle { file, size }))
 }
@@ -102,7 +101,11 @@ pub fn create(path: &OsStr, size: usize) -> io::Result<(ShmKeeper, ShmHandle)> {
 /// unavailable, which is the common case once its keeper has been dropped.
 pub fn open(path: &OsStr) -> io::Result<ShmHandle> {
     ensure_absolute(path)?;
-    let file = open_file(path)?;
+    let file = open_file(
+        path,
+        sigsafe::fs::OFlags::RDWR | sigsafe::fs::OFlags::CLOEXEC,
+        sigsafe::fs::Mode::empty(),
+    )?;
     // If another process shrinks the file before `map`, mapping fails. If it
     // resizes afterwards, nothing here touches the mapped pages. A concurrent
     // resize cannot make a mapping access invalid memory.
@@ -112,7 +115,11 @@ pub fn open(path: &OsStr) -> io::Result<ShmHandle> {
     Ok(ShmHandle { file, size })
 }
 
-fn open_file(path: &OsStr) -> io::Result<sigsafe::OwnedFd> {
+fn open_file(
+    path: &OsStr,
+    flags: sigsafe::fs::OFlags,
+    mode: sigsafe::fs::Mode,
+) -> io::Result<sigsafe::OwnedFd> {
     let path_bytes = path.as_bytes();
     let len_with_nul = path_bytes.len().checked_add(1).ok_or(io::ErrorKind::InvalidInput)?;
     let mut path_buf = [0_u8; sigsafe::fs::PATH_MAX];
@@ -121,24 +128,11 @@ fn open_file(path: &OsStr) -> io::Result<sigsafe::OwnedFd> {
         .ok_or_else(|| io::Error::from_raw_os_error(sigsafe::Errno::NAMETOOLONG.raw_os_error()))?;
     path[..path_bytes.len()].copy_from_slice(path_bytes);
     let path = sigsafe::CStr::from_bytes_with_nul(path).map_err(|_| io::ErrorKind::InvalidInput)?;
-    sigsafe::fs::openat(
-        sigsafe::CWD,
-        path,
-        sigsafe::fs::OFlags::RDWR | sigsafe::fs::OFlags::CLOEXEC,
-        sigsafe::fs::Mode::empty(),
-    )
-    .map_err(errno_to_io)
+    sigsafe::fs::openat(sigsafe::CWD, path, flags, mode).map_err(errno_to_io)
 }
 
 fn errno_to_io(errno: sigsafe::Errno) -> io::Error {
     io::Error::from_raw_os_error(errno.raw_os_error())
-}
-
-fn into_sigsafe_fd(file: File) -> sigsafe::OwnedFd {
-    let fd = file.into_raw_fd();
-    // SAFETY: ownership of `file`'s descriptor transfers without closing or
-    // duplicating it.
-    unsafe { sigsafe::FromRawFd::from_raw_fd(fd) }
 }
 
 impl Drop for ShmKeeper {
