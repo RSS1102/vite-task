@@ -31,7 +31,7 @@ pub fn channel(capacity: usize) -> io::Result<(ChannelConf, Receiver)> {
     let shm_path = temp_dir.join(format!("fspy_ipc_{id}.shm"));
 
     let handle = with_shm_path(shm_path.as_os_str(), |path| fspy_shm::create(path, capacity))?;
-    let mapping = match handle.map() {
+    let mapping = match shm_result(handle.map()) {
         Ok(mapping) => mapping,
         Err(error) => {
             let _ = with_shm_path(shm_path.as_os_str(), fspy_shm::remove);
@@ -61,13 +61,23 @@ impl ChannelConf {
         lock_file.try_lock_shared()?;
 
         let handle = with_shm_path(self.shm_path.to_cow_os_str().as_ref(), fspy_shm::open)?;
-        let mapping = handle.map()?;
+        let mapping = shm_result(handle.map())?;
         // SAFETY: `mapping` is a freshly mapped shared memory region with valid
         // pointer and size. Exclusive write access is ensured by the shared
         // file lock held by this sender.
         let writer = unsafe { ShmWriter::new(mapping) };
         Ok(Sender { writer, lock_file, lock_file_path: self.lock_file_path.clone() })
     }
+}
+
+#[cfg(unix)]
+fn shm_result<T>(result: fspy_shm::Result<T>) -> io::Result<T> {
+    result.map_err(|error| io::Error::from_raw_os_error(error.raw_os_error()))
+}
+
+#[cfg(windows)]
+const fn shm_result<T>(result: fspy_shm::Result<T>) -> io::Result<T> {
+    result
 }
 
 pub struct Sender {
@@ -156,7 +166,7 @@ impl Receiver {
 #[cfg(unix)]
 fn with_shm_path<T>(
     path: &OsStr,
-    call: impl FnOnce(fspy_shm::Path<'_>) -> io::Result<T>,
+    call: impl FnOnce(fspy_shm::Path<'_>) -> fspy_shm::Result<T>,
 ) -> io::Result<T> {
     let path = CString::new(path.as_bytes()).map_err(|_| {
         io::Error::new(io::ErrorKind::InvalidInput, "shared-memory path contains NUL")
@@ -164,15 +174,15 @@ fn with_shm_path<T>(
     // SAFETY: `CString` owns an immutable NUL-terminated string through
     // `call`.
     let path = unsafe { fspy_shm::Path::from_ptr(path.as_ptr()) };
-    call(path)
+    shm_result(call(path))
 }
 
 #[cfg(windows)]
 fn with_shm_path<T>(
     path: &OsStr,
-    call: impl FnOnce(fspy_shm::Path<'_>) -> io::Result<T>,
+    call: impl FnOnce(fspy_shm::Path<'_>) -> fspy_shm::Result<T>,
 ) -> io::Result<T> {
-    call(path)
+    shm_result(call(path))
 }
 
 pub struct ReceiverLockGuard<'a> {

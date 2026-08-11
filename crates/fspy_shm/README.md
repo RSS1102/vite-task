@@ -28,7 +28,7 @@ One implementation serves every platform: a sparse file at the full path supplie
 
 Only written pages ever occupy memory or disk. The multi-gigabyte capacity fspy asks for therefore costs about as much as the data a run actually records.
 
-Unix creates, sizes, opens, maps, and unlinks through `sigsafe`; on Linux, its raw-syscall backend works before libc initialization. Windows maps through `memmap2`. The remaining platform-specific parts are short passages:
+Unix builds without `std` and creates, sizes, opens, maps, and unlinks through `sigsafe`; on Linux, its raw-syscall backend works before libc initialization. Windows maps through `memmap2`. The remaining platform-specific parts are short passages:
 
 | Concern           | Unix                                     | Windows                                                                     |
 | ----------------- | ---------------------------------------- | --------------------------------------------------------------------------- |

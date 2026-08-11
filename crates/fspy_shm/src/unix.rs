@@ -1,13 +1,17 @@
 //! Unix shared memory backed by a sparse file at a caller-provided path.
 
-use std::{
-    io,
+use core::{
     num::NonZeroUsize,
     ptr::{self, NonNull},
+    slice,
 };
 
 /// Borrowed path accepted by shared-memory operations on Unix.
 pub type Path<'a> = sigsafe::CStr<'a, sigsafe::Thin>;
+/// Error returned by shared-memory operations on Unix.
+pub type Error = sigsafe::Error;
+/// Result returned by shared-memory operations on Unix.
+pub type Result<T> = sigsafe::Result<T>;
 
 /// Opened shared memory that is not mapped yet.
 ///
@@ -45,13 +49,9 @@ unsafe impl Sync for Mapping {}
 /// # Errors
 ///
 /// Returns an error if the shared memory cannot be created or sized.
-pub fn create(path: Path<'_>, size: usize) -> io::Result<ShmHandle> {
-    let size = NonZeroUsize::new(size).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "shared-memory size must be nonzero")
-    })?;
-    let size_u64 = u64::try_from(size.get()).map_err(|_| {
-        io::Error::new(io::ErrorKind::InvalidInput, "shared-memory size exceeds u64")
-    })?;
+pub fn create(path: Path<'_>, size: usize) -> Result<ShmHandle> {
+    let size = NonZeroUsize::new(size).ok_or(sigsafe::Errno::INVAL)?;
+    let size_u64 = u64::try_from(size.get()).map_err(|_| sigsafe::Errno::OVERFLOW)?;
     let file = open_file(
         path,
         sigsafe::fs::OFlags::RDWR
@@ -64,7 +64,7 @@ pub fn create(path: Path<'_>, size: usize) -> io::Result<ShmHandle> {
     if let Err(error) = sigsafe::fs::ftruncate(&file, size_u64) {
         drop(file);
         let _ = remove(path);
-        return Err(errno_to_io(error));
+        return Err(error);
     }
 
     Ok(ShmHandle { file, size })
@@ -76,7 +76,7 @@ pub fn create(path: Path<'_>, size: usize) -> io::Result<ShmHandle> {
 ///
 /// Returns an error if the shared memory is unavailable, including after its
 /// backing-file name has been removed.
-pub fn open(path: Path<'_>) -> io::Result<ShmHandle> {
+pub fn open(path: Path<'_>) -> Result<ShmHandle> {
     let file = open_file(
         path,
         sigsafe::fs::OFlags::RDWR | sigsafe::fs::OFlags::CLOEXEC,
@@ -85,9 +85,9 @@ pub fn open(path: Path<'_>) -> io::Result<ShmHandle> {
     // If another process shrinks the file before `map`, mapping fails. If it
     // resizes afterwards, nothing here touches the mapped pages. A concurrent
     // resize cannot make a mapping access invalid memory.
-    let size = usize::try_from(sigsafe::fs::fstat(&file).map_err(errno_to_io)?.st_size)
-        .map_err(|_| io::ErrorKind::InvalidData)?;
-    let size = NonZeroUsize::new(size).ok_or(io::ErrorKind::InvalidData)?;
+    let size = usize::try_from(sigsafe::fs::fstat(&file)?.st_size)
+        .map_err(|_| sigsafe::Errno::OVERFLOW)?;
+    let size = NonZeroUsize::new(size).ok_or(sigsafe::Errno::INVAL)?;
     Ok(ShmHandle { file, size })
 }
 
@@ -99,21 +99,16 @@ pub fn open(path: Path<'_>) -> io::Result<ShmHandle> {
 /// # Errors
 ///
 /// Returns an error if the backing-file name cannot be removed.
-pub fn remove(path: Path<'_>) -> io::Result<()> {
+pub fn remove(path: Path<'_>) -> Result<()> {
     sigsafe::fs::unlinkat(sigsafe::CWD, path.count(), sigsafe::fs::AtFlags::empty())
-        .map_err(errno_to_io)
 }
 
 fn open_file(
     path: Path<'_>,
     flags: sigsafe::fs::OFlags,
     mode: sigsafe::fs::Mode,
-) -> io::Result<sigsafe::OwnedFd> {
-    sigsafe::fs::openat(sigsafe::CWD, path, flags, mode).map_err(errno_to_io)
-}
-
-fn errno_to_io(errno: sigsafe::Errno) -> io::Error {
-    io::Error::from_raw_os_error(errno.raw_os_error())
+) -> Result<sigsafe::OwnedFd> {
+    sigsafe::fs::openat(sigsafe::CWD, path, flags, mode)
 }
 
 impl ShmHandle {
@@ -122,7 +117,7 @@ impl ShmHandle {
     /// # Errors
     ///
     /// Returns an error if the mapping cannot be established.
-    pub fn map(&self) -> io::Result<Mapping> {
+    pub fn map(&self) -> Result<Mapping> {
         // SAFETY: the address is only a hint, the nonzero length is the
         // validated backing-file size, the descriptor remains borrowed,
         // and the resulting shared mapping is owned by `Mapping`.
@@ -135,14 +130,13 @@ impl ShmHandle {
                 &self.file,
                 0,
             )
-        }
-        .map_err(errno_to_io)?;
+        }?;
         let Some(ptr) = NonNull::new(mapped.cast()) else {
             // A non-fixed mapping should not be placed at address zero,
             // which Rust cannot represent as a non-null allocation.
             // SAFETY: release the successful mapping before rejecting it.
             let _ = unsafe { sigsafe::mm::munmap(mapped, self.size.get()) };
-            return Err(io::ErrorKind::Other.into());
+            return Err(sigsafe::Errno::INVAL);
         };
         Ok(Mapping { ptr, len: self.size })
     }
@@ -180,6 +174,6 @@ impl Mapping {
     pub const unsafe fn as_slice(&self) -> &[u8] {
         // SAFETY: The mapping is valid for its full length, and the caller
         // guarantees that it is not mutated while the slice is borrowed.
-        unsafe { std::slice::from_raw_parts(self.as_ptr().cast_const(), self.len()) }
+        unsafe { slice::from_raw_parts(self.as_ptr().cast_const(), self.len()) }
     }
 }

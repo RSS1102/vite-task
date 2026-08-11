@@ -1,3 +1,4 @@
+#![cfg_attr(all(unix, not(test)), no_std)]
 #![doc = include_str!("../README.md")]
 
 #[cfg(unix)]
@@ -5,7 +6,7 @@ mod unix;
 #[cfg(windows)]
 mod windows;
 
-pub use platform::{Mapping, Path, ShmHandle, create, open, remove};
+pub use platform::{Error, Mapping, Path, Result, ShmHandle, create, open, remove};
 #[cfg(unix)]
 use unix as platform;
 #[cfg(windows)]
@@ -18,7 +19,7 @@ mod tests {
     use std::{
         env::temp_dir,
         ffi::{OsStr, OsString},
-        fs, io,
+        fs,
         mem::align_of,
         path::Path,
         process::Command,
@@ -235,9 +236,9 @@ mod tests {
     #[cfg(unix)]
     fn with_path<T>(
         path: &OsStr,
-        call: impl FnOnce(super::Path<'_>) -> io::Result<T>,
-    ) -> io::Result<T> {
-        let path = CString::new(path.as_bytes()).map_err(|_| io::ErrorKind::InvalidInput)?;
+        call: impl FnOnce(super::Path<'_>) -> super::Result<T>,
+    ) -> super::Result<T> {
+        let path = CString::new(path.as_bytes()).map_err(|_| sigsafe::Errno::INVAL)?;
         // SAFETY: `CString` owns one NUL-terminated string for the duration of
         // `call`.
         let path = unsafe { super::Path::from_ptr(path.as_ptr()) };
@@ -247,8 +248,8 @@ mod tests {
     #[cfg(windows)]
     fn with_path<T>(
         path: &OsStr,
-        call: impl FnOnce(super::Path<'_>) -> io::Result<T>,
-    ) -> io::Result<T> {
+        call: impl FnOnce(super::Path<'_>) -> super::Result<T>,
+    ) -> super::Result<T> {
         call(path)
     }
 
