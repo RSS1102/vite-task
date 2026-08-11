@@ -4,10 +4,9 @@
 use std::{
     env::temp_dir,
     ffi::OsStr,
-    fs::{self, File, OpenOptions},
-    io,
+    fs, io,
     num::NonZeroUsize,
-    os::unix::{ffi::OsStrExt as _, fs::OpenOptionsExt as _, io::IntoRawFd as _},
+    os::unix::ffi::OsStrExt as _,
     path::PathBuf,
     ptr::{self, NonNull},
 };
@@ -80,19 +79,20 @@ pub fn create(size: usize) -> io::Result<(ShmKeeper, ShmHandle)> {
     let path = std::path::absolute(temp_dir())?
         .join(format!("{BACKING_PREFIX}{}.shm", Uuid::new_v4().simple()));
 
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        // Only the creating user may open the mapping.
-        .mode(0o600)
-        .open(&path)?;
+    let file = open_file(
+        path.as_os_str(),
+        sigsafe::fs::OFlags::RDWR
+            | sigsafe::fs::OFlags::CREATE
+            | sigsafe::fs::OFlags::EXCL
+            | sigsafe::fs::OFlags::CLOEXEC,
+        sigsafe::fs::Mode::RUSR | sigsafe::fs::Mode::WUSR,
+    )
+    .map_err(errno_to_io)?;
     // The keeper exists from here on, so every error path below cleans up.
     let keeper = ShmKeeper { path };
 
     // Every byte reads as zero because the file is all holes.
-    file.set_len(size_u64)?;
-    let file = into_sigsafe_fd(file);
+    sigsafe::fs::ftruncate(&file, size_u64).map_err(errno_to_io)?;
 
     Ok((keeper, ShmHandle { file, size }))
 }
@@ -107,7 +107,11 @@ pub fn create(size: usize) -> io::Result<(ShmKeeper, ShmHandle)> {
 /// Returns an error if the shared memory is unavailable, which is the common
 /// case once its keeper has been dropped.
 pub fn open(id: &OsStr) -> Result<ShmHandle> {
-    let file = open_file(id)?;
+    let file = open_file(
+        id,
+        sigsafe::fs::OFlags::RDWR | sigsafe::fs::OFlags::CLOEXEC,
+        sigsafe::fs::Mode::empty(),
+    )?;
     // If another process shrinks the file before `map`, mapping fails. If it
     // resizes afterwards, nothing here touches the mapped pages. A concurrent
     // resize cannot make a mapping access invalid memory.
@@ -117,26 +121,22 @@ pub fn open(id: &OsStr) -> Result<ShmHandle> {
     Ok(ShmHandle { file, size })
 }
 
-fn open_file(id: &OsStr) -> Result<sigsafe::OwnedFd> {
+fn open_file(
+    id: &OsStr,
+    flags: sigsafe::fs::OFlags,
+    mode: sigsafe::fs::Mode,
+) -> Result<sigsafe::OwnedFd> {
     let id = id.as_bytes();
     let len_with_nul = id.len().checked_add(1).ok_or(sigsafe::Errno::NAMETOOLONG)?;
     let mut path = [0_u8; sigsafe::fs::PATH_MAX];
     let path = path.get_mut(..len_with_nul).ok_or(sigsafe::Errno::NAMETOOLONG)?;
     path[..id.len()].copy_from_slice(id);
     let path = sigsafe::CStr::from_bytes_with_nul(path).map_err(|_| sigsafe::Errno::INVAL)?;
-    sigsafe::fs::openat(
-        sigsafe::CWD,
-        path,
-        sigsafe::fs::OFlags::RDWR | sigsafe::fs::OFlags::CLOEXEC,
-        sigsafe::fs::Mode::empty(),
-    )
+    sigsafe::fs::openat(sigsafe::CWD, path, flags, mode)
 }
 
-fn into_sigsafe_fd(file: File) -> sigsafe::OwnedFd {
-    let fd = file.into_raw_fd();
-    // SAFETY: ownership of `file`'s descriptor transfers without closing or
-    // duplicating it.
-    unsafe { sigsafe::FromRawFd::from_raw_fd(fd) }
+fn errno_to_io(errno: sigsafe::Errno) -> io::Error {
+    io::Error::from_raw_os_error(errno.raw_os_error())
 }
 
 impl Drop for ShmKeeper {
