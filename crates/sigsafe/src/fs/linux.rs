@@ -1,9 +1,45 @@
 use core::{mem::MaybeUninit, slice};
 
-use crate::{AsRawFd as _, BorrowedFd, CStr, Errno, Fat, Result, Thin};
+use rustix::fd::FromRawFd as _;
+
+use crate::{
+    AsRawFd as _, BorrowedFd, CStr, Errno, Fat, OwnedFd, Result, Thin,
+    fs::{Mode, OFlags},
+};
 
 // Linux UAPI `PATH_MAX`.
 pub(super) const PATH_MAX: usize = 4096;
+
+fn syscall_fd(fd: BorrowedFd<'_>) -> Result<usize> {
+    let fd = isize::try_from(fd.as_raw_fd()).map_err(|_| Errno::OVERFLOW)?;
+    Ok(fd.cast_unsigned())
+}
+
+#[expect(clippy::needless_pass_by_value, reason = "CStr is a borrowed value type")]
+pub(super) fn openat<R>(
+    dirfd: BorrowedFd<'_>,
+    path: CStr<'_, R>,
+    flags: OFlags,
+    mode: Mode,
+) -> Result<OwnedFd> {
+    // SAFETY: `dirfd` remains borrowed and `path` is NUL-terminated. The
+    // kernel reads no variadic arguments; all four syscall arguments are
+    // passed explicitly.
+    let fd = unsafe {
+        syscalls::syscall4(
+            syscalls::Sysno::openat,
+            syscall_fd(dirfd)?,
+            path.as_ptr().addr(),
+            usize::try_from(flags.bits()).map_err(|_| Errno::INVAL)?,
+            usize::try_from(mode.bits()).map_err(|_| Errno::INVAL)?,
+        )
+    }
+    .map_err(|errno| Errno::from_raw_os_error(errno.into_raw()))?;
+    let fd = i32::try_from(fd).map_err(|_| Errno::OVERFLOW)?;
+
+    // SAFETY: a successful `openat` returns a new owned descriptor.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
 
 /// Reads the target of `path` relative to `dirfd` into `buf`.
 ///
@@ -27,7 +63,7 @@ pub fn readlinkat<'buf>(
     let initialized = unsafe {
         syscalls::syscall4(
             syscalls::Sysno::readlinkat,
-            (dirfd.as_raw_fd() as isize).cast_unsigned(),
+            syscall_fd(dirfd)?,
             path.as_ptr().addr(),
             buf.as_mut_ptr().addr(),
             buf.len(),

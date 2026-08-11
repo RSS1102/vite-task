@@ -13,6 +13,7 @@
 // preload library.
 #![cfg(unix)]
 #![cfg_attr(not(test), no_std)]
+#![deny(clippy::as_conversions)]
 
 mod c_str;
 pub mod env;
@@ -22,7 +23,7 @@ pub mod param;
 
 pub use c_str::{Bytes, CStr, Fat, Thin};
 pub use rustix::{
-    fd::{AsRawFd, BorrowedFd},
+    fd::{AsRawFd, BorrowedFd, IntoRawFd, OwnedFd},
     fs::CWD,
     io::{Errno, Errno as Error, Result},
 };

@@ -130,6 +130,18 @@ impl<'a> CStr<'a, Thin> {
 }
 
 impl<'a> CStr<'a, Fat> {
+    /// Creates a length-retaining C string after validating its bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless `bytes` contains exactly one NUL byte at the
+    /// end.
+    pub fn from_bytes_with_nul(bytes: &'a [u8]) -> Result<Self, core::ffi::FromBytesWithNulError> {
+        core::ffi::CStr::from_bytes_with_nul(bytes)?;
+        // SAFETY: validation above established exactly one trailing NUL.
+        Ok(unsafe { Self::from_bytes_with_nul_unchecked(bytes) })
+    }
+
     /// Creates a length-retaining C string from bytes without validation.
     ///
     /// # Safety
@@ -189,6 +201,13 @@ mod tests {
         assert_eq!(fat.as_bytes(), b"abc");
         assert_eq!(fat.as_bytes_with_nul(), b"abc\0");
         assert_eq!(counted.as_bytes_with_nul(), fat.as_bytes_with_nul());
+    }
+
+    #[test]
+    fn checked_fat_constructor_validates_the_terminator() {
+        assert_eq!(CStr::<Fat>::from_bytes_with_nul(b"abc\0").unwrap().as_bytes(), b"abc");
+        assert!(CStr::<Fat>::from_bytes_with_nul(b"abc").is_err());
+        assert!(CStr::<Fat>::from_bytes_with_nul(b"a\0bc\0").is_err());
     }
 
     #[test]
