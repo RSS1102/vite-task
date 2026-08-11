@@ -23,7 +23,7 @@ pub mod param;
 
 pub use c_str::{Bytes, CStr, Fat, Thin};
 pub use rustix::{
-    fd::{AsRawFd, BorrowedFd, IntoRawFd, OwnedFd},
+    fd::{AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd},
     fs::CWD,
     io::{Errno, Errno as Error, Result},
 };
