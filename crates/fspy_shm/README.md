@@ -27,7 +27,7 @@ One implementation serves every platform: a sparse file at the full path supplie
 
 Only written pages ever occupy memory or disk. The multi-gigabyte capacity fspy asks for therefore costs about as much as the data a run actually records.
 
-Unix opens and maps through `sigsafe`; on Linux, its raw-syscall backend works before libc initialization. Windows maps through `memmap2`. The remaining platform-specific parts are short passages:
+Unix creates, sizes, opens, maps, and unlinks through `sigsafe`; on Linux, its raw-syscall backend works before libc initialization. Windows maps through `memmap2`. The remaining platform-specific parts are short passages:
 
 | Concern           | Unix                                     | Windows                                                                     |
 | ----------------- | ---------------------------------------- | --------------------------------------------------------------------------- |
@@ -38,7 +38,7 @@ Unix opens and maps through `sigsafe`; on Linux, its raw-syscall backend works b
 
 `FILE_ATTRIBUTE_TEMPORARY` asks Windows to keep the data in memory when it can. Creation fails on a volume without sparse-file support.
 
-The keeper removes the name with `remove_file` on every platform. Modern Windows deletes with POSIX semantics: the name goes away at once, while [existing handles keep working](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddk/ns-ntddk-_file_disposition_information_ex) and [mapped views keep the data alive](https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-createfilemappingw) until the last one goes away. The first page also reserves the right to fail the delete while a mapped view exists, and Windows versions without POSIX delete do fail it. The keeper then falls back to reopening the file with `FILE_FLAG_DELETE_ON_CLOSE` and closing it, which deletes the file once every handle to it is closed.
+The Unix keeper removes the name through `sigsafe`. The Windows keeper first uses `remove_file`. Modern Windows deletes with POSIX semantics: the name goes away at once, while [existing handles keep working](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddk/ns-ntddk-_file_disposition_information_ex) and [mapped views keep the data alive](https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-createfilemappingw) until the last one goes away. The first page also reserves the right to fail the delete while a mapped view exists, and Windows versions without POSIX delete do fail it. The keeper then falls back to reopening the file with `FILE_FLAG_DELETE_ON_CLOSE` and closing it, which deletes the file once every handle to it is closed.
 
 ## Options considered
 
