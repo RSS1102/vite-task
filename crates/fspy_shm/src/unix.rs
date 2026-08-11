@@ -9,11 +9,14 @@ use std::{
     os::unix::ffi::OsStrExt as _,
     path::PathBuf,
     ptr::{self, NonNull},
+    str,
 };
 
-use uuid::Uuid;
-
 use crate::BACKING_PREFIX;
+
+const RANDOM_BYTES: usize = 16;
+const RANDOM_HEX_BYTES: usize = RANDOM_BYTES * 2;
+const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
 /// Error returned by shared-memory operations on Unix.
 pub type Error = sigsafe::Error;
@@ -76,8 +79,9 @@ pub fn create(size: usize) -> io::Result<(ShmKeeper, ShmHandle)> {
     // `temp_dir` reflects `TMPDIR` verbatim, which may be relative. The
     // identifier travels to processes with other working directories, so
     // resolve it against the creator's current directory first.
-    let path = std::path::absolute(temp_dir())?
-        .join(format!("{BACKING_PREFIX}{}.shm", Uuid::new_v4().simple()));
+    let random = random_hex()?;
+    let random = str::from_utf8(&random).map_err(|_| io::ErrorKind::InvalidData)?;
+    let path = std::path::absolute(temp_dir())?.join(format!("{BACKING_PREFIX}{random}.shm"));
 
     let file = open_file(
         path.as_os_str(),
@@ -144,6 +148,18 @@ fn copy_path<'buf>(
 
 fn errno_to_io(errno: sigsafe::Errno) -> io::Error {
     io::Error::from_raw_os_error(errno.raw_os_error())
+}
+
+fn random_hex() -> io::Result<[u8; RANDOM_HEX_BYTES]> {
+    let mut random = [0; RANDOM_BYTES];
+    sigsafe::random::fill(&mut random).map_err(errno_to_io)?;
+
+    let mut hex = [0; RANDOM_HEX_BYTES];
+    for (byte, digits) in random.into_iter().zip(hex.as_chunks_mut::<2>().0) {
+        digits[0] = HEX_DIGITS[usize::from(byte >> 4)];
+        digits[1] = HEX_DIGITS[usize::from(byte & 0x0f)];
+    }
+    Ok(hex)
 }
 
 impl Drop for ShmKeeper {
