@@ -1,0 +1,25 @@
+[[e2e]]
+name = "tracks_inputs"
+comment = """
+TypeScript 7's native compiler reads source files through system calls that fspy can observe. Changing a source file should therefore invalidate the automatically inferred input fingerprint.
+"""
+ignore = true
+steps = [
+  [
+    "vt",
+    "run",
+    "typecheck",
+  ],
+  [
+    "vtt",
+    "replace-file-content",
+    "src/main.ts",
+    "initial",
+    "modified",
+  ],
+  [
+    "vt",
+    "run",
+    "typecheck",
+  ],
+]
