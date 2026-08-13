@@ -1,16 +1,24 @@
 //! Windows shared memory backed by a sparse temporary file and identified by
 //! its path.
 
+use core::{ffi::c_void, mem::size_of, ptr};
 use std::{
     env::temp_dir,
     ffi::OsStr,
-    fs::{self, File, OpenOptions},
     io,
-    os::windows::{fs::OpenOptionsExt as _, io::AsRawHandle as _},
-    path::PathBuf,
+    num::NonZeroUsize,
+    os::windows::ffi::OsStrExt as _,
+    path::{Path, PathBuf},
 };
+#[cfg(test)]
+use std::{fs::File, os::windows::io::AsRawHandle as _};
 
-use memmap2::{MmapOptions, MmapRaw};
+use fspy_nostd::{
+    BorrowedHandle, bool_result,
+    fs::{CreationDisposition, FileAccess, FileOptions, FileShare},
+    mm::{MappingAccess, PageProtection},
+};
+use omnipath::windows::WinPathExt as _;
 use uuid::Uuid;
 #[cfg(test)]
 use windows_sys::Win32::Storage::FileSystem::{
@@ -18,20 +26,22 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 use windows_sys::Win32::{
     Storage::FileSystem::{
-        FILE_ATTRIBUTE_TEMPORARY, FILE_FLAG_DELETE_ON_CLOSE, FILE_SHARE_DELETE, FILE_SHARE_READ,
-        FILE_SHARE_WRITE,
+        FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
+        FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO_EX, FILE_END_OF_FILE_INFO,
+        FileDispositionInfoEx, FileEndOfFileInfo, SetFileInformationByHandle,
     },
     System::{IO::DeviceIoControl, Ioctl::FSCTL_SET_SPARSE},
 };
 
 use crate::BACKING_PREFIX;
 
-const SHARE_ALL: u32 = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
-const TEMPORARY: u32 = FILE_ATTRIBUTE_TEMPORARY;
-const DELETE_ON_CLOSE: u32 = FILE_FLAG_DELETE_ON_CLOSE;
-const DELETE_ACCESS: u32 = windows_sys::Win32::Storage::FileSystem::DELETE;
+const SHARE_ALL: FileShare = FileShare::READ.union(FileShare::WRITE).union(FileShare::DELETE);
 
 /// Keeps the shared memory's identifier alive and removes it on drop.
+///
+/// Removal relies on POSIX delete semantics, which requires NTFS on Windows
+/// 10 1607 or newer: the name is unlinked immediately even while views of the
+/// backing file remain mapped.
 ///
 /// Removal is cleanup, not a stop signal: later opens fail, but existing
 /// [`ShmHandle`]s and [`Mapping`]s keep reading and writing. To stop them,
@@ -45,8 +55,8 @@ pub struct ShmKeeper {
 /// [`map`](Self::map) can be called more than once; every call returns another
 /// view of the same bytes. Drop the handle once the mappings exist.
 pub struct ShmHandle {
-    file: File,
-    size: usize,
+    file: fspy_nostd::OwnedHandle,
+    size: NonZeroUsize,
 }
 
 /// The mapped shared bytes.
@@ -54,7 +64,8 @@ pub struct ShmHandle {
 /// A `Mapping` keeps the bytes alive until it is dropped and cannot affect the
 /// shared memory's identifier.
 pub struct Mapping {
-    raw: MmapRaw,
+    view: fspy_nostd::mm::MappingView,
+    len: NonZeroUsize,
 }
 
 /// Creates `size` bytes of zero-initialized shared memory.
@@ -70,37 +81,35 @@ pub struct Mapping {
 /// Returns an error if the shared memory cannot be created or sized. Creation
 /// fails on volumes without sparse-file support.
 pub fn create(size: usize) -> io::Result<(ShmKeeper, ShmHandle)> {
-    if size == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "shared-memory size must be nonzero",
-        ));
-    }
-    let size_u64 = u64::try_from(size).map_err(|_| {
-        io::Error::new(io::ErrorKind::InvalidInput, "shared-memory size exceeds u64")
+    let size = NonZeroUsize::new(size).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "shared-memory size must be nonzero")
+    })?;
+    let size_i64 = i64::try_from(size.get()).map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidInput, "shared-memory size exceeds i64")
     })?;
 
     // The per-user `%TEMP%` ACL provides same-user gating. The identifier is
     // absolute so it keeps working after a working-directory change.
     let path = std::path::absolute(temp_dir())?
         .join(format!("{BACKING_PREFIX}{}.shm", Uuid::new_v4().simple()));
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .share_mode(SHARE_ALL)
-        // Ask Windows to keep the data in memory when it can.
-        .attributes(TEMPORARY)
-        .open(&path)?;
+    let file = open_file(
+        path.as_os_str(),
+        FileAccess::GENERIC_READ | FileAccess::GENERIC_WRITE,
+        CreationDisposition::CreateNew,
+        // Ask Windows to keep the data in memory when it can. Opening the
+        // reparse point itself makes a link planted at the fresh path fail
+        // instead of redirecting the file, as std does for `create_new`.
+        FileOptions::TEMPORARY | FileOptions::OPEN_REPARSE_POINT,
+    )?;
     // The keeper exists from here on, so every error path below cleans up.
     let keeper = ShmKeeper { path };
 
     // NTFS allocates clusters for the whole logical size unless the file is
     // marked sparse first, which would turn the capacity into real disk usage.
     // Volumes without sparse-file support fail here.
-    set_sparse(&file)?;
+    set_sparse(file.as_handle()).map_err(error_to_io)?;
     // Every byte reads as zero because the file is all holes.
-    file.set_len(size_u64)?;
+    set_end_of_file(file.as_handle(), size_i64).map_err(error_to_io)?;
 
     Ok((keeper, ShmHandle { file, size }))
 }
@@ -115,33 +124,151 @@ pub fn create(size: usize) -> io::Result<(ShmKeeper, ShmHandle)> {
 /// Returns an error if the shared memory is unavailable, which is the common
 /// case once its keeper has been dropped.
 pub fn open(id: &OsStr) -> io::Result<ShmHandle> {
-    // Rust handles are non-inheritable, and its default share mode permits
-    // concurrent read, write and delete access.
-    let file = OpenOptions::new().read(true).write(true).open(id)?;
+    let file = open_file(
+        id,
+        FileAccess::GENERIC_READ | FileAccess::GENERIC_WRITE,
+        CreationDisposition::OpenExisting,
+        FileOptions::empty(),
+    )?;
     // If another process shrinks the file before `map`, mapping fails. If it
     // resizes afterwards, nothing here touches the mapped pages. A concurrent
     // resize cannot make a mapping access invalid memory.
-    let size = usize::try_from(file.metadata()?.len())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid shared-memory size"))?;
-    if size == 0 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "shared-memory size is zero"));
-    }
+    let size =
+        usize::try_from(fspy_nostd::fs::get_file_size(file.as_handle()).map_err(error_to_io)?)
+            .map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "invalid shared-memory size")
+            })?;
+    let size = NonZeroUsize::new(size)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "shared-memory size is zero"))?;
     Ok(ShmHandle { file, size })
+}
+
+fn open_file(
+    path: &OsStr,
+    access: FileAccess,
+    disposition: CreationDisposition,
+    options: FileOptions,
+) -> io::Result<fspy_nostd::OwnedHandle> {
+    let path = copy_path(path)?;
+    open_file_wide(as_nostd_path(&path), access, disposition, options).map_err(error_to_io)
+}
+
+fn open_file_wide(
+    path: fspy_nostd::WideCStr<'_, fspy_nostd::Fat>,
+    access: FileAccess,
+    disposition: CreationDisposition,
+    options: FileOptions,
+) -> fspy_nostd::Result<fspy_nostd::OwnedHandle> {
+    fspy_nostd::fs::create_file(path, access, SHARE_ALL, None, disposition, options, None)
+}
+
+/// The length at which std's own Windows path conversion switches to a
+/// verbatim path.
+const VERBATIM_THRESHOLD: usize = 248;
+
+fn copy_path(path: &OsStr) -> io::Result<Vec<u16>> {
+    let mut units: Vec<_> = path.encode_wide().collect();
+    if units.contains(&0) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "path contains NUL"));
+    }
+    // std converts long paths to verbatim form before every `CreateFileW`;
+    // without that, paths at or beyond the legacy `MAX_PATH` limit fail
+    // regardless of the system's long-path opt-in, which the arbitrary
+    // processes opening shared memory could not rely on anyway.
+    if units.len() >= VERBATIM_THRESHOLD {
+        units = Path::new(path).to_verbatim()?.as_os_str().encode_wide().collect();
+    }
+    units.push(0);
+    Ok(units)
+}
+
+fn as_nostd_path(path: &[u16]) -> fspy_nostd::WideCStr<'_, fspy_nostd::Fat> {
+    fspy_nostd::WideCStr::from_units_with_nul(path)
+        .expect("copy_path rejects interior NUL and appends one terminator")
+}
+
+fn error_to_io(error: fspy_nostd::Error) -> io::Error {
+    io::Error::from_raw_os_error(error.raw_os_error().cast_signed())
+}
+
+fn set_sparse(file: BorrowedHandle<'_>) -> fspy_nostd::Result<()> {
+    let mut bytes_returned = 0;
+    // SAFETY: `file` keeps the handle open, and every caller supplies a file
+    // opened without `FILE_FLAG_OVERLAPPED`. `FSCTL_SET_SPARSE` accepts null
+    // input and output buffers, and `bytes_returned` is writable. Windows
+    // validates that the handle supports this control code.
+    bool_result(unsafe {
+        DeviceIoControl(
+            file.as_raw_handle(),
+            FSCTL_SET_SPARSE,
+            ptr::null(),
+            0,
+            ptr::null_mut(),
+            0,
+            &raw mut bytes_returned,
+            ptr::null_mut(),
+        )
+    })
+}
+
+fn set_end_of_file(file: BorrowedHandle<'_>, len: i64) -> fspy_nostd::Result<()> {
+    const INFO_SIZE: u32 = 8;
+    const _: [(); 8] = [(); size_of::<FILE_END_OF_FILE_INFO>()];
+
+    let info = FILE_END_OF_FILE_INFO { EndOfFile: len };
+    // SAFETY: `file` keeps the opaque handle open. `info` is initialized and
+    // has the type and exact size required by `FileEndOfFileInfo`; Windows
+    // validates the handle type and access rights.
+    bool_result(unsafe {
+        SetFileInformationByHandle(
+            file.as_raw_handle(),
+            FileEndOfFileInfo,
+            (&raw const info).cast::<c_void>(),
+            INFO_SIZE,
+        )
+    })
+}
+
+fn remove_file(path: &OsStr) -> io::Result<()> {
+    let path = copy_path(path)?;
+    // Opening the reparse point itself removes a link rather than its target.
+    let file = open_file_wide(
+        as_nostd_path(&path),
+        FileAccess::DELETE,
+        CreationDisposition::OpenExisting,
+        FileOptions::OPEN_REPARSE_POINT,
+    )
+    .map_err(error_to_io)?;
+    // POSIX delete removes the name as soon as `file` closes below, while
+    // existing handles and mapped views keep working until they are dropped.
+    set_posix_delete(file.as_handle()).map_err(error_to_io)
+}
+
+fn set_posix_delete(file: BorrowedHandle<'_>) -> fspy_nostd::Result<()> {
+    const INFO_SIZE: u32 = 4;
+    const _: [(); 4] = [(); size_of::<FILE_DISPOSITION_INFO_EX>()];
+
+    let info = FILE_DISPOSITION_INFO_EX {
+        Flags: FILE_DISPOSITION_FLAG_DELETE
+            | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS
+            | FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
+    };
+    // SAFETY: `file` keeps the opaque handle open. `info` is initialized and
+    // has the type and exact size required by `FileDispositionInfoEx`; Windows
+    // validates the handle type, access rights, and supported flags.
+    bool_result(unsafe {
+        SetFileInformationByHandle(
+            file.as_raw_handle(),
+            FileDispositionInfoEx,
+            (&raw const info).cast::<c_void>(),
+            INFO_SIZE,
+        )
+    })
 }
 
 impl Drop for ShmKeeper {
     fn drop(&mut self) {
-        // Windows versions without POSIX delete refuse to remove the name of a
-        // mapped file. Arm the deferred delete instead: a handle opened with
-        // `FILE_FLAG_DELETE_ON_CLOSE` deletes the file once every handle to it
-        // is closed.
-        if fs::remove_file(&self.path).is_err() {
-            let _ = OpenOptions::new()
-                .access_mode(DELETE_ACCESS)
-                .share_mode(SHARE_ALL)
-                .custom_flags(DELETE_ON_CLOSE)
-                .open(&self.path);
-        }
+        let _ = remove_file(self.path.as_os_str());
     }
 }
 
@@ -161,7 +288,30 @@ impl ShmHandle {
     ///
     /// Returns an error if the mapping cannot be established.
     pub fn map(&self) -> io::Result<Mapping> {
-        Ok(Mapping { raw: MmapOptions::new().len(self.size).map_raw(&self.file)? })
+        let _slice_len = isize::try_from(self.size.get()).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "shared-memory size exceeds isize")
+        })?;
+        // Default security attributes create a non-inheritable mapping object.
+        // Both maximum-size halves are zero, so Windows uses the current file
+        // size.
+        let mapping = fspy_nostd::mm::create_file_mapping(
+            self.file.as_handle(),
+            None,
+            PageProtection::ReadWrite,
+            0,
+            0,
+        )
+        .map_err(error_to_io)?;
+        let view = fspy_nostd::mm::map_view_of_file(
+            mapping.as_handle(),
+            MappingAccess::READ | MappingAccess::WRITE,
+            0,
+            0,
+            self.size.get(),
+        )
+        .map_err(error_to_io)?;
+        // The view remains valid after its mapping-object handle closes.
+        Ok(Mapping { view, len: self.size })
     }
 }
 
@@ -169,14 +319,14 @@ impl ShmHandle {
 impl Mapping {
     /// Returns the mapped length in bytes.
     #[must_use]
-    pub fn len(&self) -> usize {
-        self.raw.len()
+    pub const fn len(&self) -> usize {
+        self.len.get()
     }
 
     /// Returns a raw pointer to the first mapped byte.
     #[must_use]
-    pub fn as_ptr(&self) -> *mut u8 {
-        self.raw.as_mut_ptr()
+    pub const fn as_ptr(&self) -> *mut u8 {
+        self.view.as_ptr()
     }
 
     /// Returns the mapped bytes as a shared slice.
@@ -186,32 +336,11 @@ impl Mapping {
     /// The caller must ensure that no process or thread mutates the mapping for
     /// the lifetime of the returned slice.
     #[must_use]
-    pub unsafe fn as_slice(&self) -> &[u8] {
+    pub const unsafe fn as_slice(&self) -> &[u8] {
         // SAFETY: The mapping is valid for its full length, and the caller
         // guarantees that it is not mutated while the slice is borrowed.
-        unsafe { std::slice::from_raw_parts(self.as_ptr().cast_const(), self.len()) }
+        unsafe { core::slice::from_raw_parts(self.as_ptr().cast_const(), self.len()) }
     }
-}
-
-/// Marks `file` sparse so that setting its length reserves no clusters.
-fn set_sparse(file: &File) -> io::Result<()> {
-    let mut bytes_returned = 0;
-    // SAFETY: `file` supplies a valid synchronous file handle. FSCTL_SET_SPARSE
-    // requires no input or output buffers, and `bytes_returned` is writable for
-    // the duration of the call.
-    let result = unsafe {
-        DeviceIoControl(
-            file.as_raw_handle().cast(),
-            FSCTL_SET_SPARSE,
-            std::ptr::null(),
-            0,
-            std::ptr::null_mut(),
-            0,
-            &raw mut bytes_returned,
-            std::ptr::null_mut(),
-        )
-    };
-    if result == 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
 }
 
 /// Returns the backing file's logical size and allocated byte count.
@@ -220,8 +349,9 @@ pub fn file_sizes(file: &File) -> io::Result<(u64, u64)> {
     let mut info = FILE_STANDARD_INFO::default();
     let info_size = u32::try_from(std::mem::size_of::<FILE_STANDARD_INFO>())
         .map_err(|_| io::Error::other("file size information is too large"))?;
-    // SAFETY: `file` supplies a valid handle and `info` is a writable
-    // FILE_STANDARD_INFO buffer of exactly `info_size` bytes.
+    // SAFETY: `file` keeps its handle open and `info` is a writable
+    // `FILE_STANDARD_INFO` buffer of exactly `info_size` bytes. Windows
+    // validates that the handle supports this information class.
     let result = unsafe {
         GetFileInformationByHandleEx(
             file.as_raw_handle().cast(),

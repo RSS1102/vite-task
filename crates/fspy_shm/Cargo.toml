@@ -10,13 +10,11 @@ rust-version.workspace = true
 [dependencies]
 uuid = { workspace = true, features = ["v4"] }
 
-[target.'cfg(unix)'.dependencies]
+[target.'cfg(any(unix, windows))'.dependencies]
 fspy_nostd = { workspace = true }
 
-[target.'cfg(windows)'.dependencies]
-memmap2 = { workspace = true }
-
 [target.'cfg(target_os = "windows")'.dependencies]
+omnipath = { workspace = true }
 windows-sys = { workspace = true, features = [
   "Win32_Foundation",
   "Win32_Storage_FileSystem",
