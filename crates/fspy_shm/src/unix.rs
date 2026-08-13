@@ -4,10 +4,9 @@
 use std::{
     env::temp_dir,
     ffi::OsStr,
-    fs::{self, File, OpenOptions},
     io,
     num::NonZeroUsize,
-    os::unix::{ffi::OsStrExt as _, fs::OpenOptionsExt as _, io::IntoRawFd as _},
+    os::unix::ffi::OsStrExt as _,
     path::PathBuf,
     ptr::{self, NonNull},
 };
@@ -75,19 +74,20 @@ pub fn create(size: usize) -> io::Result<(ShmKeeper, ShmHandle)> {
     let path = std::path::absolute(temp_dir())?
         .join(format!("{BACKING_PREFIX}{}.shm", Uuid::new_v4().simple()));
 
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
+    let file = open_file(
+        path.as_os_str(),
+        fspy_nostd::fs::OFlags::RDWR
+            | fspy_nostd::fs::OFlags::CREATE
+            | fspy_nostd::fs::OFlags::EXCL
+            | fspy_nostd::fs::OFlags::CLOEXEC,
         // Only the creating user may open the mapping.
-        .mode(0o600)
-        .open(&path)?;
+        fspy_nostd::fs::Mode::RUSR | fspy_nostd::fs::Mode::WUSR,
+    )?;
     // The keeper exists from here on, so every error path below cleans up.
     let keeper = ShmKeeper { path };
 
     // Every byte reads as zero because the file is all holes.
-    file.set_len(size_u64)?;
-    let file = into_nostd_fd(file);
+    fspy_nostd::fs::ftruncate(&file, size_u64).map_err(error_to_io)?;
 
     Ok((keeper, ShmHandle { file, size }))
 }
@@ -102,7 +102,11 @@ pub fn create(size: usize) -> io::Result<(ShmKeeper, ShmHandle)> {
 /// Returns an error if the shared memory is unavailable, which is the common
 /// case once its keeper has been dropped.
 pub fn open(id: &OsStr) -> io::Result<ShmHandle> {
-    let file = open_file(id)?;
+    let file = open_file(
+        id,
+        fspy_nostd::fs::OFlags::RDWR | fspy_nostd::fs::OFlags::CLOEXEC,
+        fspy_nostd::fs::Mode::empty(),
+    )?;
     // If another process shrinks the file before `map`, mapping fails. If it
     // resizes afterwards, nothing here touches the mapped pages. A concurrent
     // resize cannot make a mapping access invalid memory.
@@ -113,16 +117,21 @@ pub fn open(id: &OsStr) -> io::Result<ShmHandle> {
     Ok(ShmHandle { file, size })
 }
 
-fn open_file(path: &OsStr) -> io::Result<fspy_nostd::OwnedFd> {
+fn open_file(
+    path: &OsStr,
+    flags: fspy_nostd::fs::OFlags,
+    mode: fspy_nostd::fs::Mode,
+) -> io::Result<fspy_nostd::OwnedFd> {
     let mut buf = [0_u8; fspy_nostd::fs::PATH_MAX];
     let path = copy_path(path, &mut buf)?;
-    fspy_nostd::fs::openat(
-        fspy_nostd::CWD,
-        path,
-        fspy_nostd::fs::OFlags::RDWR | fspy_nostd::fs::OFlags::CLOEXEC,
-        fspy_nostd::fs::Mode::empty(),
-    )
-    .map_err(error_to_io)
+    fspy_nostd::fs::openat(fspy_nostd::CWD, path, flags, mode).map_err(error_to_io)
+}
+
+fn remove_file(path: &OsStr) -> io::Result<()> {
+    let mut buf = [0_u8; fspy_nostd::fs::PATH_MAX];
+    let path = copy_path(path, &mut buf)?;
+    fspy_nostd::fs::unlinkat(fspy_nostd::CWD, path, fspy_nostd::fs::AtFlags::empty())
+        .map_err(error_to_io)
 }
 
 fn copy_path<'buf>(
@@ -150,16 +159,9 @@ fn error_to_io(error: fspy_nostd::Error) -> io::Error {
     io::Error::from_raw_os_error(error.raw_os_error())
 }
 
-fn into_nostd_fd(file: File) -> fspy_nostd::OwnedFd {
-    let fd = file.into_raw_fd();
-    // SAFETY: ownership of `file`'s descriptor transfers without closing or
-    // duplicating it.
-    unsafe { fspy_nostd::FromRawFd::from_raw_fd(fd) }
-}
-
 impl Drop for ShmKeeper {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        let _ = remove_file(self.path.as_os_str());
     }
 }
 

@@ -4,7 +4,7 @@ use rustix::fd::FromRawFd as _;
 
 use crate::{
     AsRawFd as _, BorrowedFd, CStr, Error, Fat, OwnedFd, Result, Thin,
-    fs::{Mode, OFlags},
+    fs::{AtFlags, Mode, OFlags},
 };
 
 // Linux UAPI `PATH_MAX`.
@@ -38,6 +38,22 @@ pub(super) fn openat<R>(
 
     // SAFETY: a successful `openat` returns a new owned descriptor.
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+#[expect(clippy::needless_pass_by_value, reason = "CStr is a borrowed value type")]
+pub(super) fn unlinkat<R>(dirfd: BorrowedFd<'_>, path: CStr<'_, R>, flags: AtFlags) -> Result<()> {
+    // SAFETY: `dirfd` remains borrowed and `path` is NUL-terminated for the
+    // syscall.
+    unsafe {
+        syscalls::syscall3(
+            syscalls::Sysno::unlinkat,
+            syscall_fd(dirfd)?,
+            path.as_ptr().addr(),
+            usize::try_from(flags.bits()).map_err(|_| Error::INVAL)?,
+        )
+    }
+    .map_err(|errno| Error::from_raw_os_error(errno.into_raw()))?;
+    Ok(())
 }
 
 /// Reads the target of `path` relative to `dirfd` into `buf`.

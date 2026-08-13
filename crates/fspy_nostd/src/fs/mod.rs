@@ -2,7 +2,7 @@
 
 use core::mem::MaybeUninit;
 
-pub use rustix::fs::{Mode, OFlags, fstat};
+pub use rustix::fs::{AtFlags, Mode, OFlags, fstat, ftruncate};
 
 use crate::{BorrowedFd, CStr, Fat, OwnedFd, Result};
 
@@ -35,6 +35,15 @@ pub fn openat<R>(
     mode: Mode,
 ) -> Result<OwnedFd> {
     imp::openat(dirfd, path, flags, mode)
+}
+
+/// Removes `path` relative to `dirfd`.
+///
+/// # Errors
+///
+/// Returns the error reported by `unlinkat`.
+pub fn unlinkat<R>(dirfd: BorrowedFd<'_>, path: CStr<'_, R>, flags: AtFlags) -> Result<()> {
+    imp::unlinkat(dirfd, path, flags)
 }
 
 /// Writes the absolute pathname of the current working directory into `buf`.

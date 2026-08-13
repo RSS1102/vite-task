@@ -2,7 +2,7 @@ use core::{mem::MaybeUninit, slice};
 
 use rustix::{
     fd::{AsFd as _, AsRawFd as _, FromRawFd as _, OwnedFd},
-    fs::{Mode, OFlags},
+    fs::{AtFlags, Mode, OFlags},
 };
 
 use crate::{BorrowedFd, CStr, CWD, Error, Fat, Result, Thin};
@@ -35,6 +35,21 @@ pub(super) fn openat<R>(
 
     // SAFETY: ownership of the newly opened descriptor transfers here.
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+#[expect(clippy::needless_pass_by_value, reason = "CStr is a borrowed value type")]
+pub(super) fn unlinkat<R>(dirfd: BorrowedFd<'_>, path: CStr<'_, R>, flags: AtFlags) -> Result<()> {
+    // SAFETY: `dirfd` remains borrowed and `path` is NUL-terminated for the
+    // call.
+    let result = unsafe {
+        libc::unlinkat(dirfd.as_raw_fd(), path.as_ptr().cast(), flags.bits().cast_signed())
+    };
+    if result == -1 {
+        // SAFETY: libSystem stored this call's error before returning -1.
+        Err(Error::from_raw_os_error(unsafe { *libc::__error() }))
+    } else {
+        Ok(())
+    }
 }
 
 /// Gets the path associated with `fd`.
