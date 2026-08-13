@@ -7,10 +7,12 @@ use rustix::{
 
 use crate::{BorrowedFd, CStr, CWD, Error, Fat, Result, Thin};
 
-pub(super) const PATH_MAX: usize = libc::PATH_MAX as usize;
+// Darwin UAPI `MAXPATHLEN`.
+pub(super) const PATH_MAX: usize = 1024;
+const _: () = assert!(libc::PATH_MAX == 1024);
 
 #[expect(clippy::needless_pass_by_value, reason = "CStr is a borrowed value type")]
-fn openat<R>(
+pub(super) fn openat<R>(
     dirfd: BorrowedFd<'_>,
     path: CStr<'_, R>,
     flags: OFlags,

@@ -6,7 +6,8 @@ use std::{
     ffi::OsStr,
     fs::{self, File, OpenOptions},
     io,
-    os::unix::fs::OpenOptionsExt as _,
+    num::NonZeroUsize,
+    os::unix::{ffi::OsStrExt as _, fs::OpenOptionsExt as _, io::IntoRawFd as _},
     path::PathBuf,
 };
 
@@ -29,8 +30,8 @@ pub struct ShmKeeper {
 /// [`map`](Self::map) can be called more than once; every call returns another
 /// view of the same bytes. Drop the handle once the mappings exist.
 pub struct ShmHandle {
-    file: File,
-    size: usize,
+    file: fspy_nostd::OwnedFd,
+    size: NonZeroUsize,
 }
 
 /// The mapped shared bytes.
@@ -53,13 +54,10 @@ pub struct Mapping {
 ///
 /// Returns an error if the shared memory cannot be created or sized.
 pub fn create(size: usize) -> io::Result<(ShmKeeper, ShmHandle)> {
-    if size == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "shared-memory size must be nonzero",
-        ));
-    }
-    let size_u64 = u64::try_from(size).map_err(|_| {
+    let size = NonZeroUsize::new(size).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "shared-memory size must be nonzero")
+    })?;
+    let size_u64 = u64::try_from(size.get()).map_err(|_| {
         io::Error::new(io::ErrorKind::InvalidInput, "shared-memory size exceeds u64")
     })?;
 
@@ -81,6 +79,7 @@ pub fn create(size: usize) -> io::Result<(ShmKeeper, ShmHandle)> {
 
     // Every byte reads as zero because the file is all holes.
     file.set_len(size_u64)?;
+    let file = into_nostd_fd(file);
 
     Ok((keeper, ShmHandle { file, size }))
 }
@@ -95,18 +94,59 @@ pub fn create(size: usize) -> io::Result<(ShmKeeper, ShmHandle)> {
 /// Returns an error if the shared memory is unavailable, which is the common
 /// case once its keeper has been dropped.
 pub fn open(id: &OsStr) -> io::Result<ShmHandle> {
-    // Rust opens are `O_CLOEXEC`, so a traced process never leaks this
-    // descriptor.
-    let file = OpenOptions::new().read(true).write(true).open(id)?;
+    let file = open_file(id)?;
     // If another process shrinks the file before `map`, mapping fails. If it
     // resizes afterwards, nothing here touches the mapped pages. A concurrent
     // resize cannot make a mapping access invalid memory.
-    let size = usize::try_from(file.metadata()?.len())
+    let size = usize::try_from(fspy_nostd::fs::fstat(&file).map_err(error_to_io)?.st_size)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid shared-memory size"))?;
-    if size == 0 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "shared-memory size is zero"));
-    }
+    let size = NonZeroUsize::new(size)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "shared-memory size is zero"))?;
     Ok(ShmHandle { file, size })
+}
+
+fn open_file(path: &OsStr) -> io::Result<fspy_nostd::OwnedFd> {
+    let mut buf = [0_u8; fspy_nostd::fs::PATH_MAX];
+    let path = copy_path(path, &mut buf)?;
+    fspy_nostd::fs::openat(
+        fspy_nostd::CWD,
+        path,
+        fspy_nostd::fs::OFlags::RDWR | fspy_nostd::fs::OFlags::CLOEXEC,
+        fspy_nostd::fs::Mode::empty(),
+    )
+    .map_err(error_to_io)
+}
+
+fn copy_path<'buf>(
+    path: &OsStr,
+    buf: &'buf mut [u8; fspy_nostd::fs::PATH_MAX],
+) -> io::Result<fspy_nostd::CStr<'buf, fspy_nostd::Fat>> {
+    let bytes = path.as_bytes();
+    if bytes.contains(&0) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "path contains NUL"));
+    }
+
+    let len_with_nul = bytes.len().checked_add(1).ok_or(io::ErrorKind::InvalidInput)?;
+    let initialized = buf.get_mut(..len_with_nul).ok_or_else(|| {
+        io::Error::from_raw_os_error(fspy_nostd::Error::NAMETOOLONG.raw_os_error())
+    })?;
+    initialized[..bytes.len()].copy_from_slice(bytes);
+    initialized[bytes.len()] = 0;
+
+    // SAFETY: the copied path contains no NUL, followed by the terminator set
+    // above, and the returned view borrows the initialized buffer prefix.
+    Ok(unsafe { fspy_nostd::CStr::from_units_with_nul_unchecked(initialized) })
+}
+
+fn error_to_io(error: fspy_nostd::Error) -> io::Error {
+    io::Error::from_raw_os_error(error.raw_os_error())
+}
+
+fn into_nostd_fd(file: File) -> fspy_nostd::OwnedFd {
+    let fd = file.into_raw_fd();
+    // SAFETY: ownership of `file`'s descriptor transfers without closing or
+    // duplicating it.
+    unsafe { fspy_nostd::FromRawFd::from_raw_fd(fd) }
 }
 
 impl Drop for ShmKeeper {
@@ -131,7 +171,8 @@ impl ShmHandle {
     ///
     /// Returns an error if the mapping cannot be established.
     pub fn map(&self) -> io::Result<Mapping> {
-        Ok(Mapping { raw: MmapOptions::new().len(self.size).map_raw(&self.file)? })
+        let file = fspy_nostd::AsRawFd::as_raw_fd(&self.file);
+        Ok(Mapping { raw: MmapOptions::new().len(self.size.get()).map_raw(file)? })
     }
 }
 

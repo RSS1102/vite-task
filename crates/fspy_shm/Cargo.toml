@@ -11,6 +11,9 @@ rust-version.workspace = true
 memmap2 = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 
+[target.'cfg(unix)'.dependencies]
+fspy_nostd = { workspace = true }
+
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { workspace = true, features = [
   "Win32_Foundation",
