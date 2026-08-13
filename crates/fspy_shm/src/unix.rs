@@ -9,9 +9,9 @@ use std::{
     num::NonZeroUsize,
     os::unix::{ffi::OsStrExt as _, fs::OpenOptionsExt as _, io::IntoRawFd as _},
     path::PathBuf,
+    ptr::{self, NonNull},
 };
 
-use memmap2::{MmapOptions, MmapRaw};
 use uuid::Uuid;
 
 use crate::BACKING_PREFIX;
@@ -39,8 +39,16 @@ pub struct ShmHandle {
 /// A `Mapping` keeps the bytes alive until it is dropped and cannot affect the
 /// shared memory's identifier.
 pub struct Mapping {
-    raw: MmapRaw,
+    ptr: NonNull<u8>,
+    len: NonZeroUsize,
 }
+
+// SAFETY: a mapping owns no thread-affine state; access synchronization is
+// supplied by the fspy channel built on top of it.
+unsafe impl Send for Mapping {}
+// SAFETY: sharing a `Mapping` does not itself access its bytes, and all actual
+// concurrent access is synchronized by the fspy channel.
+unsafe impl Sync for Mapping {}
 
 /// Creates `size` bytes of zero-initialized shared memory.
 ///
@@ -171,8 +179,38 @@ impl ShmHandle {
     ///
     /// Returns an error if the mapping cannot be established.
     pub fn map(&self) -> io::Result<Mapping> {
-        let file = fspy_nostd::AsRawFd::as_raw_fd(&self.file);
-        Ok(Mapping { raw: MmapOptions::new().len(self.size.get()).map_raw(file)? })
+        let _slice_len = isize::try_from(self.size.get()).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "shared-memory size exceeds isize")
+        })?;
+        // SAFETY: the address is only a hint, the validated nonzero length is
+        // representable as a Rust slice, the descriptor remains borrowed, and
+        // the resulting shared mapping is owned by `Mapping`.
+        let mapped = unsafe {
+            fspy_nostd::mm::mmap(
+                ptr::null_mut(),
+                self.size.get(),
+                fspy_nostd::mm::ProtFlags::READ | fspy_nostd::mm::ProtFlags::WRITE,
+                fspy_nostd::mm::MapFlags::SHARED,
+                &self.file,
+                0,
+            )
+        }
+        .map_err(error_to_io)?;
+        let Some(ptr) = NonNull::new(mapped.cast()) else {
+            // Rust references cannot represent a mapping at address zero.
+            // SAFETY: release the successful mapping before rejecting it.
+            let _ = unsafe { fspy_nostd::mm::munmap(mapped, self.size.get()) };
+            return Err(io::Error::other("mmap returned address zero"));
+        };
+        Ok(Mapping { ptr, len: self.size })
+    }
+}
+
+impl Drop for Mapping {
+    fn drop(&mut self) {
+        // SAFETY: this is the complete mapping owned by `self`, and dropping
+        // it proves that no safe borrow through `self` remains.
+        let _ = unsafe { fspy_nostd::mm::munmap(self.ptr.as_ptr().cast(), self.len.get()) };
     }
 }
 
@@ -180,14 +218,14 @@ impl ShmHandle {
 impl Mapping {
     /// Returns the mapped length in bytes.
     #[must_use]
-    pub fn len(&self) -> usize {
-        self.raw.len()
+    pub const fn len(&self) -> usize {
+        self.len.get()
     }
 
     /// Returns a raw pointer to the first mapped byte.
     #[must_use]
-    pub fn as_ptr(&self) -> *mut u8 {
-        self.raw.as_mut_ptr()
+    pub const fn as_ptr(&self) -> *mut u8 {
+        self.ptr.as_ptr()
     }
 
     /// Returns the mapped bytes as a shared slice.
@@ -197,7 +235,7 @@ impl Mapping {
     /// The caller must ensure that no process or thread mutates the mapping for
     /// the lifetime of the returned slice.
     #[must_use]
-    pub unsafe fn as_slice(&self) -> &[u8] {
+    pub const unsafe fn as_slice(&self) -> &[u8] {
         // SAFETY: The mapping is valid for its full length, and the caller
         // guarantees that it is not mutated while the slice is borrowed.
         unsafe { std::slice::from_raw_parts(self.as_ptr().cast_const(), self.len()) }
