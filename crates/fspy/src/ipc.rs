@@ -1,10 +1,9 @@
-use std::io;
-
 use fspy_shared::ipc::{
     PathAccess,
-    channel::{Receiver, ReceiverLockGuard},
+    channel::{FrameReader, Receiver},
 };
-use tokio::task::spawn_blocking;
+
+use crate::error::TrackingIncomplete;
 
 /// Shared memory for one tracked run's file-access records.
 ///
@@ -33,28 +32,36 @@ pub fn shm_capacity() -> usize {
     })
 }
 
-#[ouroboros::self_referencing]
-pub struct OwnedReceiverLockGuard {
-    /// Owns the shared memory
-    receiver: Receiver,
-    /// Borrows the shared memory and owns the file lock
-    #[borrows(receiver)]
-    #[covariant]
-    lock_guard: ReceiverLockGuard<'this>,
+/// The path accesses a run reported through the IPC channel.
+pub struct ChannelAccesses {
+    frames: FrameReader,
 }
 
-impl OwnedReceiverLockGuard {
-    pub fn lock(receiver: Receiver) -> io::Result<Self> {
-        Self::try_new(receiver, fspy_shared::ipc::channel::Receiver::lock)
-    }
+impl TryFrom<Receiver> for ChannelAccesses {
+    type Error = TrackingIncomplete;
 
-    pub async fn lock_async(receiver: Receiver) -> io::Result<Self> {
-        spawn_blocking(move || Self::lock(receiver)).await.expect("lock task panicked")
+    /// Closes the channel and takes every record it collected.
+    ///
+    /// Never waits for tracked processes: closing reads one counter and
+    /// shuts the channel's gate (see
+    /// [`fspy_shared::ipc::channel::Receiver::close`]), so it runs inline
+    /// however many records were reported.
+    ///
+    /// # Errors
+    ///
+    /// [`TrackingIncomplete`] when a tracked process could not record
+    /// something it went on to do. What did arrive is then a subset of
+    /// what the run really touched, so none of it is handed back.
+    fn try_from(receiver: Receiver) -> Result<Self, TrackingIncomplete> {
+        Ok(Self { frames: receiver.close().map_err(|_| TrackingIncomplete)? })
     }
+}
 
+impl ChannelAccesses {
     pub fn iter_path_accesses(&self) -> impl Iterator<Item = PathAccess<'_>> {
-        self.borrow_lock_guard()
-            .iter_frames()
-            .map(|frame| wincode::deserialize_exact(frame).unwrap())
+        self.frames.iter().map(|frame| {
+            wincode::deserialize_exact(frame)
+                .expect("committed frames are complete under the channel protocol")
+        })
     }
 }

@@ -1,14 +1,14 @@
 # shm_capacity_env_sizes_the_tracking_channel
 
-`VP_RUN_INTERNAL_FSPY_SHM_CAPACITY` sizes the shared memory a tracked task reports its file accesses through. The task makes twenty thousand of them, and 64 MiB holds every one, so the run caches like any other.
+`VP_RUN_INTERNAL_FSPY_SHM_CAPACITY` sizes the shared memory a tracked task reports its file accesses through. The task makes twenty thousand of them, and this run leaves 64 KiB for them once the descriptor table has taken its half-gibibyte of sparse address space, which is nowhere near enough.
 
-Setting the capacity below what the task needs is what the knob exists for. That case has to wait: a channel with no room for a record currently aborts the task process, and the panic it prints carries a thread id, a toolchain path, a backtrace and a platform's own abort code, none of which snapshot the same way twice.
+The task runs to the end anyway: recording must never stop the program doing the work, so the accesses past that go unrecorded and the process carries on to a clean exit, printing its last line. What the run cannot claim is that it saw every file the task touched, so it is not cached, and the second run says the same rather than replaying an entry built from part of a trace.
 
 Not on musl, which has no preload: those builds collect through the seccomp supervisor, on the runner's own side of the boundary, so they have no shared-memory channel to fill.
 
-## `VP_RUN_INTERNAL_FSPY_SHM_CAPACITY=67108864 vt run -v stat`
+## `VP_RUN_INTERNAL_FSPY_SHM_CAPACITY=536936448 vt run -v stat`
 
-64 MiB, room for every access
+512 MiB of table and 64 KiB of room for records
 
 ```
 $ vtt stat-many 20000
@@ -25,16 +25,16 @@ Performance:  0% cache hit rate
 Task Details:
 ────────────────────────────────────────────────
   [1] fspy-shm-capacity#stat: $ vtt stat-many 20000 ✓
-      → Cache miss: no previous cache entry found
+      → Not cached: this task used more files than automatic tracking can record. Configure `input` and `output` manually to enable caching.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
-## `vt run -v stat`
+## `VP_RUN_INTERNAL_FSPY_SHM_CAPACITY=536936448 vt run -v stat`
 
-replayed from the entry the first run stored
+nothing was cached to replay
 
 ```
-$ vtt stat-many 20000 ◉ cache hit, replaying
+$ vtt stat-many 20000
 stat 20000
 
 
@@ -42,12 +42,12 @@ stat 20000
     Vite+ Task Runner • Execution Summary
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Statistics:   1 tasks • 1 cache hits • 0 cache misses
-Performance:  100% cache hit rate
+Statistics:   1 tasks • 0 cache hits • 1 cache misses
+Performance:  0% cache hit rate
 
 Task Details:
 ────────────────────────────────────────────────
   [1] fspy-shm-capacity#stat: $ vtt stat-many 20000 ✓
-      → Cache hit - output replayed -
+      → Not cached: this task used more files than automatic tracking can record. Configure `input` and `output` manually to enable caching.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```

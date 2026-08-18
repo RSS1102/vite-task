@@ -1,9 +1,9 @@
 [[e2e]]
 name = "shm_capacity_env_sizes_the_tracking_channel"
 comment = """
-`VP_RUN_INTERNAL_FSPY_SHM_CAPACITY` sizes the shared memory a tracked task reports its file accesses through. The task makes twenty thousand of them, and 64 MiB holds every one, so the run caches like any other.
+`VP_RUN_INTERNAL_FSPY_SHM_CAPACITY` sizes the shared memory a tracked task reports its file accesses through. The task makes twenty thousand of them, and this run leaves 64 KiB for them once the descriptor table has taken its half-gibibyte of sparse address space, which is nowhere near enough.
 
-Setting the capacity below what the task needs is what the knob exists for. That case has to wait: a channel with no room for a record currently aborts the task process, and the panic it prints carries a thread id, a toolchain path, a backtrace and a platform's own abort code, none of which snapshot the same way twice.
+The task runs to the end anyway: recording must never stop the program doing the work, so the accesses past that go unrecorded and the process carries on to a clean exit, printing its last line. What the run cannot claim is that it saw every file the task touched, so it is not cached, and the second run says the same rather than replaying an entry built from part of a trace.
 
 Not on musl, which has no preload: those builds collect through the seccomp supervisor, on the runner's own side of the boundary, so they have no shared-memory channel to fill.
 """
@@ -17,13 +17,18 @@ steps = [
   ], envs = [
     [
       "VP_RUN_INTERNAL_FSPY_SHM_CAPACITY",
-      "67108864",
+      "536936448",
     ],
-  ], comment = "64 MiB, room for every access" },
+  ], comment = "512 MiB of table and 64 KiB of room for records" },
   { argv = [
     "vt",
     "run",
     "-v",
     "stat",
-  ], comment = "replayed from the entry the first run stored" },
+  ], envs = [
+    [
+      "VP_RUN_INTERNAL_FSPY_SHM_CAPACITY",
+      "536936448",
+    ],
+  ], comment = "nothing was cached to replay" },
 ]

@@ -16,22 +16,11 @@ impl<'a> Client<'a> {
     pub fn from_payload_bytes(payload_bytes: &'a [u8]) -> Self {
         let payload: Payload<'a> = wincode::deserialize_exact(payload_bytes).unwrap();
 
-        let ipc_sender = match payload.channel_conf.sender() {
-            Ok(sender) => Some(sender),
-            Err(err) => {
-                // this can happen if the process is started after the root target process has exited.
-                // By that time the channel would have been closed in the receiver side.
-                // In this case we just leave a message and skip sending any path accesses.
-                #[expect(
-                    clippy::print_stderr,
-                    reason = "preload library uses stderr for debug diagnostics"
-                )]
-                {
-                    eprintln!("fspy: failed to create ipc sender: {err}");
-                }
-                None
-            }
-        };
+        // `None` when the channel is already over, which happens when this
+        // process starts after the root target exited. Nothing is said
+        // about it: a detours DLL writing to the traced process's stderr
+        // corrupts whatever that process is printing.
+        let ipc_sender = payload.channel_conf.sender();
 
         Self { payload, ipc_sender }
     }
@@ -40,7 +29,9 @@ impl<'a> Client<'a> {
         let Some(sender) = &self.ipc_sender else {
             return;
         };
-        sender.write_encoded(&access).expect("failed to send path access");
+        // The intercepted call proceeds whether or not the record could be
+        // sent; a detours DLL can never panic its host.
+        sender.send(&access);
     }
 
     pub unsafe fn prepare_child_process(&self, child_handle: HANDLE) -> BOOL {

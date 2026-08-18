@@ -8,7 +8,7 @@
 pub mod convert;
 pub mod raw_exec;
 
-use std::{ffi::OsStr, fmt::Debug, num::NonZeroUsize, os::unix::ffi::OsStrExt as _, path::Path};
+use std::{ffi::OsStr, fmt::Debug, os::unix::ffi::OsStrExt as _, path::Path};
 
 use convert::{ToAbsolutePath, ToAccessMode};
 use fspy_shared::ipc::{PathAccess, channel::Sender};
@@ -18,7 +18,6 @@ use fspy_shared_unix::{
     spawn::{PreExec, handle_exec},
 };
 use raw_exec::RawExec;
-use wincode::Serialize as _;
 
 pub struct Client {
     encoded_payload: EncodedPayload,
@@ -45,53 +44,35 @@ impl Client {
     ///
     /// # Panics
     ///
-    /// Panics when the payload is missing, malformed, or cannot be decoded.
-    #[expect(
-        clippy::print_stderr,
-        reason = "the client intentionally reports an unavailable supervisor channel"
-    )]
+    /// Panics when the payload is missing, malformed, or cannot be decoded,
+    /// and when the channel is there but cannot be attached to (see
+    /// [`ChannelConf::sender`](fspy_shared::ipc::channel::ChannelConf::sender)).
     pub fn from_env(envs: impl Iterator<Item = fspy_nostd::env::Entry>) -> Self {
         let encoded_payload = decode_payload_from_env(envs).unwrap();
 
-        let ipc_sender = match encoded_payload.payload.ipc_channel_conf.sender() {
-            Ok(sender) => Some(sender),
-            Err(err) => {
-                // This can happen if the process starts after the root target
-                // has exited and the receiver has closed the channel.
-                eprintln!("fspy: failed to create ipc sender: {err}");
-                None
-            }
-        };
+        // `None` when the channel is already over, which happens when this
+        // process starts after the root target exited. Nothing is said
+        // about it: a preload library writing to the traced process's
+        // stderr corrupts whatever that process is printing.
+        let ipc_sender = encoded_payload.payload.ipc_channel_conf.sender();
 
         Self { encoded_payload, ipc_sender }
     }
 
-    fn send(&self, mode: fspy_shared::ipc::AccessMode, path: &Path) -> anyhow::Result<()> {
+    fn send(&self, mode: fspy_shared::ipc::AccessMode, path: &Path) {
         let Some(ipc_sender) = &self.ipc_sender else {
-            return Ok(());
+            return;
         };
         let path_bytes = path.as_os_str().as_bytes();
         if path_bytes.starts_with(b"/dev/")
             || (cfg!(target_os = "linux")
                 && (path_bytes.starts_with(b"/proc/") || path_bytes.starts_with(b"/sys/")))
         {
-            return Ok(());
+            return;
         }
-        let path_access = PathAccess { mode, path: path.into() };
-        let serialized_size = usize::try_from(PathAccess::serialized_size(&path_access)?)
-            .expect("serialized size exceeds usize");
-
-        let frame_size = NonZeroUsize::new(serialized_size)
-            .expect("fspy: encoded PathAccess should never be empty");
-
-        let mut frame = ipc_sender
-            .claim_frame(frame_size)
-            .expect("fspy: failed to claim frame in shared memory");
-        let mut writer: &mut [u8] = &mut frame;
-        PathAccess::serialize_into(&mut writer, &path_access)?;
-        assert_eq!(writer.len(), 0);
-
-        Ok(())
+        // The interception proceeds whether or not the record could be
+        // sent — a preload library can never panic its host process.
+        ipc_sender.send(&PathAccess { mode, path: path.into() });
     }
 
     /// Resolves and reports an exec before forwarding its transformed arguments.
@@ -106,10 +87,6 @@ impl Client {
     ///
     /// Returns errors from exec resolution, platform preparation, or the
     /// forwarding callback.
-    ///
-    /// # Panics
-    ///
-    /// Panics if reporting the executable path fails.
     pub unsafe fn handle_exec<R>(
         &self,
         config: ExecResolveConfig,
@@ -120,7 +97,7 @@ impl Client {
         // null-terminated arrays, as provided by the caller.
         let mut exec = unsafe { raw_exec.to_exec() };
         let pre_exec = handle_exec(&mut exec, config, &self.encoded_payload, |mode, path| {
-            self.send(mode, path).unwrap();
+            self.send(mode, path);
         })?;
         RawExec::from_exec(exec, |raw_command| f(raw_command, pre_exec))
     }
@@ -147,6 +124,7 @@ impl Client {
         let Some(abs_path) = path.to_absolute_path(&arena)? else {
             return Ok(());
         };
-        self.send(mode, Path::new(OsStr::from_bytes(abs_path.as_units())))
+        self.send(mode, Path::new(OsStr::from_bytes(abs_path.as_units())));
+        Ok(())
     }
 }
