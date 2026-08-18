@@ -21,10 +21,8 @@ use winapi::{
 use winsafe::co::{CP, WC};
 
 use crate::{
-    ChildTermination, TrackedChild,
-    command::Command,
-    error::SpawnError,
-    ipc::{OwnedReceiverLockGuard, SHM_CAPACITY},
+    ChildTermination, TrackedChild, command::Command, error::SpawnError,
+    ipc::OwnedReceiverLockGuard,
 };
 
 const INTERPOSE_CDYLIB: Artifact =
@@ -87,7 +85,7 @@ impl SpyImpl {
         command.creation_flags(CREATE_SUSPENDED);
 
         let (channel_conf, receiver) =
-            channel(SHM_CAPACITY).map_err(SpawnError::ChannelCreation)?;
+            channel(crate::ipc::shm_capacity()).map_err(SpawnError::ChannelCreation)?;
 
         let mut spawn_success = false;
         let spawn_success = &mut spawn_success;
