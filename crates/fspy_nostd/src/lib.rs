@@ -1,9 +1,6 @@
-//! Low-level operations for fspy code that cannot use the normal process
-//! runtime.
+//! Low-level operating-system operations without process-runtime dependencies.
 //!
-//! This includes Unix signal handlers and post-`fork()` children, Windows
-//! loader callbacks, process startup, and the injected Linux runtime. See
-//! README.md for the platform-specific guarantees.
+//! See README.md for the platform-specific guarantees.
 
 #![cfg_attr(not(test), no_std)]
 
@@ -18,12 +15,16 @@ mod windows;
 pub mod env;
 #[cfg(any(target_os = "linux", target_os = "none", target_os = "macos", windows))]
 pub mod fs;
-#[cfg(any(target_os = "linux", target_os = "none"))]
+#[cfg(any(target_os = "linux", target_os = "none", target_os = "macos"))]
 pub mod io;
 #[cfg(any(target_os = "linux", target_os = "none", target_os = "macos", windows))]
 pub mod mm;
 #[cfg(any(target_os = "linux", target_os = "none", target_os = "macos"))]
 pub mod param;
+#[cfg(any(target_os = "linux", target_os = "none"))]
+pub mod process;
+#[cfg(any(target_os = "linux", target_os = "none", target_os = "macos"))]
+pub mod stdio;
 
 pub use c_str::{CStr, CStrUnit, Fat, OsCStr, Thin, Units, WideCStr};
 pub use error::{Error, Result};

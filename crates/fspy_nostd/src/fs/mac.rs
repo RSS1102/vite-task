@@ -128,18 +128,14 @@ fn getcwd_small(buf: &mut [MaybeUninit<u8>]) -> Result<CStr<'_, Fat>> {
     Ok(unsafe { CStr::from_units_with_nul_unchecked(bytes) })
 }
 
-/// The allocation-free fast path from Apple's [`getcwd`]: ask an open `.`
+/// The allocation-free fast path from Apple's [`getcwd`]: asks an open `.`
 /// descriptor for its path.
 ///
 /// libSystem additionally `stat`s that path and compares it against the
 /// descriptor, falling back to walking up through `..` when they disagree —
 /// `F_GETPATH` can name a directory that has since been renamed or removed.
-/// This wrapper deliberately stops short of both. It has no slow path to fall
-/// back to, so the comparison could only turn a slightly stale answer into a
-/// hard error, and its caller records paths that a process accessed rather
-/// than resolving them: a stale name is a cosmetic inaccuracy, an error is a
-/// lost access. Skipping it also keeps this to two syscalls on the most
-/// common resolution there is.
+/// This function does neither, so it may return a stale path after the
+/// directory is renamed or removed.
 ///
 /// [`getcwd`]: https://github.com/apple-oss-distributions/Libc/blob/Libc-1752.120.2/gen/FreeBSD/getcwd.c#L62-L138
 fn getcwd_full(buf: &mut [MaybeUninit<u8>; PATH_MAX]) -> Result<CStr<'_, Fat>> {

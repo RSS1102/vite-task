@@ -1343,10 +1343,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fspy_injection_abi"
-version = "0.0.0"
-
-[[package]]
 name = "fspy_ipc_str"
 version = "0.0.0"
 dependencies = [
@@ -1385,7 +1381,6 @@ dependencies = [
 name = "fspy_preload_linux"
 version = "0.0.0"
 dependencies = [
- "fspy_injection_abi",
  "fspy_nostd",
  "syscalls",
 ]
@@ -1787,10 +1782,11 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "fspy_blob",
- "fspy_injection_abi",
  "fspy_preload_linux",
  "libc",
  "nix 0.31.2",
+ "syscalls",
+ "tempfile",
 ]
 
 [[package]]

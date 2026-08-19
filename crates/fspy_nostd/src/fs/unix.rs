@@ -47,7 +47,7 @@ bitflags! {
     }
 }
 
-/// Metadata used by fspy's shared-memory backing files.
+/// Metadata returned for an open descriptor.
 #[derive(Clone, Copy, Debug)]
 pub struct Stat {
     pub st_size: i64,

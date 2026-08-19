@@ -1,18 +1,16 @@
 //! Proof-of-concept ptrace injection.
 //!
-//! Spawns `/bin/echo hello`, stops it at the moment `execve` finishes (the new
+//! Spawns `/bin/cat test_path`, stops it at the moment `execve` finishes (the new
 //! program is loaded but has not run an instruction yet), injects the
-//! [`fspy_preload_linux`] payload, and hands it a string to print — written into
-//! the target and passed in registers, so the payload depends on neither the
-//! target's environment nor any baked-in message. Then it lets `/bin/echo`
-//! continue normally.
+//! [`fspy_preload_linux`] payload, and lets it install a SIGSYS handler before
+//! the target starts. A seccomp filter traps `openat`; the handler prints its
+//! path and performs the syscall in-process with a bypass cookie.
 //!
-//! Expected output: the supervisor's string on stderr, then `hello` on stdout.
-//!
-//! This is the injection vehicle only — there is no seccomp filter here. It is
-//! the "get our code registered between exec and first instruction" half of the
-//! design, in isolation. All ptrace and wait calls go through the `nix` safe
-//! wrappers; the one `unsafe` is `Command::pre_exec`.
+//! Expected output includes `openat: test_path` on stderr and the test file's
+//! contents on stdout.
+
+#[cfg(target_os = "linux")]
+mod seccomp;
 
 #[cfg(not(target_os = "linux"))]
 fn main() {
@@ -41,7 +39,7 @@ mod linux {
 
     use anyhow::{Context as _, Result, bail, ensure};
     use fspy_blob::Blob;
-    use fspy_injection_abi::ResumeContext;
+    use fspy_preload_linux::ResumeContext;
     use nix::{
         sys::{
             ptrace::{self, Options},
@@ -54,9 +52,7 @@ mod linux {
     /// The freestanding payload, built for our target and embedded at compile time.
     const PAYLOAD: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_FSPY_PRELOAD_LINUX"));
 
-    /// The string the supervisor hands to the payload. The payload prints
-    /// exactly these bytes — it has none of its own and reads no environment.
-    const MESSAGE: &[u8] = b"fspy_preload_linux: printing data handed to it by the supervisor\n";
+    const MESSAGE: &[u8] = b"fspy_preload_linux: installed SIGSYS handler\n";
 
     pub fn run() -> Result<()> {
         let blob =
@@ -68,17 +64,22 @@ mod linux {
             blob.relocation_count(),
         );
 
-        // Spawn `/bin/echo hello` tracing itself, so it stops at the exec.
-        let mut command = Command::new("/bin/echo");
-        command.arg("hello");
-        // SAFETY: `traceme` is a single async-signal-safe syscall, valid in the
-        // forked child between fork and exec.
+        let directory = tempfile::tempdir().context("create demo directory")?;
+        std::fs::write(directory.path().join("test_path"), b"SIGSYS works\n")
+            .context("write test_path")?;
+
+        // Spawn `/bin/cat test_path` tracing itself, so it stops at the exec.
+        let mut command = Command::new("/bin/cat");
+        command.arg("test_path").current_dir(directory.path());
+        // SAFETY: the child performs only direct syscalls between fork and exec.
         unsafe {
             command.pre_exec(|| {
-                ptrace::traceme().map_err(|e| std::io::Error::from_raw_os_error(e as i32))
+                ptrace::traceme()
+                    .map_err(|error| std::io::Error::from_raw_os_error(error as i32))?;
+                crate::seccomp::install()
             });
         }
-        let child = command.spawn().context("spawn /bin/echo")?;
+        let child = command.spawn().context("spawn /bin/cat")?;
         let pid = Pid::from_raw(child.id().cast_signed());
 
         let result = (|| {
@@ -141,13 +142,13 @@ mod linux {
         println!("detached — payload will restore the exec context in-process");
         match waitpid(pid, None)? {
             WaitStatus::Exited(exited, 0) if exited == pid => {
-                println!("/bin/echo exited with code 0");
+                println!("/bin/cat exited with code 0");
             }
-            WaitStatus::Exited(_, code) => bail!("/bin/echo exited with code {code}"),
+            WaitStatus::Exited(_, code) => bail!("/bin/cat exited with code {code}"),
             WaitStatus::Signaled(_, signal, dumped) => {
-                bail!("/bin/echo was killed by {signal} (core dumped: {dumped})")
+                bail!("/bin/cat was killed by {signal} (core dumped: {dumped})")
             }
-            other => bail!("unexpected /bin/echo wait status: {other:?}"),
+            other => bail!("unexpected /bin/cat wait status: {other:?}"),
         }
         Ok(())
     }
@@ -226,8 +227,8 @@ mod linux {
             r.rsi = arg1;
             r.rdx = arg2;
         }
-        pub const fn resume_context(r: &Regs) -> fspy_injection_abi::ResumeContext {
-            fspy_injection_abi::ResumeContext {
+        pub const fn resume_context(r: &Regs) -> fspy_preload_linux::ResumeContext {
+            fspy_preload_linux::ResumeContext {
                 r15: r.r15,
                 r14: r.r14,
                 r13: r.r13,
@@ -283,8 +284,8 @@ mod linux {
             r.regs[1] = arg1;
             r.regs[2] = arg2;
         }
-        pub const fn resume_context(r: &Regs) -> fspy_injection_abi::ResumeContext {
-            fspy_injection_abi::ResumeContext {
+        pub const fn resume_context(r: &Regs) -> fspy_preload_linux::ResumeContext {
+            fspy_preload_linux::ResumeContext {
                 registers: r.regs,
                 sp: r.sp,
                 pc: r.pc,

@@ -1,6 +1,11 @@
-//! Data shared by the ptrace injector and its freestanding payload.
+//! ABI shared by the ptrace injector and its freestanding payload.
 
 #![no_std]
+
+/// Value placed in `openat`'s unused fifth syscall-argument slot when the
+/// injected handler reissues the call. The seccomp filter allows that call
+/// through instead of trapping it again.
+pub const OPENAT_COOKIE: u64 = 0x6673_7079_5349_4753;
 
 /// Registers the payload needs to resume an x86-64 program at its exec entry.
 #[cfg(target_arch = "x86_64")]

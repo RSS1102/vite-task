@@ -37,13 +37,11 @@ mod linux {
     ///
     /// Discovered from the kernel with a handful of raw syscalls, once per
     /// process, and cached in an atomic: no libc, no auxiliary vector, no
-    /// `/proc`, no minimum kernel version, no allocation, and no init to
-    /// call first — safe from the first instruction on, in signal handlers,
-    /// and in the child of `fork()`.
+    /// `/proc`, no minimum kernel version, no allocation, and no required
+    /// initialization.
     ///
     /// Zero — the kernel refusing a scratch mapping, i.e. out of memory —
-    /// is not cached, so a later call retries; callers treat it as "fail
-    /// this operation" (an allocator refuses the allocation).
+    /// is not cached, so a later call retries.
     #[must_use]
     pub fn page_size() -> usize {
         static CACHE: AtomicUsize = AtomicUsize::new(0);

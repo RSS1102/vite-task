@@ -1,17 +1,14 @@
-//! A minimal freestanding payload, used to prove out code injection.
+//! A freestanding payload for the ptrace/SIGSYS proof of concept.
 //!
 //! It targets `*-unknown-none` — a bare-metal target with no libc, no C
 //! runtime, and no dynamic loader — so it links as a self-contained,
-//! position-independent blob through `rust-lld`, with no external toolchain and
-//! no crt to collide with. The supervisor hands its entry a `(pointer, length)`
-//! for a byte string it wrote into this process. The payload writes those bytes
-//! to stderr with a raw `write` syscall, then restores the exec-stop register
-//! context and transfers to the target's original entry point itself. On
-//! `AArch64`, `x16` holds that entry address for the final indirect branch and is
-//! the only register not restored. The data it prints comes from the supervisor
-//! — the payload has no message of its own and reads nothing from this process's
-//! environment. It is a stand-in for "install a SIGSYS handler between a
-//! target's `execve` and its first instruction", without that machinery yet.
+//! position-independent blob through `rust-lld`. Before restoring the target's
+//! exec-stop register context, it installs a raw `rt_sigaction` handler. The
+//! handler prints each seccomp-trapped `openat` path, reissues the syscall with
+//! a filter-bypass cookie, and writes the raw result into the saved signal
+//! context. On `AArch64`, `x16` holds the target entry address for the final
+//! indirect branch and is the only register not restored. The payload reads no
+//! process environment.
 //!
 //! `*-unknown-none` reports `target_os = "none"`. `fspy_nostd` deliberately
 //! treats that as a freestanding Linux environment and provides its direct
@@ -22,15 +19,13 @@
 #![cfg_attr(target_os = "none", no_main)]
 
 #[cfg(target_os = "none")]
+mod sigsys;
+
+#[cfg(target_os = "none")]
 mod payload {
     use core::{arch::naked_asm, mem::offset_of};
 
-    use fspy_injection_abi::ResumeContext;
-
-    // SAFETY: descriptor 2 is the process's conventional stderr descriptor
-    // and remains borrowed rather than owned by the payload.
-    const STDERR: fspy_nostd::BorrowedFd<'static> =
-        unsafe { fspy_nostd::BorrowedFd::borrow_raw(2) };
+    use fspy_preload_linux::ResumeContext;
 
     /// ELF entry point. An entry point is not reached by a `call`, so there is
     /// no return address on the stack and the entry stack alignment differs from
@@ -38,7 +33,7 @@ mod payload {
     /// called function expects `RSP` ≡ 8 (mod 16)). It is therefore naked — no
     /// compiler prologue making those wrong assumptions — and simply transfers
     /// to [`payload_main`] via `call`/`bl`, which re-establishes a normal,
-    /// correctly aligned frame. The two argument registers the supervisor set
+    /// correctly aligned frame. The three argument registers the supervisor set
     /// (`data`, `len`, `context`) flow straight through.
     #[cfg(target_arch = "x86_64")]
     #[unsafe(naked)]
@@ -54,13 +49,26 @@ mod payload {
         naked_asm!("bl {main}", "brk #0", main = sym payload_main)
     }
 
-    /// Reached from [`_start`] with a normal frame. Writes the supervisor's bytes
-    /// to stderr, then resumes the target from the supplied register context.
+    /// Reached from [`_start`] with a normal frame. Installs the handler, writes
+    /// the supervisor's bytes, and resumes the supplied register context.
     extern "C" fn payload_main(data: *const u8, len: usize, context: *const ResumeContext) -> ! {
+        if crate::sigsys::install().is_err() {
+            // SAFETY: the injected process keeps its standard-error descriptor
+            // open while the payload runs.
+            let stderr = unsafe { fspy_nostd::stdio::stderr() };
+            let _ = fspy_nostd::io::write(
+                stderr,
+                b"fspy_preload_linux: failed to install SIGSYS handler\n",
+            );
+            fspy_nostd::process::exit_group(101);
+        }
         // SAFETY: the supervisor placed `len` readable bytes at `data`. A short
         // write is fine — this is a best-effort diagnostic.
         let data = unsafe { core::slice::from_raw_parts(data, len) };
-        let _ = fspy_nostd::io::write(STDERR, data);
+        // SAFETY: the injected process keeps its standard-error descriptor
+        // open while the payload runs.
+        let stderr = unsafe { fspy_nostd::stdio::stderr() };
+        let _ = fspy_nostd::io::write(stderr, data);
         // SAFETY: the supervisor placed a correctly aligned, initialized
         // `ResumeContext` at `context` and keeps its mapping alive.
         unsafe { resume(context) }
@@ -166,16 +174,6 @@ mod payload {
         )
     }
 
-    /// A [`core::fmt::Write`] sink over the raw `write` syscall, so the panic
-    /// handler can format the [`core::panic::PanicInfo`] message with no libc.
-    struct Stderr;
-
-    impl core::fmt::Write for Stderr {
-        fn write_str(&mut self, s: &str) -> core::fmt::Result {
-            fspy_nostd::io::write(STDERR, s.as_bytes()).map(|_| ()).map_err(|_| core::fmt::Error)
-        }
-    }
-
     #[panic_handler]
     fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
         use core::fmt::Write as _;
@@ -184,12 +182,11 @@ mod payload {
         // Fail closed: report the panic (message and location) and abort the
         // whole process (with the Rust panic exit code) rather than continue in
         // an undefined state.
-        let _ = writeln!(Stderr, "fspy_preload_linux: {info}");
-        // SAFETY: `exit_group` terminates the process and does not return.
-        unsafe {
-            let _ = syscalls::syscall!(syscalls::Sysno::exit_group, 101usize);
-        }
-        loop {}
+        // SAFETY: the injected process keeps its standard-error descriptor
+        // open while the payload runs.
+        let mut stderr = unsafe { fspy_nostd::stdio::stderr() };
+        let _ = writeln!(stderr, "fspy_preload_linux: {info}");
+        fspy_nostd::process::exit_group(101)
     }
 }
 

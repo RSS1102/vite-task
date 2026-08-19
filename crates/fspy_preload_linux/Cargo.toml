@@ -7,6 +7,11 @@ license.workspace = true
 publish = false
 rust-version.workspace = true
 
+[lib]
+test = false
+doctest = false
+bench = false
+
 [[bin]]
 name = "fspy_preload_linux"
 test = false
@@ -16,7 +21,6 @@ bench = false
 # The freestanding payload targets `*-unknown-none` (no libc). `fspy_nostd`
 # supplies the Linux syscall-facing types and wrappers on that target.
 [target.'cfg(target_os = "none")'.dependencies]
-fspy_injection_abi = { workspace = true }
 fspy_nostd = { workspace = true }
 syscalls = { workspace = true }
 

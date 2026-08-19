@@ -1,36 +1,40 @@
-# inject_demo — ptrace code-injection proof of concept
+# inject_demo — ptrace plus in-process SIGSYS proof of concept
 
-Demonstrates the "get our code registered between `execve` and the target's
-first instruction" half of the SIGSYS design, in isolation and with **no seccomp
-filter**. The injected code prints a string the supervisor hands it, then hands
-control back.
+Installs a seccomp filter before `execve`, injects a freestanding Rust payload at
+the exec-stop, and lets that payload handle trapped `openat` calls inside the
+target process.
 
 ## Pieces
 
-| Crate                   | Role                                                                                                                                                                                                                                                                                                                           |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `fspy_nostd::io::write` | Linux-only raw-`write(2)` wrapper (no libc).                                                                                                                                                                                                                                                                                   |
-| `fspy_injection_abi`    | Shared `no_std` register-context layout used by the supervisor and freestanding payload.                                                                                                                                                                                                                                       |
-| `fspy_preload_linux`    | Freestanding `#![no_std]` payload, built for `*-unknown-none` (no libc, no C runtime, no loader). Its entry receives a string and resume context, writes the string to stderr, then restores that context and enters the target. It has no baked-in message and reads no environment. Stand-in for "install a SIGSYS handler". |
-| `fspy_blob`             | Flattens the trusted static-PIE (`ET_DYN`) artifact into a `Blob` and records its base-relative relocations. It knows nothing about the payload.                                                                                                                                                                               |
-| `inject_demo`           | Spawns `/bin/echo hello`, stops it at the exec-stop, injects the payload, string, and resume context, then detaches. The payload resumes the target in-process, so there is no completion signal or second ptrace turn. It drives ptrace through the safe `nix` wrappers.                                                      |
+| Crate                | Role                                                                                                                    |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `fspy_nostd`         | Direct Linux syscall and borrowed-descriptor APIs used by the payload.                                                  |
+| `fspy_preload_linux` | Freestanding `#![no_std]` payload, SIGSYS handler, and shared resume ABI.                                               |
+| `fspy_blob`          | Flattens the static-PIE artifact and applies its base-relative relocations.                                             |
+| `inject_demo`        | Creates `test_path`, installs the filter, injects at the `/bin/cat test_path` exec-stop, and detaches from the process. |
 
 ## How the injection works
 
-1. Spawn `/bin/echo` via `std::process::Command`, calling `PTRACE_TRACEME` in a
-   `pre_exec` hook so the child traces itself and stops at the exec.
-2. The child stops at the **exec-stop** — the new program is mapped but has not
+1. Spawn `/bin/cat test_path` via `std::process::Command`. Its `pre_exec` hook
+   calls `PTRACE_TRACEME`, enables `NO_NEW_PRIVS`, and installs a classic-BPF
+   seccomp filter.
+2. The filter returns `SECCOMP_RET_TRAP` for `openat`, except when the unused
+   fifth syscall-argument slot contains `OPENAT_COOKIE`.
+3. The child stops at the **exec-stop** — the new program is mapped but has not
    run an instruction. The parent saves its registers here.
-3. The parent runs `mmap` _inside_ the target by borrowing its program counter to
+4. The parent runs `mmap` _inside_ the target by borrowing its program counter to
    execute one `syscall`/`svc` instruction. It restores both the instruction and
    registers on every path.
-4. It writes the relocated payload at the mapped base, followed by the string
+5. It writes the relocated payload at the mapped base, followed by the string
    and an aligned copy of the exec-stop register context.
-5. It points the program counter at the payload's entry and, in the argument
+6. It points the program counter at the payload's entry and, in the argument
    registers, passes the string (address, length) and context address.
-6. The parent detaches, which starts the payload. After initialization, the
-   payload restores the saved context and transfers directly to `/bin/echo`'s
-   entry point. No completion signal or additional ptrace turn is required.
+7. The parent detaches. The payload installs the SIGSYS handler, restores the
+   saved context, and transfers directly to `/bin/cat`'s entry point.
+8. For each trapped `openat`, the handler prints the pathname, repeats the raw
+   syscall with the cookie, and places its raw return value in the interrupted
+   context. The cookie makes the repeated syscall pass the same filter without
+   recursion.
 
 The x86-64 trampoline restores every general-purpose register and `rflags`; its
 final `ret` reads the target address from the stack. AArch64 has no equivalent
@@ -86,15 +90,20 @@ Expected output (stderr/stdout may interleave):
 ```
 payload: <N> bytes, entry +0x…, <k> relocations
 mapped <N> bytes into the target at 0x…
-fspy_preload_linux: printing data handed to it by the supervisor   # <- payload prints the supervisor's string
+fspy_preload_linux: installed SIGSYS handler
 detached — payload will restore the exec context in-process
-hello                                          # <- /bin/echo itself, after register restoration
-/bin/echo exited with code 0
+openat: /etc/ld.so.cache
+openat: /lib/<architecture>/libc.so.6
+openat: test_path
+SIGSYS works
+/bin/cat exited with code 0
 ```
 
 ## Notes / limits
 
 - x86-64 and aarch64 only.
+- The handler currently assumes a valid NUL-terminated path pointer. Emulating
+  `EFAULT` without faulting the handler remains deliberately deferred.
 - `mmap`s the payload region `RWX`; a kernel that forbids `W^X` mappings
   (hardened SELinux/PaX) would need a two-step `PROT_WRITE` → `mprotect PROT_EXEC`.
 - The Linux `inject_demo` test validates the real embedded payload. The
