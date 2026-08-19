@@ -1,0 +1,46 @@
+[package]
+name = "inject_demo"
+version = "0.0.0"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+rust-version.workspace = true
+
+[[bin]]
+name = "inject_demo"
+test = false
+doctest = false
+bench = false
+
+[dependencies]
+fspy_blob = { path = "../fspy_blob" }
+fspy_injection_abi = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+anyhow = { workspace = true }
+# `libc` only for the arch-specific `user_regs_struct` type; all ptrace/wait
+# calls go through nix's safe wrappers.
+libc = { workspace = true }
+nix = { workspace = true, features = ["ptrace", "signal", "process"] }
+
+# Embed the freestanding payload via cargo's `CARGO_BIN_FILE_*` env var (nightly
+# `-Z bindeps`). It is built for a bare-metal `*-unknown-none` target matching
+# the injector's arch: no libc, no C runtime, no dynamic loader, linked by
+# `rust-lld` — so it builds the same way everywhere (no external linker) and is a
+# self-contained, position-independent blob (`ET_DYN`) that `fspy_blob` maps at a
+# base the kernel picks. Requires the target's core:
+# `rustup target add <arch>-unknown-none[-softfloat]`.
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
+fspy_preload_linux = { path = "../fspy_preload_linux", artifact = "bin", target = "x86_64-unknown-none" }
+
+[target.'cfg(all(target_os = "linux", target_arch = "aarch64"))'.dependencies]
+fspy_preload_linux = { path = "../fspy_preload_linux", artifact = "bin", target = "aarch64-unknown-none-softfloat" }
+
+# These are consumed through an `env!`/`include_bytes!` path and a `cfg`-gated
+# `extern crate`, which cargo-shear cannot see.
+[package.metadata.cargo-shear]
+ignored = ["fspy_preload_linux", "fspy_blob"]
+
+[lints]
+workspace = true

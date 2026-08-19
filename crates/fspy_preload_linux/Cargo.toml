@@ -1,0 +1,24 @@
+[package]
+name = "fspy_preload_linux"
+version = "0.0.0"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+rust-version.workspace = true
+
+[[bin]]
+name = "fspy_preload_linux"
+test = false
+doctest = false
+bench = false
+
+# The freestanding payload targets `*-unknown-none` (no libc). `fspy_nostd`
+# supplies the Linux syscall-facing types and wrappers on that target.
+[target.'cfg(target_os = "none")'.dependencies]
+fspy_injection_abi = { workspace = true }
+fspy_nostd = { workspace = true }
+syscalls = { workspace = true }
+
+[lints]
+workspace = true
