@@ -46,7 +46,7 @@ assert2 = "0.4.0"
 assertables = "10.0.0"
 async-trait = "0.1.89"
 base64 = "0.22.1"
-wincode = "0.6.0"
+wincode = { version = "0.6.0", default-features = false, features = ["alloc"] }
 bindgen = "0.72.1"
 bitflags = "2.10.0"
 brush-parser = "0.4.0"
@@ -149,7 +149,7 @@ syscalls = { version = "0.8.0", default-features = false }
 tar = "0.4.45"
 tempfile = "3.14.0"
 test-log = "0.2.18"
-thiserror = "2"
+thiserror = { version = "2", default-features = false }
 tokio = "1.48.0"
 tokio-util = "0.7.17"
 toml = "1.0.0"

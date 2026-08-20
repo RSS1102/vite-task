@@ -1339,6 +1339,7 @@ name = "fspy_ipc_str"
 version = "0.0.0"
 dependencies = [
  "allocator-api2",
+ "bstr",
  "bumpalo",
  "bytemuck",
  "fspy_nostd",

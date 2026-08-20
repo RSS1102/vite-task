@@ -9,7 +9,7 @@ rust-version.workspace = true
 [dependencies]
 fspy_ipc_str = { workspace = true }
 rustc-hash = { workspace = true }
-wincode = { workspace = true, features = ["derive"] }
+wincode = { workspace = true, features = ["derive", "std"] }
 
 [lints]
 workspace = true
