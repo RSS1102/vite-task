@@ -1,7 +1,7 @@
 #[cfg(not(target_env = "musl"))]
 pub mod channel;
 mod ipc_path;
-use std::fmt::Debug;
+use core::fmt::Debug;
 
 use bitflags::bitflags;
 pub use fspy_ipc_str::IpcStr;
@@ -20,10 +20,10 @@ bitflags! {
 }
 
 impl Debug for AccessMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         struct InternalAccessMode(AccessMode);
         impl Debug for InternalAccessMode {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
                 bitflags::parser::to_writer(&self.0, f)
             }
         }

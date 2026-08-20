@@ -1,13 +1,12 @@
+use core::{fmt::Debug, mem::MaybeUninit};
 #[cfg(unix)]
 use std::ffi::OsStr;
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt as _;
-use std::{
-    fmt::Debug,
-    mem::MaybeUninit,
-    path::{Path, StripPrefixError},
-};
+#[cfg(not(target_os = "none"))]
+use std::path::{Path, StripPrefixError};
 
+#[cfg(not(target_os = "none"))]
 use bumpalo::Bump;
 use bytemuck::TransparentWrapper;
 use fspy_ipc_str::IpcStr;
@@ -56,16 +55,24 @@ unsafe impl<'de, C: Config> SchemaRead<'de, C> for &'de IpcPath {
 }
 
 impl IpcPath {
+    #[cfg(any(unix, target_os = "none"))]
+    #[must_use]
+    pub fn from_bytes(bytes: &[u8]) -> &Self {
+        Self::wrap_ref(IpcStr::from_bytes(bytes))
+    }
+
     #[cfg(windows)]
     #[must_use]
     pub fn from_wide(wide: &[u16]) -> &Self {
         Self::wrap_ref(IpcStr::from_wide(wide))
     }
 
+    #[cfg(not(target_os = "none"))]
     pub fn clone_in<'bump>(&self, bump: &'bump Bump) -> &'bump Self {
         Self::wrap_ref(self.inner.clone_in(bump))
     }
 
+    #[cfg(not(target_os = "none"))]
     pub fn strip_path_prefix<P: AsRef<Path>, R, F: FnOnce(Result<&Path, StripPrefixError>) -> R>(
         &self,
         base: P,
@@ -77,7 +84,7 @@ impl IpcPath {
 }
 
 impl Debug for IpcPath {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         <IpcStr as Debug>::fmt(&self.inner, f)
     }
 }
@@ -85,6 +92,6 @@ impl Debug for IpcPath {
 #[cfg(unix)]
 impl<'a, S: AsRef<OsStr> + ?Sized> From<&'a S> for &'a IpcPath {
     fn from(value: &'a S) -> Self {
-        IpcPath::wrap_ref(IpcStr::from_bytes(value.as_ref().as_bytes()))
+        IpcPath::from_bytes(value.as_ref().as_bytes())
     }
 }
