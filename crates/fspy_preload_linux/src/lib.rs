@@ -2,7 +2,7 @@
 
 #![no_std]
 
-/// Value placed in `openat`'s unused fifth syscall-argument slot when the
+/// Value placed in `openat`'s unused sixth syscall-argument slot when the
 /// injected handler reissues the call. The seccomp filter allows that call
 /// through instead of trapping it again.
 pub const OPENAT_COOKIE: u64 = 0x6673_7079_5349_4753;

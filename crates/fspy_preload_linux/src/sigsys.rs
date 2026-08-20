@@ -1,44 +1,19 @@
 //! In-process handling for `SECCOMP_RET_TRAP` on `openat`.
 
-use core::{ffi::c_void, mem::size_of, ptr, slice};
+use core::{ffi::c_void, fmt::Write as _, ptr};
 
-use fspy_nostd::{CStr, Error, Thin};
+use fspy_nostd::{
+    CStr, Error, Thin,
+    signal::{self, SigAction, Signal},
+};
 use fspy_preload_linux::OPENAT_COOKIE;
-
-const SIGSYS: usize = 31;
-const SA_SIGINFO: usize = 4;
-const SA_RESTORER: usize = 0x0400_0000;
-
-#[repr(C)]
-struct KernelSigaction {
-    handler: *const (),
-    flags: usize,
-    restorer: *const (),
-    mask: u64,
-}
 
 /// Installs the handler using the kernel ABI, without libc.
 pub fn install() -> Result<(), Error> {
-    let action = KernelSigaction {
-        handler: handle_sigsys as *const (),
-        flags: SA_SIGINFO | SA_RESTORER,
-        restorer: arch::restore as *const (),
-        mask: 0,
-    };
-    // SAFETY: `action` has the kernel's `sigaction` layout for both supported
-    // 64-bit architectures. The kernel copies it during the call, and a kernel
-    // signal set contains one 64-bit word.
-    unsafe {
-        syscalls::syscall!(
-            syscalls::Sysno::rt_sigaction,
-            SIGSYS,
-            ptr::from_ref(&action),
-            ptr::null::<KernelSigaction>(),
-            size_of::<u64>()
-        )
-    }
-    .map(|_| ())
-    .map_err(Error::from)
+    let action = SigAction::new(handle_sigsys);
+    // SAFETY: the handler has the required ABI, does not unwind, and uses only
+    // the writable signal context and direct system calls.
+    unsafe { signal::sigaction(Signal::SIGSYS, &action) }
 }
 
 unsafe extern "C" fn handle_sigsys(_signal: i32, _info: *mut c_void, context: *mut c_void) {
@@ -49,7 +24,7 @@ unsafe extern "C" fn handle_sigsys(_signal: i32, _info: *mut c_void, context: *m
     unsafe { print_path(ptr::with_exposed_provenance(arguments[1])) };
 
     // SAFETY: these are the original `openat` arguments. Linux ignores the
-    // fifth argument, while the seccomp filter recognizes it as the bypass
+    // sixth argument, while the seccomp filter recognizes it as the bypass
     // cookie. Use the raw return value so negative errno values go straight
     // back into the interrupted program's return register.
     let result = unsafe {
@@ -59,6 +34,7 @@ unsafe extern "C" fn handle_sigsys(_signal: i32, _info: *mut c_void, context: *m
             arguments[1],
             arguments[2],
             arguments[3],
+            arguments[4],
             OPENAT_COOKIE
         )
     };
@@ -68,30 +44,11 @@ unsafe extern "C" fn handle_sigsys(_signal: i32, _info: *mut c_void, context: *m
 
 unsafe fn print_path(path: *const u8) {
     // SAFETY: upheld by the caller.
-    let path = unsafe { CStr::<Thin>::from_ptr(path) }.count();
-    let length = path.into_repr().len_with_nul() - 1;
-    // SAFETY: counting the C string established this initialized prefix.
-    let path = unsafe { slice::from_raw_parts(path.as_ptr(), length) };
+    let path = unsafe { CStr::<Thin>::from_ptr(path) };
 
     // SAFETY: the process keeps its standard-error descriptor open.
-    let stderr = unsafe { fspy_nostd::stdio::stderr() };
-    write_all(stderr, b"openat: ");
-    write_all(stderr, path);
-    write_all(stderr, b"\n");
-}
-
-fn write_all(fd: fspy_nostd::BorrowedFd<'_>, mut bytes: &[u8]) {
-    while !bytes.is_empty() {
-        match fspy_nostd::io::write(fd, bytes) {
-            Ok(0) => return,
-            Ok(written) => {
-                let Some(remaining) = bytes.get(written..) else { return };
-                bytes = remaining;
-            }
-            Err(Error::INTR) => {}
-            Err(_) => return,
-        }
-    }
+    let mut stderr = unsafe { fspy_nostd::stdio::stderr() };
+    let _ = writeln!(stderr, "openat: {path}");
 }
 
 #[repr(C)]
@@ -103,10 +60,11 @@ struct Stack {
 
 #[cfg(target_arch = "x86_64")]
 mod arch {
-    use core::{arch::naked_asm, ffi::c_void, mem::offset_of};
+    use core::{ffi::c_void, mem::offset_of};
 
     use super::Stack;
 
+    const R8: usize = 0;
     const R10: usize = 2;
     const RDI: usize = 8;
     const RSI: usize = 9;
@@ -126,7 +84,7 @@ mod arch {
         machine: MachineContext,
     }
 
-    pub unsafe fn openat_arguments(context: *mut c_void) -> [usize; 4] {
+    pub unsafe fn openat_arguments(context: *mut c_void) -> [usize; 5] {
         // SAFETY: the signal ABI supplies this x86-64 ucontext layout.
         let registers = unsafe { &(*context.cast::<UserContext>()).machine.registers };
         [
@@ -134,6 +92,7 @@ mod arch {
             usize::from_ne_bytes(registers[RSI].to_ne_bytes()),
             usize::from_ne_bytes(registers[RDX].to_ne_bytes()),
             usize::from_ne_bytes(registers[R10].to_ne_bytes()),
+            usize::from_ne_bytes(registers[R8].to_ne_bytes()),
         ]
     }
 
@@ -145,17 +104,12 @@ mod arch {
         };
     }
 
-    #[unsafe(naked)]
-    pub unsafe extern "C" fn restore() -> ! {
-        naked_asm!("mov rax, 15", "syscall")
-    }
-
     const _: () = assert!(offset_of!(UserContext, machine) == 40);
 }
 
 #[cfg(target_arch = "aarch64")]
 mod arch {
-    use core::{arch::naked_asm, ffi::c_void, mem::offset_of};
+    use core::{ffi::c_void, mem::offset_of};
 
     use super::Stack;
 
@@ -175,7 +129,7 @@ mod arch {
         machine: MachineContext,
     }
 
-    pub unsafe fn openat_arguments(context: *mut c_void) -> [usize; 4] {
+    pub unsafe fn openat_arguments(context: *mut c_void) -> [usize; 5] {
         // SAFETY: the signal ABI supplies this AArch64 ucontext layout.
         let registers = unsafe { &(*context.cast::<UserContext>()).machine.registers };
         [
@@ -183,6 +137,7 @@ mod arch {
             usize::from_ne_bytes(registers[1].to_ne_bytes()),
             usize::from_ne_bytes(registers[2].to_ne_bytes()),
             usize::from_ne_bytes(registers[3].to_ne_bytes()),
+            usize::from_ne_bytes(registers[4].to_ne_bytes()),
         ]
     }
 
@@ -192,11 +147,6 @@ mod arch {
             (*context.cast::<UserContext>()).machine.registers[0] =
                 u64::from_ne_bytes(result.to_ne_bytes());
         };
-    }
-
-    #[unsafe(naked)]
-    pub unsafe extern "C" fn restore() -> ! {
-        naked_asm!("mov x8, #139", "svc #0")
     }
 
     const _: () = assert!(offset_of!(UserContext, machine) == 176);

@@ -19,7 +19,7 @@ target process.
    calls `PTRACE_TRACEME`, enables `NO_NEW_PRIVS`, and installs a classic-BPF
    seccomp filter.
 2. The filter returns `SECCOMP_RET_TRAP` for `openat`, except when the unused
-   fifth syscall-argument slot contains `OPENAT_COOKIE`.
+   sixth syscall-argument slot contains `OPENAT_COOKIE`.
 3. The child stops at the **exec-stop** — the new program is mapped but has not
    run an instruction. The parent saves its registers here.
 4. The parent runs `mmap` _inside_ the target by borrowing its program counter to

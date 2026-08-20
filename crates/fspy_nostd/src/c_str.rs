@@ -1,4 +1,6 @@
-use core::{iter::FusedIterator, marker::PhantomData, num::NonZeroUsize, ptr::NonNull, slice};
+use core::{fmt, iter::FusedIterator, marker::PhantomData, num::NonZeroUsize, ptr::NonNull, slice};
+
+use bstr::BStr;
 
 mod private {
     pub trait Sealed {
@@ -224,6 +226,18 @@ impl<'a, U: CStrUnit> CStr<'a, Fat, U> {
     }
 }
 
+impl fmt::Display for CStr<'_, Thin> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        BStr::new((*self).count().as_units()).fmt(formatter)
+    }
+}
+
+impl fmt::Display for CStr<'_, Fat> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        BStr::new(self.as_units()).fmt(formatter)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use core::{mem::size_of, ptr::NonNull};
@@ -293,5 +307,13 @@ mod tests {
         assert_eq!(thin.count().as_units_with_nul(), units);
         assert_eq!(fat.as_units(), [u16::from(b'a'), u16::from(b'b')]);
         assert_eq!(fat.len_with_nul(), 3);
+    }
+
+    #[test]
+    fn byte_strings_display_lossy_utf8_without_the_nul() {
+        let fat = CStr::<Fat>::from_units_with_nul(b"a\xffb\0").unwrap();
+
+        assert_eq!(fat.to_string(), "a\u{fffd}b");
+        assert_eq!(fat.as_thin().to_string(), "a\u{fffd}b");
     }
 }

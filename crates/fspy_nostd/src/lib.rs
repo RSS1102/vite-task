@@ -23,6 +23,11 @@ pub mod mm;
 pub mod param;
 #[cfg(any(target_os = "linux", target_os = "none"))]
 pub mod process;
+#[cfg(all(
+    any(target_os = "linux", target_os = "none"),
+    any(target_arch = "aarch64", target_arch = "x86_64")
+))]
+pub mod signal;
 #[cfg(any(target_os = "linux", target_os = "none", target_os = "macos"))]
 pub mod stdio;
 

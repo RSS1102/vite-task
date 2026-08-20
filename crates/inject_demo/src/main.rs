@@ -67,16 +67,17 @@ mod linux {
         let directory = tempfile::tempdir().context("create demo directory")?;
         std::fs::write(directory.path().join("test_path"), b"SIGSYS works\n")
             .context("write test_path")?;
+        let seccomp_filter = crate::seccomp::compile().context("compile seccomp filter")?;
 
         // Spawn `/bin/cat test_path` tracing itself, so it stops at the exec.
         let mut command = Command::new("/bin/cat");
         command.arg("test_path").current_dir(directory.path());
-        // SAFETY: the child performs only direct syscalls between fork and exec.
+        // SAFETY: the child performs only ptrace, prctl, and seccomp operations
+        // and does not allocate or access shared process-runtime state.
         unsafe {
-            command.pre_exec(|| {
-                ptrace::traceme()
-                    .map_err(|error| std::io::Error::from_raw_os_error(error as i32))?;
-                crate::seccomp::install()
+            command.pre_exec(move || {
+                ptrace::traceme()?;
+                crate::seccomp::apply(&seccomp_filter)
             });
         }
         let child = command.spawn().context("spawn /bin/cat")?;

@@ -18,11 +18,10 @@ fspy_blob = { path = "../fspy_blob" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 anyhow = { workspace = true }
-# `libc` only for the arch-specific `user_regs_struct` type; all ptrace/wait
-# calls go through nix's safe wrappers.
+# `libc` provides the register ABI type and the `openat` syscall number.
 libc = { workspace = true }
 nix = { workspace = true, features = ["ptrace", "signal", "process"] }
-syscalls = { workspace = true }
+seccompiler = { workspace = true }
 tempfile = { workspace = true }
 
 # Embed the freestanding payload via cargo's `CARGO_BIN_FILE_*` env var (nightly
