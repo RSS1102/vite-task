@@ -365,8 +365,7 @@ static void test_orphan(bool subreaper) {
     if (ok && (error = interrupt_and_detach(target)) != 0) ok = false;
     report(subreaper ? "seize-orphan-subreaper" : "seize-orphan-no-subreaper",
            ok, error, subreaper ? "reparented to supervisor" : "reparented away");
-    kill(target, SIGKILL);
-    waitpid(target, NULL, 0);
+    kill_and_reap(target);
     prctl(PR_SET_CHILD_SUBREAPER, 0, 0, 0, 0);
 }
 
