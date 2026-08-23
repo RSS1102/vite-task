@@ -155,17 +155,17 @@ mod linux {
     }
 
     /// Runs `mmap(NULL, len, RWX, PRIVATE|ANON, -1, 0)` inside the target by
-    /// borrowing its program counter to execute one syscall instruction, then
-    /// restoring the instruction it clobbered.
+    /// borrowing its program counter for a syscall followed by an explicit
+    /// trap, then restoring the instructions it clobbered.
     fn remote_mmap(pid: Pid, saved: &arch::Regs, len: u64) -> Result<u64> {
         let pc = arch::pc(saved);
         let original = read_word(pid, pc)?;
-        write_word(pid, pc, arch::patch_syscall(original))?;
+        write_word(pid, pc, arch::patch_syscall_and_trap(original))?;
 
         let mut regs = *saved;
         arch::set_mmap(&mut regs, len);
         ptrace::setregs(pid, regs)?;
-        ptrace::step(pid, None)?;
+        ptrace::cont(pid, None)?;
         expect_trap(waitpid(pid, None)?, "remote mmap")?;
 
         let result = arch::syscall_result(&ptrace::getregs(pid)?);
@@ -253,9 +253,9 @@ mod linux {
         pub const fn syscall_result(r: &Regs) -> u64 {
             r.rax
         }
-        /// Overlay a `syscall` (0f 05) instruction onto the low bytes of `word`.
-        pub const fn patch_syscall(word: u64) -> u64 {
-            (word & !0xffff) | 0x050f
+        /// Overlay `syscall; int3` onto the low bytes of `word`.
+        pub const fn patch_syscall_and_trap(word: u64) -> u64 {
+            (word & !0xff_ffff) | 0xcc_050f
         }
         /// Arrange registers for `mmap(NULL, len, RWX, PRIVATE|ANON, -1, 0)`.
         pub const fn set_mmap(r: &mut Regs, len: u64) {
@@ -296,9 +296,9 @@ mod linux {
         pub const fn syscall_result(r: &Regs) -> u64 {
             r.regs[0]
         }
-        /// Overlay an `svc #0` (d4000001) instruction onto the low word.
-        pub const fn patch_syscall(word: u64) -> u64 {
-            (word & !0xffff_ffff) | 0xd400_0001
+        /// Overlay `svc #0; brk #0` onto `word`.
+        pub const fn patch_syscall_and_trap(_word: u64) -> u64 {
+            0xd420_0000_d400_0001
         }
         /// Arrange registers for `mmap(NULL, len, RWX, PRIVATE|ANON, -1, 0)`.
         pub const fn set_mmap(r: &mut Regs, len: u64) {
