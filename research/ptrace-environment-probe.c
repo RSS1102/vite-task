@@ -96,8 +96,17 @@ static void test_traceme_exec(const char *self) {
         execl(self, self, "exit-zero", NULL);
         _exit(121);
     }
-    int status;
-    if (waitpid(pid, &status, 0) < 0) abort();
+    int status = 0;
+    pid_t waited;
+    do {
+        waited = waitpid(pid, &status, 0);
+    } while (waited < 0 && errno == EINTR);
+    if (waited < 0) {
+        int error = errno;
+        report_required("traceme+exec+regset", false, error, "waitpid failed");
+        kill_and_reap(pid);
+        return;
+    }
     bool stopped = WIFSTOPPED(status) && WSTOPSIG(status) == SIGTRAP;
     int error = 0;
     unsigned char registers[1024];
@@ -106,14 +115,23 @@ static void test_traceme_exec(const char *self) {
         error = errno;
     if (!error && stopped && ptrace(PTRACE_SETREGSET, pid, (void *)(uintptr_t)NT_PRSTATUS, &iov) < 0)
         error = errno;
+    if (stopped) {
+        if (ptrace(PTRACE_CONT, pid, 0, 0) < 0) {
+            if (!error) error = errno;
+        } else {
+            do {
+                waited = waitpid(pid, &status, 0);
+            } while (waited < 0 && errno == EINTR);
+            if (waited < 0) {
+                if (!error) error = errno;
+            } else if (!WIFEXITED(status) && !WIFSIGNALED(status)) {
+                if (!error) error = EPROTO;
+            }
+        }
+    }
     report_required("traceme+exec+regset", stopped && !error, error,
                     stopped ? "SIGTRAP exec-stop" : "no exec-stop");
-    if (stopped) {
-        if (ptrace(PTRACE_CONT, pid, 0, 0) < 0) abort();
-        while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
-    } else if (!WIFEXITED(status) && !WIFSIGNALED(status)) {
-        kill_and_reap(pid);
-    }
+    if (!WIFEXITED(status) && !WIFSIGNALED(status)) kill_and_reap(pid);
 }
 
 static void test_attach(void) {
@@ -272,8 +290,8 @@ static void test_sibling(bool allow_with_prctl) {
     close(ready_pipe[0]);
     if (opt_in_error) {
         close(tracer_pipe[1]);
-        while (waitpid(tracer, NULL, 0) < 0 && errno == EINTR) {}
-        while (waitpid(target, NULL, 0) < 0 && errno == EINTR) {}
+        kill_and_reap(tracer);
+        kill_and_reap(target);
         report(name, false, opt_in_error, "PR_SET_PTRACER failed");
         return;
     }
@@ -356,7 +374,19 @@ static void test_orphan(bool subreaper) {
     pid_t target;
     if (read(pipefd[0], &target, sizeof(target)) != sizeof(target)) abort();
     close(pipefd[0]);
-    waitpid(middle, NULL, 0);
+    int middle_status = 0;
+    pid_t waited;
+    do {
+        waited = waitpid(middle, &middle_status, 0);
+    } while (waited < 0 && errno == EINTR);
+    if (waited < 0 || !WIFEXITED(middle_status) || WEXITSTATUS(middle_status) != 0) {
+        int error = waited < 0 ? errno : EPROTO;
+        report(subreaper ? "seize-orphan-subreaper" : "seize-orphan-no-subreaper",
+               false, error, "middle process did not exit cleanly");
+        kill_and_reap(target);
+        prctl(PR_SET_CHILD_SUBREAPER, 0, 0, 0, 0);
+        return;
+    }
     usleep(10000);
     errno = 0;
     int rc = ptrace(PTRACE_SEIZE, target, 0, 0);
