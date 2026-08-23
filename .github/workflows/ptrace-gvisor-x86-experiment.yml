@@ -1,0 +1,148 @@
+name: Temporary x86-64 gVisor ptrace experiment
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - research/ptrace-gvisor-x86-20260824
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  runsc-x86:
+    name: Hardened probe and explicit-trap injector under runsc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: taiki-e/checkout-action@7d1e50e93dc4fb3bba58f85018fadf77898aee8b # v1.4.2
+
+      - name: Report hosted environment
+        run: |
+          set -euxo pipefail
+          printf 'ImageOS=%s\nImageVersion=%s\n' "${ImageOS-}" "${ImageVersion-}"
+          uname -a
+          cat /etc/os-release
+          id
+          grep -E '^(Cap(Inh|Prm|Eff|Bnd|Amb)|NoNewPrivs|Seccomp):' /proc/self/status
+          if test -r /proc/sys/kernel/yama/ptrace_scope; then
+            printf 'YamaScope=' && cat /proc/sys/kernel/yama/ptrace_scope
+          fi
+          docker version
+          docker info --format 'SecurityOptions={{json .SecurityOptions}} Runtimes={{json .Runtimes}} DefaultRuntime={{.DefaultRuntime}}'
+
+      - name: Install pinned gVisor release
+        run: |
+          set -euxo pipefail
+          release=20260817.0
+          url="https://storage.googleapis.com/gvisor/releases/release/${release}/x86_64"
+          mkdir -p /tmp/gvisor-release
+          cd /tmp/gvisor-release
+          curl --fail --location --retry 5 --remote-name "$url/gvisor.tar.bz2"
+          curl --fail --location --retry 5 --remote-name "$url/gvisor.tar.bz2.sha512"
+          sha512sum -c gvisor.tar.bz2.sha512
+          sudo tar -xjf gvisor.tar.bz2 -C /usr/local/bin
+          sudo /usr/local/bin/runsc install
+          sudo systemctl reload docker
+          /usr/local/bin/runsc --version
+          docker info --format 'Runtimes={{json .Runtimes}} DefaultRuntime={{.DefaultRuntime}}'
+          docker run --rm --runtime=runsc ubuntu:24.04 sh -c \
+            'uname -a; cat /proc/version; id; grep -E "^(CapEff|NoNewPrivs|Seccomp):" /proc/self/status; dmesg | head -5'
+
+      - name: Build exact hardened probe and current explicit-trap inject_demo
+        run: |
+          set -euxo pipefail
+          mkdir -p target/ptrace-gvisor-x86
+          gcc -O2 -Wall -Wextra -Werror \
+            -o target/ptrace-gvisor-x86/ptrace-environment-probe \
+            research/ptrace-environment-probe.c
+          rustup target add x86_64-unknown-none
+          cargo build --locked -p inject_demo
+          cp target/debug/inject_demo target/ptrace-gvisor-x86/inject_demo
+          sha256sum \
+            target/ptrace-gvisor-x86/ptrace-environment-probe \
+            target/ptrace-gvisor-x86/inject_demo
+
+      - name: Build probe and injector images
+        run: |
+          set -euxo pipefail
+          docker build -t fspy-ptrace-gvisor-x86-probe -f- target/ptrace-gvisor-x86 <<'DOCKERFILE'
+          FROM ubuntu:24.04
+          COPY ptrace-environment-probe /probe-normal
+          ENTRYPOINT ["/probe-normal"]
+          DOCKERFILE
+          docker build -t fspy-ptrace-gvisor-x86-inject -f- target/ptrace-gvisor-x86 <<'DOCKERFILE'
+          FROM ubuntu:24.04
+          COPY inject_demo /inject_demo
+          ENTRYPOINT ["/inject_demo"]
+          DOCKERFILE
+
+      - name: Require hardened probe success under x86-64 runsc
+        run: |
+          set -euxo pipefail
+          run_required_probe() {
+            label="$1"
+            shift
+            set +e
+            "$@" >"target/ptrace-gvisor-x86/${label}.log" 2>&1
+            rc=$?
+            set -e
+            cat "target/ptrace-gvisor-x86/${label}.log"
+            printf '%s_EXIT=%s\n' "$label" "$rc"
+            test "$rc" -eq 0
+            grep -Eq '^ptrace-word-io +result=PASS' "target/ptrace-gvisor-x86/${label}.log"
+            grep -Eq '^required-summary +result=PASS' "target/ptrace-gvisor-x86/${label}.log"
+          }
+          run_required_probe RUNSC_X86_ROOT_PROBE \
+            docker run --rm --runtime=runsc fspy-ptrace-gvisor-x86-probe
+          run_required_probe RUNSC_X86_UID65534_PROBE \
+            docker run --rm --runtime=runsc --user 65534:65534 \
+              fspy-ptrace-gvisor-x86-probe
+
+      - name: Require runc injector control and capture runsc injector outcome
+        run: |
+          set -euxo pipefail
+          set +e
+          docker run --rm fspy-ptrace-gvisor-x86-inject \
+            >target/ptrace-gvisor-x86/RUNC_X86_ROOT_INJECT.log 2>&1
+          runc_rc=$?
+          set -e
+          cat target/ptrace-gvisor-x86/RUNC_X86_ROOT_INJECT.log
+          printf 'RUNC_X86_ROOT_INJECT_EXIT=%s\n' "$runc_rc"
+          test "$runc_rc" -eq 0
+          grep -F 'openat: test_path' target/ptrace-gvisor-x86/RUNC_X86_ROOT_INJECT.log
+          grep -F '/bin/cat exited with code 0' target/ptrace-gvisor-x86/RUNC_X86_ROOT_INJECT.log
+
+          capture_runsc_inject() {
+            label="$1"
+            shift
+            set +e
+            timeout 45s "$@" >"target/ptrace-gvisor-x86/${label}.log" 2>&1
+            rc=$?
+            set -e
+            cat "target/ptrace-gvisor-x86/${label}.log"
+            printf '%s_EXIT=%s\n' "$label" "$rc"
+          }
+          capture_runsc_inject RUNSC_X86_ROOT_INJECT \
+            docker run --rm --runtime=runsc fspy-ptrace-gvisor-x86-inject
+          capture_runsc_inject RUNSC_X86_UID65534_INJECT \
+            docker run --rm --runtime=runsc --user 65534:65534 \
+              fspy-ptrace-gvisor-x86-inject
+
+      - name: Remove temporary runsc runtime
+        if: always()
+        run: |
+          set +e
+          if test -x /usr/local/bin/runsc; then
+            sudo /usr/local/bin/runsc uninstall
+            sudo systemctl reload docker
+          fi
+          sudo rm -rf \
+            /usr/local/bin/runsc \
+            /usr/local/bin/containerd-shim-runsc-v1 \
+            /usr/local/bin/gvisor-bin \
+            /tmp/gvisor-release
+          exit 0
