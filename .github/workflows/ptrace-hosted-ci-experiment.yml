@@ -1,0 +1,214 @@
+name: Temporary ptrace hosted-CI experiment
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - research/ptrace-hosted-ci-20260824
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ptrace-hosted-ci-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  ubuntu-host:
+    name: Ubuntu hosted VM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Report VM policy
+        run: |
+          set -euxo pipefail
+          printf 'ImageOS=%s\nImageVersion=%s\n' "${ImageOS-}" "${ImageVersion-}"
+          uname -a
+          cat /etc/os-release
+          id
+          grep -E '^(Cap(Inh|Prm|Eff|Bnd|Amb)|NoNewPrivs|Seccomp):' /proc/self/status
+          if test -r /proc/sys/kernel/yama/ptrace_scope; then
+            printf 'YamaScope=' && cat /proc/sys/kernel/yama/ptrace_scope
+          else
+            echo 'YamaScope=unavailable'
+          fi
+          findmnt -no TARGET,OPTIONS / || true
+          docker version
+          docker info --format 'SecurityOptions={{json .SecurityOptions}} Runtime={{.DefaultRuntime}} CgroupVersion={{.CgroupVersion}}'
+
+      - name: Build exact C probe
+        run: |
+          set -euxo pipefail
+          mkdir -p target/ptrace-ci
+          gcc -O2 -Wall -Wextra -Werror \
+            -o target/ptrace-ci/ptrace-environment-probe \
+            research/ptrace-environment-probe.c
+          sudo install -o root -g root -m 4755 \
+            target/ptrace-ci/ptrace-environment-probe /probe-suid
+
+      - name: Probe as runner user
+        run: |
+          set -euxo pipefail
+          target/ptrace-ci/ptrace-environment-probe
+          target/ptrace-ci/ptrace-environment-probe suid-tests
+
+      - name: Probe as VM root
+        run: |
+          set -euxo pipefail
+          sudo target/ptrace-ci/ptrace-environment-probe
+
+      - name: Build current inject_demo
+        run: |
+          set -euxo pipefail
+          rustup show active-toolchain
+          rustup target add x86_64-unknown-none
+          cargo build --locked -p inject_demo
+          cp target/debug/inject_demo target/ptrace-ci/inject_demo
+
+      - name: Run inject_demo on VM as runner and root
+        run: |
+          set -euxo pipefail
+          target/ptrace-ci/inject_demo
+          sudo target/ptrace-ci/inject_demo
+
+      - name: Build default Docker images
+        run: |
+          set -euxo pipefail
+          docker build -t fspy-ptrace-probe-ci -f- target/ptrace-ci <<'DOCKERFILE'
+          FROM ubuntu:24.04
+          COPY ptrace-environment-probe /probe-normal
+          RUN cp /probe-normal /probe-suid \
+           && chown root:root /probe-suid \
+           && chmod 4755 /probe-suid
+          ENTRYPOINT ["/probe-normal"]
+          DOCKERFILE
+          docker build -t fspy-inject-demo-ci -f- target/ptrace-ci <<'DOCKERFILE'
+          FROM ubuntu:24.04
+          COPY inject_demo /inject_demo
+          ENTRYPOINT ["/inject_demo"]
+          DOCKERFILE
+
+      - name: Probe in Docker default as root and UID 65534
+        run: |
+          set -euxo pipefail
+          docker run --rm --init fspy-ptrace-probe-ci
+          docker run --rm --init --user 65534:65534 fspy-ptrace-probe-ci
+          docker run --rm --init --user 65534:65534 fspy-ptrace-probe-ci suid-tests
+
+      - name: Run inject_demo in Docker default as root and UID 65534
+        run: |
+          set -euxo pipefail
+          docker run --rm --init fspy-inject-demo-ci
+          docker run --rm --init --user 65534:65534 fspy-inject-demo-ci
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ptrace-ci-binaries
+          path: |
+            target/ptrace-ci/ptrace-environment-probe
+            target/ptrace-ci/inject_demo
+          if-no-files-found: error
+          retention-days: 1
+
+  ubuntu-job-container:
+    name: GitHub Actions job container
+    needs: ubuntu-host
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install probe build tools
+        run: |
+          set -euxo pipefail
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            gcc libc6-dev util-linux
+
+      - name: Report job-container policy
+        run: |
+          set -euxo pipefail
+          uname -a
+          cat /etc/os-release
+          id
+          grep -E '^(Cap(Inh|Prm|Eff|Bnd|Amb)|NoNewPrivs|Seccomp):' /proc/self/status
+          grep -E '^(Cap(Inh|Prm|Eff|Bnd|Amb)|NoNewPrivs|Seccomp):' /proc/1/status
+          if test -r /proc/sys/kernel/yama/ptrace_scope; then
+            printf 'YamaScope=' && cat /proc/sys/kernel/yama/ptrace_scope
+          else
+            echo 'YamaScope=unavailable'
+          fi
+          findmnt -no TARGET,OPTIONS / || true
+
+      - name: Build exact C probe
+        run: |
+          set -euxo pipefail
+          gcc -O2 -Wall -Wextra -Werror \
+            -o /probe-normal research/ptrace-environment-probe.c
+          cp /probe-normal /probe-suid
+          chown root:root /probe-suid
+          chmod 4755 /probe-suid
+
+      - name: Probe as container root and UID 65534
+        run: |
+          set -euxo pipefail
+          /probe-normal
+          setpriv --reuid 65534 --regid 65534 --clear-groups /probe-normal
+          setpriv --reuid 65534 --regid 65534 --clear-groups /probe-normal suid-tests
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ptrace-ci-binaries
+          path: /ptrace-ci-binaries
+
+      - name: Run inject_demo as container root and UID 65534
+        run: |
+          set -euxo pipefail
+          chmod +x /ptrace-ci-binaries/inject_demo
+          /ptrace-ci-binaries/inject_demo
+          setpriv --reuid 65534 --regid 65534 --clear-groups \
+            /ptrace-ci-binaries/inject_demo
+
+  windows-wsl-availability:
+    name: Windows hosted VM WSL availability
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Report runner and non-destructively inspect WSL
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Write-Host "ImageOS=$env:ImageOS ImageVersion=$env:ImageVersion"
+          [System.Environment]::OSVersion.VersionString
+          Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, OsBuildNumber, HyperVisorPresent
+
+          function Invoke-WslQuery([string] $Label, [string[]] $Arguments) {
+            Write-Host "=== $Label ==="
+            & wsl.exe @Arguments 2>&1 | ForEach-Object { "$_" }
+            Write-Host "$Label exit=$LASTEXITCODE"
+          }
+
+          if (Get-Command wsl.exe -ErrorAction SilentlyContinue) {
+            Invoke-WslQuery 'wsl-version' @('--version')
+            Invoke-WslQuery 'wsl-status' @('--status')
+            Invoke-WslQuery 'wsl-list-verbose' @('--list', '--verbose')
+            Invoke-WslQuery 'wsl-list-quiet' @('--list', '--quiet')
+
+            $distros = & wsl.exe --list --quiet 2>$null
+            $listExit = $LASTEXITCODE
+            $usable = @($distros | Where-Object { $_.Trim().Length -gt 0 })
+            if ($listExit -eq 0 -and $usable.Count -gt 0) {
+              Invoke-WslQuery 'wsl-linux-probe' @('--exec', 'sh', '-lc', 'uname -a; id; cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || true')
+            } else {
+              Write-Host 'No existing usable WSL distribution; installation intentionally skipped.'
+            }
+          } else {
+            Write-Host 'wsl.exe is absent; installation intentionally skipped.'
+          }
