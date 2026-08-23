@@ -191,7 +191,7 @@ static void test_dumpable_zero(void) {
         close(pipefd[0]);
         if (prctl(PR_SET_DUMPABLE, 0) < 0) _exit(120);
         char ready = 'r';
-        write(pipefd[1], &ready, 1);
+        if (write(pipefd[1], &ready, 1) != 1) _exit(121);
         for (;;) pause();
     }
     close(pipefd[1]);
@@ -239,7 +239,7 @@ static void test_orphan(bool subreaper) {
         close(pipefd[0]);
         pid_t target = fork();
         if (target == 0) for (;;) pause();
-        write(pipefd[1], &target, sizeof(target));
+        if (write(pipefd[1], &target, sizeof(target)) != sizeof(target)) _exit(121);
         _exit(0);
     }
     close(pipefd[1]);
