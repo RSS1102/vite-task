@@ -64,18 +64,14 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $imageUrl = 'https://releases.ubuntu.com/24.04/ubuntu-24.04.4-wsl-amd64.wsl'
-          $sumsUrl = 'https://releases.ubuntu.com/24.04/SHA256SUMS'
           $image = 'C:\fspy-ptrace-artifacts\ubuntu-24.04.4-wsl-amd64.wsl'
           $installDir = 'C:\fspy-ptrace-wsl2'
+          # From the signed Ubuntu 24.04 SHA256SUMS publication. The versioned
+          # image and digest are intentionally pinned for this experiment.
+          $expected = '9B2F7730DC68227DD04A9F3E5EAB86AD85CAF556B8606AD94F1F29FF5C4FD3F5'
 
           curl.exe --fail --location --retry 5 --output $image $imageUrl
           if ($LASTEXITCODE -ne 0) { throw "Ubuntu image download failed: $LASTEXITCODE" }
-          $sums = (Invoke-WebRequest -UseBasicParsing $sumsUrl).Content
-          $line = ($sums -split "`n" | Where-Object {
-            $_ -match 'ubuntu-24\.04\.4-wsl-amd64\.wsl$'
-          } | Select-Object -First 1)
-          if (-not $line) { throw 'Ubuntu WSL image is missing from SHA256SUMS' }
-          $expected = ($line -split '\s+')[0].ToUpperInvariant()
           $actual = (Get-FileHash -Algorithm SHA256 $image).Hash
           if ($actual -ne $expected) {
             throw "Ubuntu WSL image checksum mismatch: expected $expected, got $actual"
@@ -161,3 +157,4 @@ jobs:
           & wsl.exe --unregister FspyPtraceProbe
           Remove-Item -Recurse -Force -ErrorAction SilentlyContinue C:\fspy-ptrace-wsl2
           Remove-Item -Recurse -Force -ErrorAction SilentlyContinue C:\fspy-ptrace-artifacts
+          $global:LASTEXITCODE = 0
