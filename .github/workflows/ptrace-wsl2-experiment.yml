@@ -83,7 +83,9 @@ jobs:
 
           & wsl.exe --list --verbose
           if ($LASTEXITCODE -ne 0) { throw "wsl --list --verbose failed: $LASTEXITCODE" }
-          $details = & wsl.exe --list --verbose 2>&1 | Out-String
+          # wsl.exe writes UTF-16 text even through this PowerShell pipeline.
+          # Remove embedded NULs before matching the human-readable fields.
+          $details = (& wsl.exe --list --verbose 2>&1 | Out-String).Replace("`0", '')
           if ($details -notmatch 'FspyPtraceProbe\s+Stopped\s+2' -and
               $details -notmatch 'FspyPtraceProbe\s+Running\s+2') {
             throw "Imported distribution was not reported as WSL version 2: $details"
