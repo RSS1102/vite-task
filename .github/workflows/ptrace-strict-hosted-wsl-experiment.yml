@@ -455,7 +455,8 @@ jobs:
           run_required_probe WSL2_ROOT_PROBE /probe-normal
           '@
           $script = $script.Replace("`r", '')
-          & wsl.exe -d FspyStrictPtrace --user root -- bash -lc $script
+          $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($script))
+          & wsl.exe -d FspyStrictPtrace --user root -- bash -lc "echo '$encoded' | base64 --decode | bash"
           if ($LASTEXITCODE -ne 0) { throw "WSL2 hardened probe failed: $LASTEXITCODE" }
 
       - name: Require current inject_demo success in WSL2
@@ -481,7 +482,8 @@ jobs:
           run_inject WSL2_UID1001_INJECT runuser -u fspyprobe -- /usr/local/bin/inject_demo
           '@
           $script = $script.Replace("`r", '')
-          & wsl.exe -d FspyStrictPtrace --user root -- bash -lc $script
+          $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($script))
+          & wsl.exe -d FspyStrictPtrace --user root -- bash -lc "echo '$encoded' | base64 --decode | bash"
           if ($LASTEXITCODE -ne 0) { throw "WSL2 inject_demo failed: $LASTEXITCODE" }
 
       - name: Unregister disposable WSL2 distribution
