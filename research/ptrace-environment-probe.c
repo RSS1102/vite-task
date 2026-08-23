@@ -40,7 +40,28 @@ static int required_exit_status(void) {
 
 static void kill_and_reap(pid_t pid) {
     kill(pid, SIGKILL);
-    while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {}
+    for (;;) {
+        int status;
+        pid_t waited;
+        do {
+            waited = waitpid(pid, &status, __WALL);
+        } while (waited < 0 && errno == EINTR);
+        if (waited < 0 || WIFEXITED(status) || WIFSIGNALED(status)) return;
+        if (WIFSTOPPED(status)) ptrace(PTRACE_CONT, pid, 0, (void *)(uintptr_t)SIGKILL);
+    }
+}
+
+static int interrupt_and_detach(pid_t pid) {
+    if (ptrace(PTRACE_INTERRUPT, pid, 0, 0) < 0) return errno;
+    int status = 0;
+    pid_t waited;
+    do {
+        waited = waitpid(pid, &status, __WALL);
+    } while (waited < 0 && errno == EINTR);
+    if (waited < 0) return errno;
+    if (waited != pid || !WIFSTOPPED(status)) return EPROTO;
+    if (ptrace(PTRACE_DETACH, pid, 0, 0) < 0) return errno;
+    return 0;
 }
 
 static pid_t paused_child(int *ready_fd, volatile uint64_t **remote_word) {
@@ -153,15 +174,39 @@ static void test_seize_and_vm_io(void) {
     report("process-vm-read", read_ok, read_error, "direct child");
 
     if (seize_ok) {
-        if (ptrace(PTRACE_INTERRUPT, pid, 0, 0) < 0) abort();
-        int status;
-        while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
-        if (!WIFSTOPPED(status)) abort();
-
+        int word_error = 0;
+        bool word_ok = true;
+        bool stopped = false;
         errno = 0;
-        long peeked = ptrace(PTRACE_PEEKDATA, pid, (void *)remote_word, 0);
-        int word_error = errno;
-        bool word_ok = !(peeked == -1 && word_error != 0);
+        if (ptrace(PTRACE_INTERRUPT, pid, 0, 0) < 0) {
+            word_error = errno;
+            word_ok = false;
+        }
+
+        if (word_ok) {
+            int status = 0;
+            pid_t waited;
+            do {
+                waited = waitpid(pid, &status, 0);
+            } while (waited < 0 && errno == EINTR);
+            if (waited < 0) {
+                word_error = errno;
+                word_ok = false;
+            } else if (waited != pid || !WIFSTOPPED(status)) {
+                word_error = EPROTO;
+                word_ok = false;
+            } else {
+                stopped = true;
+            }
+        }
+
+        long peeked = 0;
+        if (word_ok) {
+            errno = 0;
+            peeked = ptrace(PTRACE_PEEKDATA, pid, (void *)remote_word, 0);
+            word_error = errno;
+            word_ok = !(peeked == -1 && word_error != 0);
+        }
         const uint64_t ptrace_replacement = UINT64_C(0x8877665544332211);
         if (word_ok &&
             ptrace(PTRACE_POKEDATA, pid, (void *)remote_word,
@@ -176,9 +221,12 @@ static void test_seize_and_vm_io(void) {
             word_ok = !(peeked == -1 && word_error != 0) &&
                       (uint64_t)(unsigned long)peeked == ptrace_replacement;
         }
+        if (stopped && ptrace(PTRACE_DETACH, pid, 0, 0) < 0) {
+            if (word_ok) word_error = errno;
+            word_ok = false;
+        }
         report_required("ptrace-word-io", word_ok, word_error,
-                        "stopped direct child");
-        if (ptrace(PTRACE_DETACH, pid, 0, 0) < 0) abort();
+                        "interrupt, stop, word I/O, and detach");
     } else {
         report_required("ptrace-word-io", false, error,
                         "seize failed before word I/O");
@@ -189,14 +237,7 @@ static void test_seize_and_vm_io(void) {
 static int seize_from_child(pid_t target) {
     errno = 0;
     if (ptrace(PTRACE_SEIZE, target, 0, 0) < 0) return errno;
-    if (ptrace(PTRACE_INTERRUPT, target, 0, 0) < 0) return errno;
-    int status;
-    while (waitpid(target, &status, __WALL) < 0) {
-        if (errno != EINTR) return errno;
-    }
-    if (!WIFSTOPPED(status)) return EPROTO;
-    if (ptrace(PTRACE_DETACH, target, 0, 0) < 0) return errno;
-    return 0;
+    return interrupt_and_detach(target);
 }
 
 static void test_sibling(bool allow_with_prctl) {
@@ -238,9 +279,13 @@ static void test_sibling(bool allow_with_prctl) {
     }
     if (write(tracer_pipe[1], &target, sizeof(target)) != sizeof(target)) abort();
     close(tracer_pipe[1]);
-    int status;
-    while (waitpid(tracer, &status, 0) < 0 && errno == EINTR) {}
-    int result = WIFEXITED(status) ? WEXITSTATUS(status) : 255;
+    int status = 0;
+    pid_t waited;
+    do {
+        waited = waitpid(tracer, &status, 0);
+    } while (waited < 0 && errno == EINTR);
+    int result = waited == tracer && WIFEXITED(status) ? WEXITSTATUS(status) : 255;
+    if (waited < 0) result = errno;
     report(name, result == 0, result, allow_with_prctl ? "target opted in" : "same UID");
     kill_and_reap(target);
 }
@@ -263,8 +308,9 @@ static void test_dumpable_zero(void) {
     errno = 0;
     int rc = ptrace(PTRACE_SEIZE, pid, 0, 0);
     int error = errno;
-    report("seize-dumpable-zero-child", rc == 0, error, "");
-    if (rc == 0) ptrace(PTRACE_DETACH, pid, 0, 0);
+    bool ok = rc == 0;
+    if (ok && (error = interrupt_and_detach(pid)) != 0) ok = false;
+    report("seize-dumpable-zero-child", ok, error, "");
     kill_and_reap(pid);
 }
 
@@ -286,9 +332,10 @@ static void test_grandchild(void) {
     errno = 0;
     int rc = ptrace(PTRACE_SEIZE, target, 0, 0);
     int error = errno;
-    report_required("seize-live-grandchild", rc == 0, error,
+    bool ok = rc == 0;
+    if (ok && (error = interrupt_and_detach(target)) != 0) ok = false;
+    report_required("seize-live-grandchild", ok, error,
                     "ancestor, not direct parent");
-    if (rc == 0) ptrace(PTRACE_DETACH, target, 0, 0);
     kill_and_reap(target);
     kill_and_reap(middle);
 }
@@ -314,9 +361,10 @@ static void test_orphan(bool subreaper) {
     errno = 0;
     int rc = ptrace(PTRACE_SEIZE, target, 0, 0);
     int error = errno;
+    bool ok = rc == 0;
+    if (ok && (error = interrupt_and_detach(target)) != 0) ok = false;
     report(subreaper ? "seize-orphan-subreaper" : "seize-orphan-no-subreaper",
-           rc == 0, error, subreaper ? "reparented to supervisor" : "reparented away");
-    if (rc == 0) ptrace(PTRACE_DETACH, target, 0, 0);
+           ok, error, subreaper ? "reparented to supervisor" : "reparented away");
     kill(target, SIGKILL);
     waitpid(target, NULL, 0);
     prctl(PR_SET_CHILD_SUBREAPER, 0, 0, 0, 0);
@@ -338,16 +386,40 @@ static void test_suid_exec(bool traced) {
         execl(suid_target, suid_target, "suid-target", NULL);
         _exit(121);
     }
-    int status;
-    waitpid(pid, &status, 0);
+    int status = 0;
+    pid_t waited;
+    do {
+        waited = waitpid(pid, &status, 0);
+    } while (waited < 0 && errno == EINTR);
+    if (waited < 0) {
+        int error = errno;
+        report_required(traced ? "setuid-exec-traced" : "setuid-exec-untraced",
+                        false, error, "waitpid failed");
+        kill_and_reap(pid);
+        return;
+    }
     if (traced && WIFSTOPPED(status) && WSTOPSIG(status) == SIGTRAP) {
-        ptrace(PTRACE_CONT, pid, 0, 0);
-        waitpid(pid, &status, 0);
+        if (ptrace(PTRACE_CONT, pid, 0, 0) < 0) {
+            int error = errno;
+            report_required("setuid-exec-traced", false, error, "PTRACE_CONT failed");
+            kill_and_reap(pid);
+            return;
+        }
+        do {
+            waited = waitpid(pid, &status, 0);
+        } while (waited < 0 && errno == EINTR);
+        if (waited < 0) {
+            int error = errno;
+            report_required("setuid-exec-traced", false, error, "waitpid failed");
+            kill_and_reap(pid);
+            return;
+        }
     }
     int code = WIFEXITED(status) ? WEXITSTATUS(status) : 255;
     bool ok = traced ? code == 42 : code == 0;
     report_required(traced ? "setuid-exec-traced" : "setuid-exec-untraced", ok, 0,
                     traced ? "expected euid unchanged" : "expected euid root");
+    if (!WIFEXITED(status) && !WIFSIGNALED(status)) kill_and_reap(pid);
 }
 
 static void print_proc_field(const char *prefix) {

@@ -102,7 +102,7 @@ jobs:
             docker run --rm --init --runtime=runsc --user 65534:65534 \
               fspy-ptrace-gvisor-x86-probe
 
-      - name: Require runc injector control and capture runsc injector outcome
+      - name: Require runc control and runsc injector success
         run: |
           set -euxo pipefail
           set +e
@@ -125,6 +125,9 @@ jobs:
             set -e
             cat "target/ptrace-gvisor-x86/${label}.log"
             printf '%s_EXIT=%s\n' "$label" "$rc"
+            test "$rc" -eq 0
+            grep -F 'openat: test_path' "target/ptrace-gvisor-x86/${label}.log"
+            grep -F '/bin/cat exited with code 0' "target/ptrace-gvisor-x86/${label}.log"
           }
           capture_runsc_inject RUNSC_X86_ROOT_INJECT \
             docker run --rm --init --runtime=runsc fspy-ptrace-gvisor-x86-inject
@@ -146,3 +149,11 @@ jobs:
             /usr/local/bin/gvisor-bin \
             /tmp/gvisor-release
           exit 0
+
+      - name: Verify temporary runsc runtime was removed
+        if: always()
+        run: |
+          set -euxo pipefail
+          test ! -e /usr/local/bin/runsc
+          test ! -e /usr/local/bin/containerd-shim-runsc-v1
+          ! docker info --format 'Runtimes={{json .Runtimes}}' | grep -q '"runsc"'
