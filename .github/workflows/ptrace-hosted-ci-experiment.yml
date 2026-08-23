@@ -22,7 +22,7 @@ jobs:
     name: Ubuntu hosted VM
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: taiki-e/checkout-action@7d1e50e93dc4fb3bba58f85018fadf77898aee8b # v1.4.2
 
       - name: Report VM policy
         run: |
@@ -106,7 +106,7 @@ jobs:
           docker run --rm --init fspy-inject-demo-ci
           docker run --rm --init --user 65534:65534 fspy-inject-demo-ci
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ptrace-ci-binaries
           path: |
@@ -122,7 +122,7 @@ jobs:
     container:
       image: ubuntu:24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: taiki-e/checkout-action@7d1e50e93dc4fb3bba58f85018fadf77898aee8b # v1.4.2
 
       - name: Install probe build tools
         run: |
@@ -162,7 +162,7 @@ jobs:
           setpriv --reuid 65534 --regid 65534 --clear-groups /probe-normal
           setpriv --reuid 65534 --regid 65534 --clear-groups /probe-normal suid-tests
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ptrace-ci-binaries
           path: /ptrace-ci-binaries
