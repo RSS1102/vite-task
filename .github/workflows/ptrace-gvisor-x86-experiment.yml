@@ -97,16 +97,16 @@ jobs:
             grep -Eq '^required-summary +result=PASS' "target/ptrace-gvisor-x86/${label}.log"
           }
           run_required_probe RUNSC_X86_ROOT_PROBE \
-            docker run --rm --runtime=runsc fspy-ptrace-gvisor-x86-probe
+            docker run --rm --init --runtime=runsc fspy-ptrace-gvisor-x86-probe
           run_required_probe RUNSC_X86_UID65534_PROBE \
-            docker run --rm --runtime=runsc --user 65534:65534 \
+            docker run --rm --init --runtime=runsc --user 65534:65534 \
               fspy-ptrace-gvisor-x86-probe
 
       - name: Require runc injector control and capture runsc injector outcome
         run: |
           set -euxo pipefail
           set +e
-          docker run --rm fspy-ptrace-gvisor-x86-inject \
+          docker run --rm --init fspy-ptrace-gvisor-x86-inject \
             >target/ptrace-gvisor-x86/RUNC_X86_ROOT_INJECT.log 2>&1
           runc_rc=$?
           set -e
@@ -127,9 +127,9 @@ jobs:
             printf '%s_EXIT=%s\n' "$label" "$rc"
           }
           capture_runsc_inject RUNSC_X86_ROOT_INJECT \
-            docker run --rm --runtime=runsc fspy-ptrace-gvisor-x86-inject
+            docker run --rm --init --runtime=runsc fspy-ptrace-gvisor-x86-inject
           capture_runsc_inject RUNSC_X86_UID65534_INJECT \
-            docker run --rm --runtime=runsc --user 65534:65534 \
+            docker run --rm --init --runtime=runsc --user 65534:65534 \
               fspy-ptrace-gvisor-x86-inject
 
       - name: Remove temporary runsc runtime
