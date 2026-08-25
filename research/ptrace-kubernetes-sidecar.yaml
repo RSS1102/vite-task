@@ -1,0 +1,101 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ptrace-sidecar-no-opt-in
+  namespace: fspy-ptrace-restricted
+spec:
+  restartPolicy: Never
+  shareProcessNamespace: true
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: target
+      image: fspy-ptrace-sidecar:k8s-current
+      imagePullPolicy: Never
+      args: ['sidecar-target', 'no-opt-in']
+      securityContext:
+        runAsUser: 65534
+        runAsGroup: 65534
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ['ALL']
+    - name: tracer
+      image: fspy-ptrace-sidecar:k8s-current
+      imagePullPolicy: Never
+      args: ['sidecar-tracer', 'expect-eperm']
+      securityContext:
+        runAsUser: 65534
+        runAsGroup: 65534
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ['ALL']
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ptrace-sidecar-opt-in
+  namespace: fspy-ptrace-restricted
+spec:
+  restartPolicy: Never
+  shareProcessNamespace: true
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: target
+      image: fspy-ptrace-sidecar:k8s-current
+      imagePullPolicy: Never
+      args: ['sidecar-target', 'opt-in']
+      securityContext:
+        runAsUser: 65534
+        runAsGroup: 65534
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ['ALL']
+    - name: tracer
+      image: fspy-ptrace-sidecar:k8s-current
+      imagePullPolicy: Never
+      args: ['sidecar-tracer', 'expect-success']
+      securityContext:
+        runAsUser: 65534
+        runAsGroup: 65534
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ['ALL']
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ptrace-sidecar-different-uid
+  namespace: fspy-ptrace-restricted
+spec:
+  restartPolicy: Never
+  shareProcessNamespace: true
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: target
+      image: fspy-ptrace-sidecar:k8s-current
+      imagePullPolicy: Never
+      args: ['sidecar-target', 'opt-in']
+      securityContext:
+        runAsUser: 65534
+        runAsGroup: 65534
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ['ALL']
+    - name: tracer
+      image: fspy-ptrace-sidecar:k8s-current
+      imagePullPolicy: Never
+      args: ['sidecar-tracer', 'expect-eperm']
+      securityContext:
+        runAsUser: 65533
+        runAsGroup: 65533
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ['ALL']

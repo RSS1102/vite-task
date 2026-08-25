@@ -1,0 +1,194 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: fspy-ptrace
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: fspy-ptrace-restricted
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+---
+# Expected phase: Succeeded. The shell must remain PID 1 so the probe's
+# no-subreaper orphan is reparented away from the probe.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ptrace-probe-omitted
+  namespace: fspy-ptrace
+  annotations:
+    research.fspy.dev/expected-phase: Succeeded
+spec:
+  restartPolicy: Never
+  containers:
+    - name: probe
+      image: fspy-ptrace-probe:k8s-current
+      imagePullPolicy: Never
+      command: ['/bin/sh', '-c']
+      args: ['/probe-normal; status=$?; exit "$status"']
+---
+# Expected phase: Succeeded.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ptrace-probe-runtime-default
+  namespace: fspy-ptrace
+  annotations:
+    research.fspy.dev/expected-phase: Succeeded
+spec:
+  restartPolicy: Never
+  securityContext:
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: probe
+      image: fspy-ptrace-probe:k8s-current
+      imagePullPolicy: Never
+      command: ['/bin/sh', '-c']
+      args: ['/probe-normal; status=$?; exit "$status"']
+---
+# Expected phase: Succeeded. This pod is admitted under enforced Restricted
+# Pod Security and runs without effective capabilities.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ptrace-probe-restricted
+  namespace: fspy-ptrace-restricted
+  annotations:
+    research.fspy.dev/expected-phase: Succeeded
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: probe
+      image: fspy-ptrace-probe:k8s-current
+      imagePullPolicy: Never
+      command: ['/bin/sh', '-c']
+      args: ['/probe-normal; status=$?; exit "$status"']
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ['ALL']
+---
+# Expected phase: Failed, reason: Error, exit code: 1. This is the strict
+# negative control: required ptrace operations are denied with EPERM.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ptrace-probe-localhost-deny
+  namespace: fspy-ptrace-restricted
+  annotations:
+    research.fspy.dev/expected-phase: Failed
+    research.fspy.dev/expected-exit-code: '1'
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    seccompProfile:
+      type: Localhost
+      localhostProfile: profiles/ptrace-deny.json
+  containers:
+    - name: probe
+      image: fspy-ptrace-probe:k8s-current
+      imagePullPolicy: Never
+      command: ['/bin/sh', '-c']
+      args: ['/probe-normal; status=$?; exit "$status"']
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ['ALL']
+---
+# Expected phase: Succeeded.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: inject-omitted
+  namespace: fspy-ptrace
+  annotations:
+    research.fspy.dev/expected-phase: Succeeded
+spec:
+  restartPolicy: Never
+  containers:
+    - name: inject
+      image: fspy-inject-demo:k8s-current
+      imagePullPolicy: Never
+---
+# Expected phase: Succeeded.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: inject-runtime-default
+  namespace: fspy-ptrace
+  annotations:
+    research.fspy.dev/expected-phase: Succeeded
+spec:
+  restartPolicy: Never
+  securityContext:
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: inject
+      image: fspy-inject-demo:k8s-current
+      imagePullPolicy: Never
+---
+# Expected phase: Succeeded.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: inject-restricted
+  namespace: fspy-ptrace-restricted
+  annotations:
+    research.fspy.dev/expected-phase: Succeeded
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: inject
+      image: fspy-inject-demo:k8s-current
+      imagePullPolicy: Never
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ['ALL']
+---
+# Expected phase: Failed, reason: Error, exit code: 1. The demo reaches its
+# pre-exec PTRACE_TRACEME call, receives EPERM, and reports a spawn failure.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: inject-localhost-deny
+  namespace: fspy-ptrace-restricted
+  annotations:
+    research.fspy.dev/expected-phase: Failed
+    research.fspy.dev/expected-exit-code: '1'
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    seccompProfile:
+      type: Localhost
+      localhostProfile: profiles/ptrace-deny.json
+  containers:
+    - name: inject
+      image: fspy-inject-demo:k8s-current
+      imagePullPolicy: Never
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ['ALL']

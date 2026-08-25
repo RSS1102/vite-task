@@ -1,0 +1,497 @@
+name: Temporary hardened ptrace hosted and WSL2 experiment
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - research/ptrace-strict-hosted-wsl-20260824
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ptrace-strict-hosted-wsl-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  ubuntu-host:
+    name: Hardened probe on hosted Ubuntu and Docker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: taiki-e/checkout-action@7d1e50e93dc4fb3bba58f85018fadf77898aee8b # v1.4.2
+
+      - name: Report hosted-VM and Docker policy
+        run: |
+          set -euxo pipefail
+          printf 'ImageOS=%s\nImageVersion=%s\n' "${ImageOS-}" "${ImageVersion-}"
+          uname -a
+          cat /etc/os-release
+          id
+          grep -E '^(Cap(Inh|Prm|Eff|Bnd|Amb)|NoNewPrivs|Seccomp):' /proc/self/status
+          if test -r /proc/sys/kernel/yama/ptrace_scope; then
+            printf 'YamaScope=' && cat /proc/sys/kernel/yama/ptrace_scope
+          else
+            echo 'YamaScope=unavailable'
+          fi
+          docker version
+          docker info --format 'SecurityOptions={{json .SecurityOptions}} Runtime={{.DefaultRuntime}} CgroupVersion={{.CgroupVersion}}'
+
+      - name: Build exact hardened probe and current inject_demo
+        run: |
+          set -euxo pipefail
+          mkdir -p target/ptrace-strict
+          gcc -O2 -Wall -Wextra -Werror \
+            -o target/ptrace-strict/ptrace-environment-probe \
+            research/ptrace-environment-probe.c
+          sudo install -o root -g root -m 4755 \
+            target/ptrace-strict/ptrace-environment-probe /probe-suid
+          rustup show active-toolchain
+          rustup target add x86_64-unknown-none
+          cargo build --locked -p inject_demo
+          cp target/debug/inject_demo target/ptrace-strict/inject_demo
+          sha256sum \
+            target/ptrace-strict/ptrace-environment-probe \
+            target/ptrace-strict/inject_demo
+
+      - name: Require hardened probe success on hosted VM
+        run: |
+          set -euxo pipefail
+          run_required_probe() {
+            label="$1"
+            shift
+            set +e
+            "$@" >"target/ptrace-strict/${label}.log" 2>&1
+            rc=$?
+            set -e
+            cat "target/ptrace-strict/${label}.log"
+            printf '%s_EXIT=%s\n' "$label" "$rc"
+            test "$rc" -eq 0
+            grep -Eq '^ptrace-word-io +result=PASS' "target/ptrace-strict/${label}.log"
+            grep -Eq '^required-summary +result=PASS' "target/ptrace-strict/${label}.log"
+          }
+          run_required_summary() {
+            label="$1"
+            shift
+            set +e
+            "$@" >"target/ptrace-strict/${label}.log" 2>&1
+            rc=$?
+            set -e
+            cat "target/ptrace-strict/${label}.log"
+            printf '%s_EXIT=%s\n' "$label" "$rc"
+            test "$rc" -eq 0
+            grep -Eq '^required-summary +result=PASS' "target/ptrace-strict/${label}.log"
+          }
+          run_required_probe HOST_VM_RUNNER_PROBE target/ptrace-strict/ptrace-environment-probe
+          run_required_summary HOST_VM_RUNNER_SUID target/ptrace-strict/ptrace-environment-probe suid-tests
+          run_required_probe HOST_VM_ROOT_PROBE sudo target/ptrace-strict/ptrace-environment-probe
+
+      - name: Require current inject_demo success on hosted VM
+        run: |
+          set -euxo pipefail
+          run_inject() {
+            label="$1"
+            shift
+            set +e
+            "$@" >"target/ptrace-strict/${label}.log" 2>&1
+            rc=$?
+            set -e
+            cat "target/ptrace-strict/${label}.log"
+            printf '%s_EXIT=%s\n' "$label" "$rc"
+            test "$rc" -eq 0
+            grep -F 'openat: test_path' "target/ptrace-strict/${label}.log"
+            grep -F '/bin/cat exited with code 0' "target/ptrace-strict/${label}.log"
+          }
+          run_inject HOST_VM_RUNNER_INJECT target/ptrace-strict/inject_demo
+          run_inject HOST_VM_ROOT_INJECT sudo target/ptrace-strict/inject_demo
+
+      - name: Build default Docker images
+        run: |
+          set -euxo pipefail
+          docker build -t fspy-ptrace-strict-probe -f- target/ptrace-strict <<'DOCKERFILE'
+          FROM ubuntu:24.04
+          COPY ptrace-environment-probe /probe-normal
+          RUN cp /probe-normal /probe-suid \
+           && chown root:root /probe-suid \
+           && chmod 4755 /probe-suid
+          ENTRYPOINT ["/probe-normal"]
+          DOCKERFILE
+          docker build -t fspy-ptrace-strict-inject -f- target/ptrace-strict <<'DOCKERFILE'
+          FROM ubuntu:24.04
+          COPY inject_demo /inject_demo
+          ENTRYPOINT ["/inject_demo"]
+          DOCKERFILE
+
+      - name: Require hardened probe and injector success under Docker defaults
+        run: |
+          set -euxo pipefail
+          run_required_probe() {
+            label="$1"
+            shift
+            set +e
+            "$@" >"target/ptrace-strict/${label}.log" 2>&1
+            rc=$?
+            set -e
+            cat "target/ptrace-strict/${label}.log"
+            printf '%s_EXIT=%s\n' "$label" "$rc"
+            test "$rc" -eq 0
+            grep -Eq '^ptrace-word-io +result=PASS' "target/ptrace-strict/${label}.log"
+            grep -Eq '^required-summary +result=PASS' "target/ptrace-strict/${label}.log"
+          }
+          run_required_summary() {
+            label="$1"
+            shift
+            set +e
+            "$@" >"target/ptrace-strict/${label}.log" 2>&1
+            rc=$?
+            set -e
+            cat "target/ptrace-strict/${label}.log"
+            printf '%s_EXIT=%s\n' "$label" "$rc"
+            test "$rc" -eq 0
+            grep -Eq '^required-summary +result=PASS' "target/ptrace-strict/${label}.log"
+          }
+          run_inject() {
+            label="$1"
+            shift
+            set +e
+            "$@" >"target/ptrace-strict/${label}.log" 2>&1
+            rc=$?
+            set -e
+            cat "target/ptrace-strict/${label}.log"
+            printf '%s_EXIT=%s\n' "$label" "$rc"
+            test "$rc" -eq 0
+            grep -F 'openat: test_path' "target/ptrace-strict/${label}.log"
+            grep -F '/bin/cat exited with code 0' "target/ptrace-strict/${label}.log"
+          }
+          run_required_probe DOCKER_ROOT_PROBE \
+            docker run --rm --init fspy-ptrace-strict-probe
+          run_required_probe DOCKER_UID65534_PROBE \
+            docker run --rm --init --user 65534:65534 fspy-ptrace-strict-probe
+          run_required_summary DOCKER_UID65534_SUID \
+            docker run --rm --init --user 65534:65534 fspy-ptrace-strict-probe suid-tests
+          run_inject DOCKER_ROOT_INJECT \
+            docker run --rm --init fspy-ptrace-strict-inject
+          run_inject DOCKER_UID65534_INJECT \
+            docker run --rm --init --user 65534:65534 fspy-ptrace-strict-inject
+
+      - name: Require graceful reporting when PR_SET_PTRACER is denied
+        run: |
+          set -euxo pipefail
+          profile="$(realpath research/pr-set-ptracer-deny-seccomp.json)"
+          set +e
+          docker run --rm --init --security-opt "seccomp=$profile" \
+            fspy-ptrace-strict-probe \
+            >target/ptrace-strict/DOCKER_PR_SET_PTRACER_DENY_PROBE.log 2>&1
+          rc=$?
+          set -e
+          cat target/ptrace-strict/DOCKER_PR_SET_PTRACER_DENY_PROBE.log
+          printf 'DOCKER_PR_SET_PTRACER_DENY_PROBE_EXIT=%s\n' "$rc"
+          test "$rc" -eq 0
+          grep -Eq '^seize-sibling-pr-set-ptracer +result=FAIL errno=1 .*PR_SET_PTRACER failed' \
+            target/ptrace-strict/DOCKER_PR_SET_PTRACER_DENY_PROBE.log
+          grep -Eq '^ptrace-word-io +result=PASS' \
+            target/ptrace-strict/DOCKER_PR_SET_PTRACER_DENY_PROBE.log
+          grep -Eq '^required-summary +result=PASS' \
+            target/ptrace-strict/DOCKER_PR_SET_PTRACER_DENY_PROBE.log
+
+      - name: Require explicit seccomp-deny failures to be nonzero
+        run: |
+          set -euxo pipefail
+          profile="$(realpath research/ptrace-deny-seccomp.json)"
+          run_denied_probe() {
+            label="$1"
+            shift
+            set +e
+            "$@" >"target/ptrace-strict/${label}.log" 2>&1
+            rc=$?
+            set -e
+            cat "target/ptrace-strict/${label}.log"
+            printf '%s_EXIT=%s\n' "$label" "$rc"
+            test "$rc" -ne 0
+            grep -Eq '^ptrace-word-io +result=FAIL' "target/ptrace-strict/${label}.log"
+            grep -Eq '^required-summary +result=FAIL' "target/ptrace-strict/${label}.log"
+          }
+          run_denied_inject() {
+            label="$1"
+            shift
+            set +e
+            "$@" >"target/ptrace-strict/${label}.log" 2>&1
+            rc=$?
+            set -e
+            cat "target/ptrace-strict/${label}.log"
+            printf '%s_EXIT=%s\n' "$label" "$rc"
+            test "$rc" -ne 0
+          }
+          run_denied_probe DOCKER_DENY_ROOT_PROBE \
+            docker run --rm --init --security-opt "seccomp=$profile" \
+              fspy-ptrace-strict-probe
+          run_denied_probe DOCKER_DENY_UID65534_PROBE \
+            docker run --rm --init --user 65534:65534 \
+              --security-opt "seccomp=$profile" fspy-ptrace-strict-probe
+          run_denied_inject DOCKER_DENY_ROOT_INJECT \
+            docker run --rm --init --security-opt "seccomp=$profile" \
+              fspy-ptrace-strict-inject
+          run_denied_inject DOCKER_DENY_UID65534_INJECT \
+            docker run --rm --init --user 65534:65534 \
+              --security-opt "seccomp=$profile" fspy-ptrace-strict-inject
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ptrace-strict-binaries
+          path: |
+            target/ptrace-strict/ptrace-environment-probe
+            target/ptrace-strict/inject_demo
+          if-no-files-found: error
+          retention-days: 1
+
+  ubuntu-job-container:
+    name: Hardened probe in default job container
+    needs: ubuntu-host
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:24.04
+    steps:
+      - uses: taiki-e/checkout-action@7d1e50e93dc4fb3bba58f85018fadf77898aee8b # v1.4.2
+
+      - name: Install probe build tools
+        run: |
+          set -euxo pipefail
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            gcc libc6-dev util-linux
+
+      - name: Report job-container policy
+        run: |
+          set -euxo pipefail
+          uname -a
+          cat /etc/os-release
+          id
+          grep -E '^(Cap(Inh|Prm|Eff|Bnd|Amb)|NoNewPrivs|Seccomp):' /proc/self/status
+          grep -E '^(Cap(Inh|Prm|Eff|Bnd|Amb)|NoNewPrivs|Seccomp):' /proc/1/status
+          if test -r /proc/sys/kernel/yama/ptrace_scope; then
+            printf 'YamaScope=' && cat /proc/sys/kernel/yama/ptrace_scope
+          else
+            echo 'YamaScope=unavailable'
+          fi
+
+      - name: Build and require exact hardened probe success
+        run: |
+          set -euxo pipefail
+          mkdir -p /ptrace-strict
+          gcc -O2 -Wall -Wextra -Werror \
+            -o /probe-normal research/ptrace-environment-probe.c
+          cp /probe-normal /probe-suid
+          chown root:root /probe-suid
+          chmod 4755 /probe-suid
+          run_required_probe() {
+            label="$1"
+            shift
+            set +e
+            "$@" >"/ptrace-strict/${label}.log" 2>&1
+            rc=$?
+            set -e
+            cat "/ptrace-strict/${label}.log"
+            printf '%s_EXIT=%s\n' "$label" "$rc"
+            test "$rc" -eq 0
+            grep -Eq '^ptrace-word-io +result=PASS' "/ptrace-strict/${label}.log"
+            grep -Eq '^required-summary +result=PASS' "/ptrace-strict/${label}.log"
+          }
+          run_required_summary() {
+            label="$1"
+            shift
+            set +e
+            "$@" >"/ptrace-strict/${label}.log" 2>&1
+            rc=$?
+            set -e
+            cat "/ptrace-strict/${label}.log"
+            printf '%s_EXIT=%s\n' "$label" "$rc"
+            test "$rc" -eq 0
+            grep -Eq '^required-summary +result=PASS' "/ptrace-strict/${label}.log"
+          }
+          run_required_probe JOB_CONTAINER_ROOT_PROBE /probe-normal
+          run_required_probe JOB_CONTAINER_UID65534_PROBE \
+            setpriv --reuid 65534 --regid 65534 --clear-groups /probe-normal
+          run_required_summary JOB_CONTAINER_UID65534_SUID \
+            setpriv --reuid 65534 --regid 65534 --clear-groups /probe-normal suid-tests
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ptrace-strict-binaries
+          path: /ptrace-strict-binaries
+
+      - name: Require current inject_demo success in default job container
+        run: |
+          set -euxo pipefail
+          chmod +x /ptrace-strict-binaries/inject_demo
+          run_inject() {
+            label="$1"
+            shift
+            set +e
+            "$@" >"/ptrace-strict/${label}.log" 2>&1
+            rc=$?
+            set -e
+            cat "/ptrace-strict/${label}.log"
+            printf '%s_EXIT=%s\n' "$label" "$rc"
+            test "$rc" -eq 0
+            grep -F 'openat: test_path' "/ptrace-strict/${label}.log"
+            grep -F '/bin/cat exited with code 0' "/ptrace-strict/${label}.log"
+          }
+          run_inject JOB_CONTAINER_ROOT_INJECT /ptrace-strict-binaries/inject_demo
+          run_inject JOB_CONTAINER_UID65534_INJECT \
+            setpriv --reuid 65534 --regid 65534 --clear-groups \
+              /ptrace-strict-binaries/inject_demo
+
+  wsl2:
+    name: Hardened probe in imported Ubuntu WSL2
+    needs: ubuntu-host
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ptrace-strict-binaries
+          path: C:\fspy-ptrace-strict
+
+      - name: Report Windows and WSL components
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host "ImageOS=$env:ImageOS ImageVersion=$env:ImageVersion"
+          [System.Environment]::OSVersion.VersionString
+          Get-ComputerInfo |
+            Select-Object WindowsProductName, WindowsVersion, OsBuildNumber, HyperVisorPresent
+          & wsl.exe --version
+          if ($LASTEXITCODE -ne 0) { throw "wsl --version failed: $LASTEXITCODE" }
+          & wsl.exe --status
+          if ($LASTEXITCODE -ne 0) { throw "wsl --status failed: $LASTEXITCODE" }
+
+      - name: Download and import pinned Ubuntu image as WSL2
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $imageUrl = 'https://releases.ubuntu.com/24.04/ubuntu-24.04.4-wsl-amd64.wsl'
+          $image = 'C:\fspy-ptrace-strict\ubuntu-24.04.4-wsl-amd64.wsl'
+          $installDir = 'C:\fspy-ptrace-strict-distro'
+          $expected = '9B2F7730DC68227DD04A9F3E5EAB86AD85CAF556B8606AD94F1F29FF5C4FD3F5'
+
+          curl.exe --fail --location --retry 5 --output $image $imageUrl
+          if ($LASTEXITCODE -ne 0) { throw "Ubuntu image download failed: $LASTEXITCODE" }
+          $actual = (Get-FileHash -Algorithm SHA256 $image).Hash
+          if ($actual -ne $expected) {
+            throw "Ubuntu WSL image checksum mismatch: expected $expected, got $actual"
+          }
+
+          New-Item -ItemType Directory -Force $installDir | Out-Null
+          & wsl.exe --import FspyStrictPtrace $installDir $image --version 2
+          if ($LASTEXITCODE -ne 0) { throw "wsl --import failed: $LASTEXITCODE" }
+          & wsl.exe --list --verbose
+          if ($LASTEXITCODE -ne 0) { throw "wsl --list --verbose failed: $LASTEXITCODE" }
+          $details = (& wsl.exe --list --verbose 2>&1 | Out-String).Replace("`0", '')
+          if ($details -notmatch 'FspyStrictPtrace\s+Stopped\s+2' -and
+              $details -notmatch 'FspyStrictPtrace\s+Running\s+2') {
+            throw "Imported distribution was not reported as WSL version 2: $details"
+          }
+
+      - name: Require hardened probe success in WSL2
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $script = @'
+          set -euxo pipefail
+          uname -a
+          cat /proc/version
+          cat /etc/os-release
+          id
+          grep -E '^(Cap(Inh|Prm|Eff|Bnd|Amb)|NoNewPrivs|Seccomp):' /proc/self/status
+          if test -r /proc/sys/kernel/yama/ptrace_scope; then
+            printf 'YamaScope='
+            cat /proc/sys/kernel/yama/ptrace_scope
+          else
+            echo 'YamaScope=unavailable'
+          fi
+          printf 'PID1='
+          tr '\0' ' ' </proc/1/cmdline
+          echo
+
+          install -m 0755 \
+            /mnt/c/fspy-ptrace-strict/ptrace-environment-probe \
+            /probe-normal
+          cp /probe-normal /probe-suid
+          chown root:root /probe-suid
+          chmod 4755 /probe-suid
+          if ! id fspyprobe >/dev/null 2>&1; then
+            useradd --create-home --uid 1001 --shell /bin/bash fspyprobe
+          fi
+
+          run_required_probe() {
+            label="$1"
+            shift
+            set +e
+            "$@" >"/tmp/${label}.log" 2>&1
+            rc=$?
+            set -e
+            cat "/tmp/${label}.log"
+            printf '%s_EXIT=%s\n' "$label" "$rc"
+            test "$rc" -eq 0
+            grep -Eq '^ptrace-word-io +result=PASS' "/tmp/${label}.log"
+            grep -Eq '^required-summary +result=PASS' "/tmp/${label}.log"
+          }
+          run_required_summary() {
+            label="$1"
+            shift
+            set +e
+            "$@" >"/tmp/${label}.log" 2>&1
+            rc=$?
+            set -e
+            cat "/tmp/${label}.log"
+            printf '%s_EXIT=%s\n' "$label" "$rc"
+            test "$rc" -eq 0
+            grep -Eq '^required-summary +result=PASS' "/tmp/${label}.log"
+          }
+          run_required_probe WSL2_UID1001_PROBE runuser -u fspyprobe -- /probe-normal
+          run_required_summary WSL2_UID1001_SUID runuser -u fspyprobe -- /probe-normal suid-tests
+          run_required_probe WSL2_ROOT_PROBE /probe-normal
+          '@
+          $script = $script.Replace("`r", '')
+          $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($script))
+          & wsl.exe -d FspyStrictPtrace --user root -- bash -lc "echo '$encoded' | base64 --decode | bash"
+          if ($LASTEXITCODE -ne 0) { throw "WSL2 hardened probe failed: $LASTEXITCODE" }
+
+      - name: Require current inject_demo success in WSL2
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $script = @'
+          set -euxo pipefail
+          install -m 0755 /mnt/c/fspy-ptrace-strict/inject_demo /usr/local/bin/inject_demo
+          run_inject() {
+            label="$1"
+            shift
+            set +e
+            "$@" >"/tmp/${label}.log" 2>&1
+            rc=$?
+            set -e
+            cat "/tmp/${label}.log"
+            printf '%s_EXIT=%s\n' "$label" "$rc"
+            test "$rc" -eq 0
+            grep -F 'openat: test_path' "/tmp/${label}.log"
+            grep -F '/bin/cat exited with code 0' "/tmp/${label}.log"
+          }
+          run_inject WSL2_ROOT_INJECT /usr/local/bin/inject_demo
+          run_inject WSL2_UID1001_INJECT runuser -u fspyprobe -- /usr/local/bin/inject_demo
+          '@
+          $script = $script.Replace("`r", '')
+          $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($script))
+          & wsl.exe -d FspyStrictPtrace --user root -- bash -lc "echo '$encoded' | base64 --decode | bash"
+          if ($LASTEXITCODE -ne 0) { throw "WSL2 inject_demo failed: $LASTEXITCODE" }
+
+      - name: Unregister disposable WSL2 distribution
+        if: always()
+        run: |
+          $ErrorActionPreference = 'Continue'
+          & wsl.exe --terminate FspyStrictPtrace
+          & wsl.exe --unregister FspyStrictPtrace
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue C:\fspy-ptrace-strict-distro
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue C:\fspy-ptrace-strict
+          $global:LASTEXITCODE = 0

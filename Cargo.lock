@@ -1356,6 +1356,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fspy_loader"
+version = "0.0.0"
+dependencies = [
+ "fspy_nostd",
+ "linux-raw-sys 0.12.1",
+ "syscalls",
+]
+
+[[package]]
 name = "fspy_nostd"
 version = "0.0.0"
 dependencies = [

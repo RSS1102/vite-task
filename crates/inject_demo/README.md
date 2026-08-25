@@ -22,9 +22,10 @@ target process.
    sixth syscall-argument slot contains `OPENAT_COOKIE`.
 3. The child stops at the **exec-stop** — the new program is mapped but has not
    run an instruction. The parent saves its registers here.
-4. The parent runs `mmap` _inside_ the target by borrowing its program counter to
-   execute one `syscall`/`svc` instruction. It restores both the instruction and
-   registers on every path.
+4. The parent runs `mmap` _inside_ the target by borrowing its program counter
+   to execute `syscall; int3` on x86-64 or `svc; brk` on AArch64. It resumes with
+   `PTRACE_CONT`, stops at the explicit trap, then restores both the patched
+   instructions and registers on every path.
 5. It writes the relocated payload at the mapped base, followed by the string
    and an aligned copy of the exec-stop register context.
 6. It points the program counter at the payload's entry and, in the argument
