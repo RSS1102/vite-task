@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "absolute-redaction")]
 use crate::AbsolutePath;
 use crate::{
+    AbsolutePathBuf,
     absolute::StripPrefixError,
     relative::{FromPathError, RelativePathBuf},
 };
@@ -97,6 +98,13 @@ impl AbsoluteUtf8Path {
     #[must_use]
     pub fn as_std_path(&self) -> &Path {
         self.0.as_std_path()
+    }
+
+    /// Return this path as an OS-native absolute path.
+    #[must_use]
+    pub fn as_absolute_path(&self) -> &crate::AbsolutePath {
+        // SAFETY: `self` already guarantees absoluteness.
+        unsafe { crate::AbsolutePath::assume_absolute(self.as_std_path()) }
     }
 
     /// Convert this path to an owned absolute UTF-8 path.
@@ -315,6 +323,13 @@ impl AbsoluteUtf8PathBuf {
         self.0.into_std_path_buf()
     }
 
+    /// Convert this path into an OS-native absolute path.
+    #[must_use]
+    pub fn into_absolute_path_buf(self) -> AbsolutePathBuf {
+        // SAFETY: `self` already guarantees absoluteness.
+        unsafe { AbsolutePathBuf::assume_absolute(self.into_path_buf()) }
+    }
+
     /// Extend this path with a relative or absolute UTF-8 path.
     pub fn push(&mut self, path: impl AsRef<Utf8Path>) {
         self.0.push(path);
@@ -417,6 +432,14 @@ impl TryFrom<Utf8PathBuf> for AbsoluteUtf8PathBuf {
 
     fn try_from(path: Utf8PathBuf) -> Result<Self, Self::Error> {
         Self::new(path)
+    }
+}
+
+impl TryFrom<AbsolutePathBuf> for AbsoluteUtf8PathBuf {
+    type Error = AbsoluteUtf8PathError;
+
+    fn try_from(path: AbsolutePathBuf) -> Result<Self, Self::Error> {
+        Self::try_from_path_buf(path.into_path_buf())
     }
 }
 
