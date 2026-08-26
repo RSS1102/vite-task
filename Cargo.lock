@@ -430,6 +430,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ade8366b8bd5ba243f0a58f036cc0ca8a2f069cff1a2351ef1cac6b083e16fc0"
 
 [[package]]
+name = "camino"
+version = "1.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bb1307f12aa967b5a58416e87b3653360e0fd614a016b6e970db08fecbb1b80d"
+dependencies = [
+ "serde_core",
+]
+
+[[package]]
 name = "castaway"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4360,11 +4369,13 @@ name = "vt_path"
 version = "0.1.0"
 dependencies = [
  "assert2",
+ "camino",
  "diff-struct",
  "os_str_bytes",
  "path-clean",
  "ref-cast",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "ts-rs",
  "vt_str",

@@ -1,6 +1,7 @@
 #![expect(clippy::disallowed_types, reason = "vt_path needs to use std path types internally")]
 
 pub mod absolute;
+mod absolute_utf8;
 pub mod relative;
 
 use std::{
@@ -12,6 +13,8 @@ use std::{
 #[cfg(feature = "absolute-redaction")]
 pub use absolute::redaction;
 pub use absolute::{AbsolutePath, AbsolutePathBuf};
+pub use absolute_utf8::{AbsoluteUtf8Path, AbsoluteUtf8PathBuf, AbsoluteUtf8PathError};
+pub use camino::{Utf8Path, Utf8PathBuf};
 pub use relative::{RelativePath, RelativePathBuf};
 
 /// Returns the current working directory as an absolute path.

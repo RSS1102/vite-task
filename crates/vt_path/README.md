@@ -1,3 +1,9 @@
 # vt_path
 
-Provides path typed with its relativity: `AbsolutePath(Buf)` and `RelativePath(Buf)`, and safe methods to convert between them (for example, `AbsolutePath::join(RelativePath)` produces `AbsolutePathBuf`).
+Provides path types that encode path invariants:
+
+- `AbsolutePath(Buf)` for OS-native absolute paths
+- `AbsoluteUtf8Path(Buf)` for absolute UTF-8 paths
+- `RelativePath(Buf)` for portable relative paths
+
+The types provide checked conversions and joins that preserve their invariants.

@@ -107,7 +107,7 @@ impl AbsolutePath {
         clippy::disallowed_macros,
         reason = "try_redact returns std String and uses std format!"
     )]
-    fn try_redact(&self) -> Result<Option<String>, String> {
+    pub(crate) fn try_redact(&self) -> Result<Option<String>, String> {
         use redaction::REDACTION_PREFIX;
 
         if let Some(redaction_prefix) = REDACTION_PREFIX
