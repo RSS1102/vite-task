@@ -345,6 +345,12 @@ impl Serialize for AbsoluteUtf8PathBuf {
     }
 }
 
+impl Display for AbsoluteUtf8PathBuf {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(self.as_path(), f)
+    }
+}
+
 impl<'de> Deserialize<'de> for AbsoluteUtf8PathBuf {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
