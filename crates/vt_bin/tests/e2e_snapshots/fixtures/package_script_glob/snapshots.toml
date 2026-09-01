@@ -49,9 +49,16 @@ steps = [["vt", "run", "and-glob"]]
 [[e2e]]
 name = "quoted_glob_stays_literal"
 comment = """
-Quoted pathname patterns remain literal instead of being expanded.
+Quoted pathname patterns remain literal for the child command to interpret on every platform.
 """
 steps = [["vt", "run", "quoted-glob"]]
+
+[[e2e]]
+name = "nested_vt_quoted_glob_stays_command_owned"
+comment = """
+A quoted pathname pattern remains one literal argument when passed to a nested Vite+ command, so the command can implement portable glob semantics itself.
+"""
+steps = [["vt", "run", "nested-vt-quoted-glob"]]
 
 [[e2e]]
 name = "nested_vt_receives_expanded_glob_on_unix"

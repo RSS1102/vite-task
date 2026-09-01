@@ -6,6 +6,7 @@
     "and-glob": "vtt print before && vtt print packages/*/src",
     "quoted-glob": "vtt print \"packages/*/src\"",
     "nested-vt-glob": "vt run print-paths prefix packages/*/src",
+    "nested-vt-quoted-glob": "vt run print-paths prefix \"packages/*/src\"",
     "nested-vt-glob-fails": "vt run fail-with-code packages/*/src",
     "print-paths": "vtt print",
     "fail-with-code": "vtt exit 23"
