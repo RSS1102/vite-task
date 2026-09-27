@@ -8,6 +8,7 @@ publish = false
 rust-version.workspace = true
 
 [dependencies]
+bytes = { workspace = true }
 ciborium = { workspace = true }
 reqwest = { workspace = true, features = ["multipart", "rustls-no-provider", "stream"] }
 rustls = { workspace = true, features = ["ring", "std"] }

@@ -15,6 +15,7 @@ workspace = true
 anstream = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+bytes = { workspace = true }
 wincode = { workspace = true, features = ["derive"] }
 clap = { workspace = true, features = ["derive"] }
 ctrlc = { workspace = true }

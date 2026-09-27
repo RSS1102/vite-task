@@ -1,14 +1,35 @@
-# invalid_endpoint
+# corrupt_archive
 
-## `VP_REMOTE_CACHE=read-write VP_REMOTE_CACHE_URL=cache.example/projects/test vt run build`
-
-The failed fetch is the miss reason, and the failed upload is a warning. The task succeeds.
+## `VP_REMOTE_CACHE=read-write remote-cache-server vt run build`
 
 ```
-$ vtt write-file dist/output.txt built ○ cache miss: remote cache fetch failed, executing
+$ vtt write-file dist/output.txt built
 
----
-vt run: remote-cache#build not uploaded to the remote cache: invalid endpoint. (Run `vt run --last-details` for full details)
+[remote-cache] POST /fetch 200 not_found
+[remote-cache] POST /store 200
+```
+
+## `vtt write-file remote-cache/blobs/1 corrupt`
+
+Overwrite the stored archive.
+
+```
+```
+
+## `vt cache clean`
+
+```
+```
+
+## `remote-cache-server vt run build`
+
+The downloaded archive doesn't decode, so the task reruns.
+
+```
+$ vtt write-file dist/output.txt built ○ cache miss: downloaded archive is corrupt, executing
+
+[remote-cache] POST /fetch 200 exact
+[remote-cache] GET /blob/1 200
 ```
 
 ## `vt run --last-details`
@@ -27,21 +48,14 @@ Performance:  0% cache hit rate
 Task Details:
 ────────────────────────────────────────────────
   [1] remote-cache#build: $ vtt write-file dist/output.txt built ✓
-      → Cache miss: remote cache fetch failed
-        ↳ invalid endpoint
-        ↳ relative URL without a base
-      ⚠ Not uploaded to the remote cache: invalid endpoint
-        ↳ relative URL without a base
+      → Cache miss: downloaded archive is corrupt
+        ↳ Unknown frame descriptor
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
-## `VP_REMOTE_CACHE=read-write VP_REMOTE_CACHE_URL=cache.example/projects/test vt run build`
+## `vtt list-dir node_modules/.vite/task-cache --ext .tmp --recursive`
 
-The local cache was updated. Hits never upload.
+The corrupt download was removed.
 
 ```
-$ vtt write-file dist/output.txt built ◉ cache hit, replaying
-
----
-vt run: cache hit.
 ```
