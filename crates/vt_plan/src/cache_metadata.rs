@@ -2,13 +2,14 @@ use std::{ffi::OsStr, sync::Arc};
 
 use rustc_hash::FxHashMap;
 use serde::Serialize;
+use vt_casefold::EnvName;
 use vt_graph::config::ResolvedGlobConfig;
 use vt_path::RelativePathBuf;
 use vt_str::{self, Str};
 use wincode::{SchemaRead, SchemaWrite};
 
-use crate::envs::EnvFingerprints;
 pub use crate::envs::EnvValueHash;
+use crate::{envs::EnvFingerprints, remote_cache::ResolvedRemoteCacheConfig};
 
 /// Key to identify an execution across sessions.
 #[derive(Debug, SchemaWrite, SchemaRead, Serialize)]
@@ -34,9 +35,8 @@ pub enum ExecutionCacheKey {
     ExecAPI(Arc<[Str]>),
 }
 
-/// Cache information for a spawn execution.
+/// Cache information available before a spawn execution.
 ///
-/// It only contains information needed for hitting existing cache entries pre-execution.
 /// It doesn't contain any post-execution information like file fingerprints
 /// (which needs actual execution and is out of scope for planning).
 #[derive(Debug, Serialize)]
@@ -55,6 +55,10 @@ pub struct CacheMetadata {
     /// Used at execution time to determine what output files to archive.
     pub output_config: ResolvedGlobConfig,
 
+    /// Remote cache for this execution: the one resolved for its `vp run` level,
+    /// unless the task sets `cache.remote: false`. `None` means local caching only.
+    pub remote_cache: Option<ResolvedRemoteCacheConfig>,
+
     /// The unfiltered env context for runner-aware APIs. This is the planning
     /// context's envs before spawn-env filtering, including command prefix envs
     /// from this command and enclosing nested `vp run` expansions.
@@ -63,7 +67,7 @@ pub struct CacheMetadata {
     /// `SpawnCommand::spawn_envs`. It is skipped in serialized plans because it
     /// mirrors the ambient environment and would make snapshots noisy.
     #[serde(skip)]
-    pub unfiltered_envs: Arc<FxHashMap<Arc<OsStr>, Arc<OsStr>>>,
+    pub unfiltered_envs: Arc<FxHashMap<EnvName<Arc<OsStr>>, Arc<OsStr>>>,
 }
 
 /// Fingerprint for spawn execution that affects caching.

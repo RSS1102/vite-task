@@ -1,0 +1,103 @@
+// run endpoints
+{
+  "graph": [
+    {
+      "key": [
+        "<workspace>/",
+        "endpoints"
+      ],
+      "node": {
+        "items": [
+          {
+            "kind": {
+              "Expanded": {
+                "graph": [
+                  {
+                    "key": [
+                      "<workspace>/",
+                      "build"
+                    ],
+                    "node": {
+                      "items": [
+                        {
+                          "kind": {
+                            "Leaf": {
+                              "Spawn": {
+                                "cache_metadata": {
+                                  "spawn_fingerprint": {
+                                    "env_fingerprints": {
+                                      "fingerprinted_envs": {},
+                                      "untracked_env_config": [
+                                        "<default untracked envs>"
+                                      ]
+                                    }
+                                  },
+                                  "remote_cache": {
+                                    "access": "read",
+                                    "url": "https://other.example/projects/nested"
+                                  }
+                                },
+                                "spawn_command": {
+                                  "spawn_envs": {
+                                    "VP_REMOTE_CACHE_URL": "https://other.example/projects/nested"
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "kind": {
+              "Expanded": {
+                "graph": [
+                  {
+                    "key": [
+                      "<workspace>/",
+                      "build"
+                    ],
+                    "node": {
+                      "items": [
+                        {
+                          "kind": {
+                            "Leaf": {
+                              "Spawn": {
+                                "cache_metadata": {
+                                  "spawn_fingerprint": {
+                                    "env_fingerprints": {
+                                      "fingerprinted_envs": {},
+                                      "untracked_env_config": [
+                                        "<default untracked envs>"
+                                      ]
+                                    }
+                                  },
+                                  "remote_cache": {
+                                    "access": "read",
+                                    "url": "https://cache.example/projects/test"
+                                  }
+                                },
+                                "spawn_command": {
+                                  "spawn_envs": {}
+                                }
+                              }
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

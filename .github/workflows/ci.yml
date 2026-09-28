@@ -128,7 +128,7 @@ jobs:
 
       # x86_64-apple-darwin runs on arm64 runner under Rosetta; install x64 Node
       # so fspy's x86_64 preload dylib can be injected into spawned node procs.
-      - uses: oxc-project/setup-node@d59b270414aa7d0eed947eed4eb5b0b8a675f01d # v1.4.0
+      - uses: oxc-project/setup-node@f46a72f95efdc55273fcd042d61c84e723b2892c # v1.4.1
         with:
           architecture: ${{ matrix.target == 'x86_64-apple-darwin' && 'x64' || '' }}
 
@@ -148,7 +148,9 @@ jobs:
         run: pnpm --filter vite-task-tools exec playwright install-deps chromium
 
       - name: Run ignored tests
-        run: ${{ matrix.cargo_cmd }} test --target ${{ matrix.build_target }} -- --ignored
+        run: |
+          pnpm --filter vite-task-tools test
+          ${{ matrix.cargo_cmd }} test --target ${{ matrix.build_target }} -- --ignored
 
   # Windows tests are cross-compiled on a fast Linux runner with cargo-xwin
   # (clang-cl + lld-link against the xwin-downloaded MSVC CRT/Windows SDK)
@@ -189,7 +191,7 @@ jobs:
 
       - run: rustup target add x86_64-pc-windows-msvc
 
-      - uses: taiki-e/install-action@a2a5f6e99e1a31540baa0468acfa302cff0f359f # v2.86.4
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
         with:
           tool: cargo-nextest,cargo-xwin
 
@@ -260,7 +262,7 @@ jobs:
         with:
           name: windows-test-archive
 
-      - uses: taiki-e/install-action@a2a5f6e99e1a31540baa0468acfa302cff0f359f # v2.86.4
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
         with:
           tool: cargo-nextest
 
@@ -272,7 +274,7 @@ jobs:
         if: matrix.mode == 'default'
         run: cargo-nextest nextest run --archive-file windows-tests.tar.zst --workspace-remap . --partition "$PARTITION"
 
-      - uses: oxc-project/setup-node@d59b270414aa7d0eed947eed4eb5b0b8a675f01d # v1.4.0
+      - uses: oxc-project/setup-node@f46a72f95efdc55273fcd042d61c84e723b2892c # v1.4.1
         if: matrix.mode == 'ignored'
 
       - name: Install runtime binaries
@@ -281,7 +283,9 @@ jobs:
 
       - name: Run ignored tests
         if: matrix.mode == 'ignored'
-        run: cargo-nextest nextest run --archive-file windows-tests.tar.zst --workspace-remap . --run-ignored ignored-only
+        run: |
+          pnpm --filter vite-task-tools test
+          cargo-nextest nextest run --archive-file windows-tests.tar.zst --workspace-remap . --run-ignored ignored-only
 
   test-musl:
     needs: detect-changes
@@ -298,7 +302,7 @@ jobs:
       # (RUSTFLAGS env var overrides both levels).
       # -crt-static: vite-task is shipped as a NAPI module in vite+, and musl Node
       # with native modules links to musl libc dynamically, so we must do the same.
-      RUSTFLAGS: --cfg tokio_unstable -D warnings -C target-feature=-crt-static
+      RUSTFLAGS: -D warnings -C target-feature=-crt-static
       # On musl, concurrent PTY operations can trigger SIGSEGV in musl internals.
       # Run test threads sequentially to avoid the race.
       RUST_TEST_THREADS: 1
@@ -332,10 +336,12 @@ jobs:
       - name: Run tests
         run: cargo test
 
-      - uses: oxc-project/setup-node@d59b270414aa7d0eed947eed4eb5b0b8a675f01d # v1.4.0
+      - uses: oxc-project/setup-node@f46a72f95efdc55273fcd042d61c84e723b2892c # v1.4.1
 
       - name: Run ignored tests
-        run: cargo test -- --ignored
+        run: |
+          pnpm --filter vite-task-tools test
+          cargo test -- --ignored
 
   fmt:
     name: Format and Check Deps
@@ -353,7 +359,7 @@ jobs:
           tools: cargo-shear@1.11.1,cargo-autoinherit@0.1.6
           components: clippy rust-docs rustfmt
 
-      - uses: oxc-project/setup-node@d59b270414aa7d0eed947eed4eb5b0b8a675f01d # v1.4.0
+      - uses: oxc-project/setup-node@f46a72f95efdc55273fcd042d61c84e723b2892c # v1.4.1
       - run: pnpm exec vp fmt --check
       - run: cargo autoinherit && git diff --exit-code
       - run: cargo shear --deny-warnings
@@ -362,7 +368,7 @@ jobs:
       # dependency, which needs a rust-std this job otherwise has no use for.
       - run: RUSTDOCFLAGS='-D warnings' cargo doc --workspace --exclude fspy_benchmark --no-deps --document-private-items
 
-      - uses: crate-ci/typos@4d9c206a77c041268485162b8e2579ad7a5cb9a3 # v1.50.0
+      - uses: crate-ci/typos@512fc24f32f44ab01972217aaaf3dc86ec234d53 # v1.50.2
         with:
           files: .
 
@@ -373,6 +379,9 @@ jobs:
         run: |
           pnpm build-vite-task-client-types
           git diff --exit-code packages/vite-task-client/src/index.d.ts
+
+      - name: Check test utility types
+        run: pnpm --filter vite-task-tools check
 
   done:
     runs-on: namespace-profile-linux-x64-default

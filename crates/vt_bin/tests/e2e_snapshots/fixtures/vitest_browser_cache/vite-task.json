@@ -1,12 +1,15 @@
 {
   "tasks": {
     "test": {
-      "command": "vitest run",
-      "cache": true,
-      "input": [{ "auto": true }],
-      // TODO: Add @voidzero-dev/vite-task-client and have Vitest report this path as ignored.
-      "output": [{ "auto": true }, "!node_modules/.vite/vitest/**"],
-      "untrackedEnv": ["PLAYWRIGHT_HOST_PLATFORM_OVERRIDE"]
+      // "false" silences the browser server's Vite logger, which otherwise prints
+      // timing-dependent "[optimizer] ..." messages on slow machines.
+      "command": "VITEST_BROWSER_DEBUG=false vitest run",
+      "cache": {
+        "input": [{ "auto": true }],
+        // TODO: Add @voidzero-dev/vite-task-client and have Vitest report this path as ignored.
+        "output": [{ "auto": true }, "!node_modules/.vite/vitest/**"],
+        "untrackedEnv": ["PLAYWRIGHT_HOST_PLATFORM_OVERRIDE"]
+      }
     }
   }
 }

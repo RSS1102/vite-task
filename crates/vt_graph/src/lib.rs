@@ -8,7 +8,7 @@ use std::{convert::Infallible, sync::Arc};
 
 use config::{
     ResolvedGlobalCacheConfig, ResolvedTaskConfig, UserRunConfig, UserTaskConfig,
-    UserTaskDefinition,
+    UserTaskDefinition, user::TopLevelCacheFieldsCollector,
 };
 use petgraph::{
     graph::{DefaultIx, DiGraph, EdgeIndex, IndexType, NodeIndex},
@@ -25,7 +25,8 @@ use vt_workspace::{
 
 use crate::{
     config::user::{
-        UserDependencyType, UserDependsOnEntry, UserPackageDependency, UserTaskOptions,
+        TopLevelCacheFields, UserDependencyType, UserDependsOnEntry, UserPackageDependency,
+        UserTaskOptions,
     },
     display::TaskDisplay,
 };
@@ -128,6 +129,9 @@ pub enum TaskGraphLoadError {
         "`enablePrePostScripts` can only be set in the workspace root config, but found in {package_path}"
     )]
     PrePostScriptsInNonRootPackage { package_path: Arc<AbsolutePath> },
+
+    #[error(transparent)]
+    TopLevelCacheFields(config::user::TopLevelCacheFieldsError),
 }
 
 /// Error when looking up a task by its specifier.
@@ -289,9 +293,9 @@ impl IndexedTaskGraph {
                 })?
                 .unwrap_or_default();
 
-            if let Some(cache) = user_config.cache {
+            if let Some(cache) = &user_config.cache {
                 if is_workspace_root {
-                    root_cache = Some(cache);
+                    root_cache = Some(cache.clone());
                 } else {
                     return Err(TaskGraphLoadError::CacheInNonRootPackage {
                         package_path: package_dir.clone(),
@@ -313,6 +317,8 @@ impl IndexedTaskGraph {
         }
 
         let resolved_global_cache = ResolvedGlobalCacheConfig::resolve_from(root_cache.as_ref());
+
+        let mut top_level_cache_fields = TopLevelCacheFieldsCollector::default();
 
         // Second pass: create task nodes (cache is NOT applied here; it's applied at plan time)
         for (package_index, package_dir, user_config) in package_configs {
@@ -342,11 +348,21 @@ impl IndexedTaskGraph {
 
                 let task_user_config = match task_user_config {
                     UserTaskDefinition::Object(config) => config,
-                    UserTaskDefinition::CommandShorthand(command) => {
-                        UserTaskConfig { command, options: UserTaskOptions::default() }
-                    }
+                    UserTaskDefinition::CommandShorthand(command) => UserTaskConfig {
+                        command,
+                        options: UserTaskOptions::default(),
+                        top_level_cache_fields: TopLevelCacheFields::default(),
+                    },
                 };
                 let depends_on_entries = task_user_config.options.depends_on.clone();
+
+                top_level_cache_fields.record(task_user_config.top_level_cache_fields, || {
+                    TaskDisplay {
+                        package_name: package.package_json.name.clone(),
+                        task_name: task_name.clone(),
+                        package_path: Arc::clone(&package_dir),
+                    }
+                });
 
                 // Resolve the task configuration from the user config
                 let resolved_config = ResolvedTaskConfig::resolve(
@@ -408,6 +424,8 @@ impl IndexedTaskGraph {
                 node_indices_by_task_id.insert(task_id, node_index);
             }
         }
+
+        top_level_cache_fields.finish().map_err(TaskGraphLoadError::TopLevelCacheFields)?;
 
         // Construct `Self` with task_graph with all task nodes ready and indexed, but no edges.
         let mut me = Self {

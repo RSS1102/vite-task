@@ -7,7 +7,7 @@
 //! Both the live reporter and the `--last-details` display use the same rendering
 //! functions, ensuring consistent output.
 
-use std::{io::Write, num::NonZeroI32, time::Duration};
+use std::{fmt::Display, io::Write, num::NonZeroI32, time::Duration};
 
 use owo_colors::Style;
 use serde::{Deserialize, Serialize};
@@ -17,13 +17,11 @@ use vt_str::Str;
 use super::{CACHE_MISS_STYLE, COMMAND_STYLE, ColorizeExt};
 use crate::session::{
     cache::{
-        CacheMiss, EnvMismatch, FingerprintMismatch, InputChangeKind, SpawnFingerprintChange,
-        detect_spawn_fingerprint_changes, format_input_change_str, format_spawn_change,
+        CacheHitSource, CacheMiss, EnvMismatch, FingerprintMismatch, InputChangeKind,
+        SpawnFingerprintChange, detect_spawn_fingerprint_changes, format_input_change_str,
+        format_spawn_change,
     },
-    event::{
-        CacheDisabledReason, CacheErrorKind, CacheNotUpdatedReason, CacheStatus, CacheUpdateStatus,
-        ExecutionError,
-    },
+    event::{CacheDisabledReason, CacheNotUpdatedReason, CacheStatus, CacheUpdateStatus},
     execute::fingerprint::TrackedEnvQuery,
 };
 
@@ -62,9 +60,18 @@ pub struct TaskSummary {
 /// Encodes both the cache status and execution outcome in a single enum,
 /// making invalid combinations unrepresentable.
 #[derive(Serialize, Deserialize)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "built once per task for the summary; boxing would only add indirection"
+)]
 pub enum TaskResult {
     /// Cache hit — output was replayed from cache. Always successful.
-    CacheHit { saved_duration_ms: u64 },
+    CacheHit {
+        saved_duration_ms: u64,
+        /// Summaries saved before the source was recorded read as local hits.
+        #[serde(default)]
+        source: CacheHitSource,
+    },
 
     /// In-process execution (built-in command like echo). Always successful.
     InProcess,
@@ -99,7 +106,7 @@ pub enum SpawnOutcome {
     /// May have a post-execution infrastructure error (cache update or fingerprint failed).
     /// These only run after exit 0, so this field only exists on the success path.
     Success {
-        infra_error: Option<SavedExecutionError>,
+        infra_error: Option<SavedError>,
         /// First path that was both read and written, causing cache to be skipped.
         /// Only set when fspy detected a read-write overlap.
         input_modified_path: Option<Str>,
@@ -108,9 +115,8 @@ pub enum SpawnOutcome {
         /// Task ran successfully but cache was not updated.
         #[serde(default)]
         fspy_unsupported: bool,
-        /// Rendered message of the IPC server error that caused the cache to
-        /// be skipped, if any.
-        ipc_server_error: Option<Str>,
+        /// The IPC server error that caused the cache to be skipped, if any.
+        ipc_server_error: Option<SavedError>,
         /// `true` when the task made more file accesses than tracking had
         /// room for, so the inferred inputs and outputs were a subset of
         /// what it touched. Task ran successfully but cache was not
@@ -120,6 +126,9 @@ pub enum SpawnOutcome {
         /// Set when a runner-aware tool called `disableCache()`, skipping
         /// cache update.
         tool_disabled_cache: bool,
+        /// Why uploading the entry to the remote cache failed, if it did.
+        /// The local cache was still updated.
+        upload_error: Option<SavedError>,
     },
 
     /// Process exited with non-zero status.
@@ -128,7 +137,7 @@ pub enum SpawnOutcome {
     Failed { exit_code: NonZeroI32 },
 
     /// Execution failed without a usable process exit status.
-    SpawnError(SavedExecutionError),
+    SpawnError(SavedError),
 }
 
 /// Why a cache miss occurred.
@@ -147,27 +156,18 @@ pub enum SavedCacheMissReason {
     /// A runner-aware tool reported a tracked bulk env query whose match-set changed
     /// between runs. Carries the first differing entry.
     TrackedEnvQueryChanged { query: TrackedEnvQuery, mismatch: EnvMismatch },
+    /// Reading the remote cache failed, and the local cache had no entry.
+    RemoteReadFailed(SavedError),
 }
 
-/// An execution error, serializable for persistence.
+/// An error's message and the messages of its causes, outermost first.
 ///
-/// The `message` field contains the raw inner error text (from `anyhow::Error`).
-/// The error prefix (e.g., "Cache update failed") is derived from the variant
-/// at render time.
+/// Compact output shows only `message`. The detailed summary also shows each
+/// cause on its own line.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum SavedExecutionError {
-    Cache { kind: SavedCacheErrorKind, message: Str },
-    Spawn { message: Str },
-    ForwardTaskProcessOutput { message: Str },
-    WaitForTaskProcessExit { message: Str },
-    PostRunFingerprint { message: Str },
-    IpcServerBind { message: Str },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum SavedCacheErrorKind {
-    Lookup,
-    Update,
+pub struct SavedError {
+    message: Str,
+    causes: Vec<Str>,
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -176,13 +176,22 @@ pub enum SavedCacheErrorKind {
 
 struct SummaryStats {
     total: usize,
+    /// Cache hits from either cache, including `remote_cache_hits`.
     cache_hits: usize,
+    remote_cache_hits: usize,
     cache_misses: usize,
     cache_disabled: usize,
     failed: usize,
     total_saved: Duration,
     /// Display names of tasks that were not cached due to read-write overlap.
     input_modified_task_names: Vec<Str>,
+    /// Tasks whose upload to the remote cache failed.
+    upload_failures: Vec<UploadFailure>,
+}
+
+struct UploadFailure {
+    task_name: Str,
+    reason: Str,
 }
 
 impl SummaryStats {
@@ -190,17 +199,22 @@ impl SummaryStats {
         let mut stats = Self {
             total: tasks.len(),
             cache_hits: 0,
+            remote_cache_hits: 0,
             cache_misses: 0,
             cache_disabled: 0,
             failed: 0,
             total_saved: Duration::ZERO,
             input_modified_task_names: Vec::new(),
+            upload_failures: Vec::new(),
         };
 
         for task in tasks {
             match &task.result {
-                TaskResult::CacheHit { saved_duration_ms } => {
+                TaskResult::CacheHit { saved_duration_ms, source } => {
                     stats.cache_hits += 1;
+                    if *source == CacheHitSource::Remote {
+                        stats.remote_cache_hits += 1;
+                    }
                     stats.total_saved += Duration::from_millis(*saved_duration_ms);
                 }
                 TaskResult::InProcess => {
@@ -220,6 +234,12 @@ impl SummaryStats {
                         }
                         SpawnOutcome::Success { .. } => {}
                     }
+                    if let SpawnOutcome::Success { upload_error: Some(error), .. } = outcome {
+                        stats.upload_failures.push(UploadFailure {
+                            task_name: task.format_task_display(),
+                            reason: error.message.clone(),
+                        });
+                    }
                 }
             }
         }
@@ -232,58 +252,14 @@ impl SummaryStats {
 // Conversion from live execution data
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-impl SavedExecutionError {
-    /// Convert a live [`ExecutionError`] into a serializable error.
-    pub fn from_execution_error(error: &ExecutionError) -> Self {
-        match error {
-            ExecutionError::Cache { kind, source } => Self::Cache {
-                kind: match kind {
-                    CacheErrorKind::Lookup => SavedCacheErrorKind::Lookup,
-                    CacheErrorKind::Update => SavedCacheErrorKind::Update,
-                },
-                message: vt_str::format!("{source:#}"),
-            },
-            ExecutionError::Spawn(source) => Self::Spawn { message: vt_str::format!("{source:#}") },
-            ExecutionError::ForwardTaskProcessOutput(source) => {
-                Self::ForwardTaskProcessOutput { message: vt_str::format!("{source:#}") }
-            }
-            ExecutionError::WaitForTaskProcessExit(source) => {
-                Self::WaitForTaskProcessExit { message: vt_str::format!("{source:#}") }
-            }
-            ExecutionError::PostRunFingerprint(source) => {
-                Self::PostRunFingerprint { message: vt_str::format!("{source:#}") }
-            }
-            ExecutionError::IpcServerBind(source) => {
-                Self::IpcServerBind { message: vt_str::format!("{source:#}") }
-            }
-        }
-    }
-
-    /// Format the full error message for display.
-    fn display_message(&self) -> Str {
-        match self {
-            Self::Cache { kind, message } => {
-                let kind_str = match kind {
-                    SavedCacheErrorKind::Lookup => "lookup",
-                    SavedCacheErrorKind::Update => "update",
-                };
-                vt_str::format!("Cache {kind_str} failed: {message}")
-            }
-            Self::Spawn { message } => {
-                vt_str::format!("Failed to spawn process: {message}")
-            }
-            Self::ForwardTaskProcessOutput { message } => {
-                vt_str::format!("Failed to forward task process output: {message}")
-            }
-            Self::WaitForTaskProcessExit { message } => {
-                vt_str::format!("Failed to wait for task process to exit: {message}")
-            }
-            Self::PostRunFingerprint { message } => {
-                vt_str::format!("Failed to create post-run fingerprint: {message}")
-            }
-            Self::IpcServerBind { message } => {
-                vt_str::format!("Failed to set up task communication: {message}")
-            }
+impl SavedError {
+    /// Save the messages of `error` and its sources.
+    pub fn new(error: &(dyn std::error::Error + 'static)) -> Self {
+        Self {
+            message: vt_str::format!("{error}"),
+            causes: std::iter::successors(error.source(), |&source| source.source())
+                .map(|source| vt_str::format!("{source}"))
+                .collect(),
         }
     }
 }
@@ -312,6 +288,9 @@ impl SavedCacheMissReason {
                     }
                 }
             },
+            CacheMiss::RemoteReadFailed(error) => {
+                Self::RemoteReadFailed(SavedError::new(error.as_ref()))
+            }
         }
     }
 }
@@ -326,7 +305,7 @@ impl TaskResult {
     pub fn from_execution(
         cache_status: &CacheStatus,
         exit_status: Option<std::process::ExitStatus>,
-        saved_error: Option<&SavedExecutionError>,
+        saved_error: Option<&SavedError>,
         cache_update_status: &CacheUpdateStatus,
     ) -> Self {
         let input_modified_path = match cache_update_status {
@@ -341,7 +320,7 @@ impl TaskResult {
         );
         let ipc_server_error = match cache_update_status {
             CacheUpdateStatus::NotUpdated(CacheNotUpdatedReason::IpcServerError(err)) => {
-                Some(vt_str::format!("{err}"))
+                Some(SavedError::new(err))
             }
             _ => None,
         };
@@ -353,11 +332,16 @@ impl TaskResult {
             cache_update_status,
             CacheUpdateStatus::NotUpdated(CacheNotUpdatedReason::TrackingIncomplete)
         );
+        let upload_error = match cache_update_status {
+            CacheUpdateStatus::Updated { upload_error: Some(err) } => Some(SavedError::new(err)),
+            _ => None,
+        };
 
         match cache_status {
-            CacheStatus::Hit { replayed_duration } => {
-                Self::CacheHit { saved_duration_ms: duration_to_ms(*replayed_duration) }
-            }
+            CacheStatus::Hit { replayed_duration, source } => Self::CacheHit {
+                saved_duration_ms: duration_to_ms(*replayed_duration),
+                source: *source,
+            },
             CacheStatus::Disabled(CacheDisabledReason::InProcessExecution) => Self::InProcess,
             CacheStatus::Disabled(CacheDisabledReason::NoCacheMetadata) => Self::Spawned {
                 cache_status: SpawnedCacheStatus::Disabled,
@@ -369,6 +353,7 @@ impl TaskResult {
                     ipc_server_error,
                     tool_disabled_cache,
                     tracking_incomplete,
+                    upload_error,
                 ),
             },
             CacheStatus::Miss(cache_miss) => Self::Spawned {
@@ -383,6 +368,7 @@ impl TaskResult {
                     ipc_server_error,
                     tool_disabled_cache,
                     tracking_incomplete,
+                    upload_error,
                 ),
             },
         }
@@ -390,14 +376,19 @@ impl TaskResult {
 }
 
 /// Build a [`SpawnOutcome`] from process exit status and optional pre-converted error.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each cache update detail is extracted by the caller and passed through"
+)]
 fn spawn_outcome_from_execution(
     exit_status: Option<std::process::ExitStatus>,
-    saved_error: Option<&SavedExecutionError>,
+    saved_error: Option<&SavedError>,
     input_modified_path: Option<Str>,
     fspy_unsupported: bool,
-    ipc_server_error: Option<Str>,
+    ipc_server_error: Option<SavedError>,
     tool_disabled_cache: bool,
     tracking_incomplete: bool,
+    upload_error: Option<SavedError>,
 ) -> SpawnOutcome {
     match (exit_status, saved_error) {
         // Spawn error — process never ran
@@ -410,6 +401,7 @@ fn spawn_outcome_from_execution(
             ipc_server_error,
             tool_disabled_cache,
             tracking_incomplete,
+            upload_error,
         },
         // Process exited with non-zero code
         (Some(status), _) => {
@@ -431,6 +423,7 @@ fn spawn_outcome_from_execution(
             ipc_server_error: None,
             tool_disabled_cache: false,
             tracking_incomplete: false,
+            upload_error: None,
         },
     }
 }
@@ -535,30 +528,23 @@ impl TaskResult {
         }
     }
 
-    /// Format the cache status detail line for the full summary.
+    /// Format the cache status detail line for the full summary, with the
+    /// causes to show below it. Only a remote read failure has causes. The
+    /// caller shows [`Self::ipc_server_error`] instead, if there is one.
     ///
     /// Examples:
     /// - "→ Cache hit - output replayed - 102.96ms saved"
+    /// - "→ Remote cache hit - output replayed - 102.96ms saved"
     /// - "→ Cache miss: no previous cache entry found"
     /// - "→ Cache disabled in task configuration"
-    fn format_cache_detail(&self) -> Str {
-        // Check for IPC server error first — short-circuits before any cache
-        // computation in `execute_spawn`, so it takes priority.
-        if let Self::Spawned {
-            outcome: SpawnOutcome::Success { ipc_server_error: Some(err), .. },
-            ..
-        } = self
-        {
-            return vt_str::format!("→ Not cached: task communication failed ({err})");
-        }
-
+    fn format_cache_detail(&self) -> (Str, &[Str]) {
         // Tool-reported cache disable — the tool said it shouldn't be cached.
         if let Self::Spawned {
             outcome: SpawnOutcome::Success { tool_disabled_cache: true, .. },
             ..
         } = self
         {
-            return Str::from("→ Not cached: the task opted out of caching");
+            return (Str::from("→ Not cached: the task opted out of caching"), &[]);
         }
 
         // Check for input modification next — it overrides the cache miss reason
@@ -567,7 +553,7 @@ impl TaskResult {
             ..
         } = self
         {
-            return vt_str::format!("→ Not cached: read and wrote '{path}'");
+            return (vt_str::format!("→ Not cached: read and wrote '{path}'"), &[]);
         }
         // Tracking came up short, so the inferred inputs and outputs would
         // have been a subset of what the task touched.
@@ -576,8 +562,11 @@ impl TaskResult {
             ..
         } = self
         {
-            return Str::from(
-                "→ Not cached: this task used more files than automatic tracking can record. Configure `input` and `output` manually to enable caching.",
+            return (
+                Str::from(
+                    "→ Not cached: this task used more files than automatic tracking can record. Configure `input` and `output` manually to enable caching.",
+                ),
+                &[],
             );
         }
         // fspy-unsupported-on-this-OS message — same overrides precedence as above
@@ -585,16 +574,23 @@ impl TaskResult {
             outcome: SpawnOutcome::Success { fspy_unsupported: true, .. }, ..
         } = self
         {
-            return Str::from(
-                "→ Not cached: `input` auto-inference isn't supported on this OS. Configure `input` manually to enable caching.",
+            return (
+                Str::from(
+                    "→ Not cached: `input` auto-inference isn't supported on this OS. Configure `input` manually to enable caching.",
+                ),
+                &[],
             );
         }
 
-        match self {
-            Self::CacheHit { saved_duration_ms } => {
+        let detail = match self {
+            Self::CacheHit { saved_duration_ms, source } => {
                 let d = Duration::from_millis(*saved_duration_ms);
                 let formatted_duration = format_summary_duration(d);
-                vt_str::format!("→ Cache hit - output replayed - {formatted_duration} saved")
+                let hit = match source {
+                    CacheHitSource::Local => "Cache hit",
+                    CacheHitSource::Remote => "Remote cache hit",
+                };
+                vt_str::format!("→ {hit} - output replayed - {formatted_duration} saved")
             }
             Self::InProcess => Str::from("→ Cache disabled for built-in command"),
             Self::Spawned { cache_status, .. } => match cache_status {
@@ -624,9 +620,13 @@ impl TaskResult {
                     | SavedCacheMissReason::TrackedEnvQueryChanged { mismatch, .. } => {
                         vt_str::format!("→ Cache miss: {mismatch}")
                     }
+                    SavedCacheMissReason::RemoteReadFailed(error) => {
+                        return (vt_str::format!("→ Cache miss: {}", error.message), &error.causes);
+                    }
                 },
             },
-        }
+        };
+        (detail, &[])
     }
 
     /// The [`Style`] for the cache detail line.
@@ -641,8 +641,28 @@ impl TaskResult {
         }
     }
 
+    /// The IPC server error that caused the cache to be skipped, if any.
+    const fn ipc_server_error(&self) -> Option<&SavedError> {
+        match self {
+            Self::Spawned { outcome: SpawnOutcome::Success { ipc_server_error, .. }, .. } => {
+                ipc_server_error.as_ref()
+            }
+            _ => None,
+        }
+    }
+
+    /// Why uploading the entry to the remote cache failed, if it did.
+    const fn upload_error(&self) -> Option<&SavedError> {
+        match self {
+            Self::Spawned { outcome: SpawnOutcome::Success { upload_error, .. }, .. } => {
+                upload_error.as_ref()
+            }
+            _ => None,
+        }
+    }
+
     /// Optional error associated with this result.
-    pub const fn error(&self) -> Option<&SavedExecutionError> {
+    pub const fn error(&self) -> Option<&SavedError> {
         match self {
             Self::CacheHit { .. } | Self::InProcess => None,
             Self::Spawned { outcome, .. } => match outcome {
@@ -709,12 +729,16 @@ pub fn format_full_summary(summary: &LastRunSummary) -> Vec<u8> {
     let total = stats.total;
     let cache_hits = stats.cache_hits;
     let cache_misses = stats.cache_misses;
+    let cache_hits_str = match stats.remote_cache_hits {
+        0 => vt_str::format!("• {cache_hits} cache hits"),
+        remote => vt_str::format!("• {cache_hits} cache hits ({remote} remote)"),
+    };
     let _ = write!(
         buf,
         "{}  {} {} {}",
         "Statistics:".style(Style::new().bold()),
         vt_str::format!(" {total} tasks").style(Style::new().bright_white()),
-        vt_str::format!("• {cache_hits} cache hits").style(Style::new().green()),
+        cache_hits_str.style(Style::new().green()),
         vt_str::format!("• {cache_misses} cache misses").style(CACHE_MISS_STYLE),
     );
     if !cache_disabled_str.is_empty() {
@@ -797,18 +821,38 @@ pub fn format_full_summary(summary: &LastRunSummary) -> Vec<u8> {
         }
         let _ = writeln!(buf);
 
-        // Cache status detail
-        let cache_detail = task.result.format_cache_detail();
-        let _ = writeln!(buf, "      {}", cache_detail.style(task.result.cache_detail_style()));
+        // Cache status detail. An IPC server error short-circuits before any
+        // cache computation in `execute_spawn`, so it takes priority.
+        let detail_style = task.result.cache_detail_style();
+        if let Some(error) = task.result.ipc_server_error() {
+            write_error_lines(
+                &mut buf,
+                "→ Not cached: task communication failed:".style(detail_style),
+                error,
+                detail_style,
+            );
+        } else {
+            let (cache_detail, causes) = task.result.format_cache_detail();
+            let _ = writeln!(buf, "      {}", cache_detail.style(detail_style));
+            write_causes(&mut buf, causes, detail_style);
+        }
 
-        // Error message if present
-        if let Some(err) = task.result.error() {
-            let msg = err.display_message();
-            let _ = writeln!(
-                buf,
-                "      {} {}",
+        if let Some(error) = task.result.upload_error() {
+            let style = Style::new().yellow();
+            write_error_lines(
+                &mut buf,
+                "⚠ Not uploaded to the remote cache:".style(style),
+                error,
+                style,
+            );
+        }
+
+        if let Some(error) = task.result.error() {
+            write_error_lines(
+                &mut buf,
                 "✗ Error:".style(Style::new().red().bold()),
-                msg.style(Style::new().red())
+                error,
+                Style::new().red(),
             );
         }
 
@@ -832,6 +876,20 @@ pub fn format_full_summary(summary: &LastRunSummary) -> Vec<u8> {
     buf
 }
 
+/// Write a task detail line with `label` and `error`'s message, then each of
+/// its causes on its own line below.
+fn write_error_lines(buf: &mut Vec<u8>, label: impl Display, error: &SavedError, style: Style) {
+    let _ = writeln!(buf, "      {label} {}", error.message.style(style));
+    write_causes(buf, &error.causes, style);
+}
+
+/// Write each cause on its own line, below a task detail line.
+fn write_causes(buf: &mut Vec<u8>, causes: &[Str], style: Style) {
+    for cause in causes {
+        let _ = writeln!(buf, "        {}", vt_str::format!("↳ {cause}").style(style));
+    }
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Compact summary rendering (default mode)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -841,15 +899,21 @@ pub fn format_full_summary(summary: &LastRunSummary) -> Vec<u8> {
 /// Rules:
 /// - Single task + not cache hit → empty (no summary at all)
 /// - Single task + cache hit → thin line + "vp run: cache hit, {duration} saved."
+///   ("remote cache hit" for a remote hit)
 /// - Multi-task → thin line + "vp run: {hits}/{total} cache hit ({rate}%), {duration} saved."
-///   with optional failure count and `--verbose` hint.
+///   with an optional remote hit count ("({rate}%, {remote} remote)"), failure count,
+///   and `--verbose` hint.
 pub fn format_compact_summary(summary: &LastRunSummary, program_name: &str) -> Vec<u8> {
     let stats = SummaryStats::compute(&summary.tasks);
 
     let is_single_task = summary.tasks.len() == 1;
 
-    // Single task + not cache hit + no input modification → no summary
-    if is_single_task && stats.cache_hits == 0 && stats.input_modified_task_names.is_empty() {
+    // Single task + not cache hit + no notice → no summary
+    if is_single_task
+        && stats.cache_hits == 0
+        && stats.input_modified_task_names.is_empty()
+        && stats.upload_failures.is_empty()
+    {
         return Vec::new();
     }
 
@@ -863,9 +927,10 @@ pub fn format_compact_summary(summary: &LastRunSummary, program_name: &str) -> V
     if is_single_task && stats.cache_hits > 0 {
         // Single task cache hit — no need for --last-details hint
         let formatted_total_saved = format_summary_duration(stats.total_saved);
+        let hit = if stats.remote_cache_hits > 0 { "remote cache hit" } else { "cache hit" };
         let _ = write!(
             buf,
-            "{} cache hit, {} saved.",
+            "{} {hit}, {} saved.",
             run_label.as_str().style(Style::new().blue().bold()),
             formatted_total_saved.style(Style::new().green().bold()),
         );
@@ -888,9 +953,13 @@ pub fn format_compact_summary(summary: &LastRunSummary, program_name: &str) -> V
 
         let _ = write!(
             buf,
-            "{} {hits}/{total} cache hit ({rate}%)",
+            "{} {hits}/{total} cache hit ({rate}%",
             run_label.as_str().style(Style::new().blue().bold()),
         );
+        if stats.remote_cache_hits > 0 {
+            let _ = write!(buf, ", {} remote", stats.remote_cache_hits);
+        }
+        let _ = write!(buf, ")");
 
         if stats.total_saved > Duration::ZERO {
             let formatted_total_saved = format_summary_duration(stats.total_saved);
@@ -908,13 +977,16 @@ pub fn format_compact_summary(summary: &LastRunSummary, program_name: &str) -> V
 
         let _ = write!(buf, ".");
     } else {
-        // Single task, no cache hit — only shown when input_modified is non-empty
+        // Single task, no cache hit — only shown with a notice below
         let _ = write!(buf, "{}", run_label.as_str().style(Style::new().blue().bold()));
     }
 
-    // Inline input-modified notice before the --last-details hint
+    // Inline notices before the --last-details hint
     if !stats.input_modified_task_names.is_empty() {
         format_input_modified_notice(&mut buf, &stats.input_modified_task_names);
+    }
+    if !stats.upload_failures.is_empty() {
+        format_upload_failed_notice(&mut buf, &stats.upload_failures);
     }
 
     if show_last_details_hint {
@@ -946,26 +1018,218 @@ fn format_input_modified_notice(buf: &mut Vec<u8>, task_names: &[Str]) {
     }
 }
 
+/// Write the "not uploaded to the remote cache" notice inline. The reason is
+/// shown when all failed uploads share it.
+fn format_upload_failed_notice(buf: &mut Vec<u8>, failures: &[UploadFailure]) {
+    let _ = write!(buf, " ");
+
+    let first = &failures[0];
+    let _ = write!(buf, "{}", first.task_name.as_str().style(Style::new().bold()));
+    let remaining = failures.len() - 1;
+    if remaining > 0 {
+        let _ = write!(buf, " (and {remaining} more)");
+    }
+
+    let _ = write!(buf, " not uploaded to the remote cache");
+    if failures.iter().all(|failure| failure.reason == first.reason) {
+        let _ = write!(buf, ": {}", first.reason);
+    }
+    let _ = write!(buf, ".");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::event::ExecutionError;
+
+    fn saved_error(message: &str, causes: &[&str]) -> SavedError {
+        SavedError {
+            message: Str::from(message),
+            causes: causes.iter().copied().map(Str::from).collect(),
+        }
+    }
+
+    fn upload_failed_task(task_name: &str, error: SavedError) -> TaskSummary {
+        TaskSummary {
+            package_name: Str::from("pkg"),
+            task_name: Str::from(task_name),
+            command: Str::from("build"),
+            cwd: Str::default(),
+            result: TaskResult::Spawned {
+                cache_status: SpawnedCacheStatus::Miss(SavedCacheMissReason::NotFound),
+                outcome: SpawnOutcome::Success {
+                    infra_error: None,
+                    input_modified_path: None,
+                    fspy_unsupported: false,
+                    ipc_server_error: None,
+                    tracking_incomplete: false,
+                    tool_disabled_cache: false,
+                    upload_error: Some(error),
+                },
+            },
+        }
+    }
+
+    fn strip(bytes: &[u8]) -> Str {
+        vt_str::format!("{}", anstream::adapter::strip_str(std::str::from_utf8(bytes).unwrap()))
+    }
+
+    fn cache_hit_task(task_name: &str, source: CacheHitSource) -> TaskSummary {
+        TaskSummary {
+            package_name: Str::from("pkg"),
+            task_name: Str::from(task_name),
+            command: Str::from("build"),
+            cwd: Str::default(),
+            result: TaskResult::CacheHit { saved_duration_ms: 1000, source },
+        }
+    }
+
+    fn cache_miss_task(task_name: &str) -> TaskSummary {
+        TaskSummary {
+            package_name: Str::from("pkg"),
+            task_name: Str::from(task_name),
+            command: Str::from("build"),
+            cwd: Str::default(),
+            result: TaskResult::Spawned {
+                cache_status: SpawnedCacheStatus::Miss(SavedCacheMissReason::NotFound),
+                outcome: SpawnOutcome::Success {
+                    infra_error: None,
+                    input_modified_path: None,
+                    fspy_unsupported: false,
+                    ipc_server_error: None,
+                    tracking_incomplete: false,
+                    tool_disabled_cache: false,
+                    upload_error: None,
+                },
+            },
+        }
+    }
+
+    fn compact_summary(tasks: Vec<TaskSummary>) -> Str {
+        strip(&format_compact_summary(&LastRunSummary { tasks, exit_code: 0 }, "vp"))
+    }
+
+    fn full_summary(tasks: Vec<TaskSummary>) -> Str {
+        strip(&format_full_summary(&LastRunSummary { tasks, exit_code: 0 }))
+    }
+
+    #[test]
+    fn compact_summary_names_remote_hits() {
+        assert_eq!(
+            compact_summary(vec![cache_hit_task("a", CacheHitSource::Remote)]).as_str(),
+            "---\nvp run: remote cache hit, 1s saved.\n"
+        );
+        assert_eq!(
+            compact_summary(vec![cache_hit_task("a", CacheHitSource::Local)]).as_str(),
+            "---\nvp run: cache hit, 1s saved.\n"
+        );
+        assert_eq!(
+            compact_summary(vec![
+                cache_hit_task("a", CacheHitSource::Local),
+                cache_hit_task("b", CacheHitSource::Remote),
+                cache_miss_task("c"),
+            ])
+            .as_str(),
+            "---\nvp run: 2/3 cache hit (66%, 1 remote), 2s saved. \
+             (Run `vp run --last-details` for full details)\n"
+        );
+        assert_eq!(
+            compact_summary(vec![cache_hit_task("a", CacheHitSource::Local), cache_miss_task("b")])
+                .as_str(),
+            "---\nvp run: 1/2 cache hit (50%), 1s saved. \
+             (Run `vp run --last-details` for full details)\n"
+        );
+    }
+
+    #[test]
+    fn full_summary_names_remote_hits() {
+        let summary = full_summary(vec![
+            cache_hit_task("a", CacheHitSource::Local),
+            cache_hit_task("b", CacheHitSource::Remote),
+            cache_miss_task("c"),
+        ]);
+        let lines: Vec<&str> = summary.as_str().lines().collect();
+        assert!(
+            lines.contains(&"Statistics:   3 tasks • 2 cache hits (1 remote) • 1 cache misses")
+        );
+        assert!(lines.contains(&"      → Cache hit - output replayed - 1s saved"));
+        assert!(lines.contains(&"      → Remote cache hit - output replayed - 1s saved"));
+
+        let summary = full_summary(vec![cache_hit_task("a", CacheHitSource::Local)]);
+        assert!(
+            summary
+                .as_str()
+                .lines()
+                .any(|line| line == "Statistics:   1 tasks • 1 cache hits • 0 cache misses")
+        );
+    }
+
+    #[test]
+    fn saved_cache_hit_without_source_is_local() {
+        let summary: LastRunSummary = serde_json::from_str(
+            r#"{"tasks":[{"package_name":"pkg","task_name":"a","command":"build","cwd":"",
+            "result":{"CacheHit":{"saved_duration_ms":5}}}],"exit_code":0}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            summary.tasks[0].result,
+            TaskResult::CacheHit { saved_duration_ms: 5, source: CacheHitSource::Local }
+        ));
+    }
+
+    #[test]
+    fn upload_failure_notice_shows_a_shared_reason() {
+        let summary = compact_summary(vec![
+            upload_failed_task("a", saved_error("network error", &["connection refused"])),
+            upload_failed_task("b", saved_error("network error", &["connection reset"])),
+        ]);
+        assert_eq!(
+            summary.as_str(),
+            "---\nvp run: 0/2 cache hit (0%). pkg#a (and 1 more) not uploaded to the remote cache: \
+             network error. (Run `vp run --last-details` for full details)\n"
+        );
+
+        let summary = compact_summary(vec![
+            upload_failed_task("a", saved_error("network error", &[])),
+            upload_failed_task("b", saved_error("HTTP status 500", &[])),
+        ]);
+        assert_eq!(
+            summary.as_str(),
+            "---\nvp run: 0/2 cache hit (0%). pkg#a (and 1 more) not uploaded to the remote cache. \
+             (Run `vp run --last-details` for full details)\n"
+        );
+    }
+
+    #[test]
+    fn full_summary_shows_each_cause_on_its_own_line() {
+        let task = upload_failed_task(
+            "a",
+            saved_error("network error", &["error sending request", "connection refused"]),
+        );
+        let summary =
+            strip(&format_full_summary(&LastRunSummary { tasks: vec![task], exit_code: 0 }));
+        assert!(
+            summary.as_str().contains(
+                "\n      ⚠ Not uploaded to the remote cache: network error\n        \
+                 ↳ error sending request\n        ↳ connection refused\n"
+            ),
+            "{summary}"
+        );
+    }
 
     #[test]
     fn output_forwarding_error_has_distinct_message() {
-        let error = ExecutionError::ForwardTaskProcessOutput(anyhow::anyhow!(
-            "Resource temporarily unavailable (os error 11)"
-        ));
+        let error = ExecutionError::ForwardTaskProcessOutput(
+            anyhow::anyhow!("Resource temporarily unavailable (os error 11)")
+                .context("failed to read stdout"),
+        );
 
-        let saved = SavedExecutionError::from_execution_error(&error);
+        let saved = SavedError::new(&error);
 
-        assert!(matches!(
-            &saved,
-            SavedExecutionError::ForwardTaskProcessOutput { message }
-                if message.as_str() == "Resource temporarily unavailable (os error 11)"
-        ));
+        assert_eq!(saved.message.as_str(), "Failed to forward task process output");
         assert_eq!(
-            saved.display_message().as_str(),
-            "Failed to forward task process output: Resource temporarily unavailable (os error 11)"
+            saved.causes.iter().map(Str::as_str).collect::<Vec<_>>(),
+            ["failed to read stdout", "Resource temporarily unavailable (os error 11)"]
         );
     }
 }

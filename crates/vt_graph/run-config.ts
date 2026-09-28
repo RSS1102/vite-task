@@ -26,6 +26,12 @@ base: InputBase, };
 
 export type InputBase = "package" | "workspace";
 
+export type RemoteCacheConfig = {
+/**
+ * HTTP or HTTPS namespace endpoint. Overridden by `VP_REMOTE_CACHE_URL`.
+ */
+url: string, };
+
 export type Task = {
 /**
  * Command to run, or an array of commands to run in order.
@@ -45,11 +51,19 @@ cwd?: string,
  *   `{ "task": "build", "from": "dependencies" }` runs `build` in each
  *   direct workspace dependency that defines a `build` task.
  */
-dependsOn?: Array<DependsOnEntry>, } & ({
+dependsOn?: Array<DependsOnEntry>,
 /**
- * Whether to cache the task
+ * Whether and how to cache the task.
+ *
+ * - Omitted or `true`: caching enabled with default settings (same as `{}`)
+ * - `false`: caching disabled
+ * - Object: caching enabled with the given settings
  */
-cache?: true,
+cache?: TaskCache, };
+
+export type TaskCache = boolean | TaskCacheConfig;
+
+export type TaskCacheConfig = {
 /**
  * Environment variable names to be fingerprinted and passed to the task.
  */
@@ -79,11 +93,18 @@ input?: Array<string | GlobWithBase | AutoTracking>,
  * - `{auto: true}` enables automatic output tracking
  * - Negative patterns (e.g. `"!dist/cache/**"`) exclude matched files
  */
-output?: Array<string | GlobWithBase | AutoTracking>, } | {
+output?: Array<string | GlobWithBase | AutoTracking>,
 /**
- * Whether to cache the task
+ * Whether this task can use the remote cache. Defaults to `true`.
+ *
+ * The remote cache is used only when these also hold:
+ * - Caching isn't turned off by `--no-cache` or the workspace root's `cache` setting.
+ * - An endpoint is set with `cache.remote.url` in the workspace root config or with
+ *   `VP_REMOTE_CACHE_URL`.
+ * - Remote access isn't set to `off` with `--remote-cache` or `VP_REMOTE_CACHE`. It
+ *   defaults to `read`, which downloads cached results without uploading new ones.
  */
-cache: false, });
+remote?: boolean, };
 
 export type TaskDefinition = Task | Command;
 
@@ -100,13 +121,18 @@ scripts?: boolean,
 /**
  * Global cache kill switch for task entries.
  *
- * When `false`, overrides all tasks to disable caching, even tasks with `cache: true`.
+ * When `false`, overrides all tasks to disable caching, even tasks with `cache: true`
+ * or a `cache` object.
  * When `true`, respects each task's individual `cache` setting
  * (each task's `cache` defaults to `true` if omitted).
  *
  * Default: `true`
  */
-tasks?: boolean, };
+tasks?: boolean,
+/**
+ * Remote cache shared by tasks in the workspace.
+ */
+remote?: RemoteCacheConfig, };
 
 export type UserPackageDependency = {
 /**

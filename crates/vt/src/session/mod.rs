@@ -17,6 +17,7 @@ use reporter::{
     summary::{LastRunSummary, ReadSummaryError, format_full_summary},
 };
 use rustc_hash::FxHashMap;
+use vt_casefold::EnvName;
 use vt_graph::{
     IndexedTaskGraph, TaskGraph, TaskGraphLoadError, config::user::UserCacheConfig,
     loader::UserConfigLoader, query::TaskQuery,
@@ -157,7 +158,7 @@ pub struct Session<'a> {
     /// The task graph is loaded on-demand and cached for future use.
     lazy_task_graph: LazyTaskGraph<'a>,
 
-    envs: Arc<FxHashMap<Arc<OsStr>, Arc<OsStr>>>,
+    envs: Arc<FxHashMap<EnvName<Arc<OsStr>>, Arc<OsStr>>>,
     cwd: Arc<AbsolutePath>,
 
     plan_request_parser: PlanRequestParser<'a>,
@@ -199,7 +200,9 @@ impl<'a> Session<'a> {
             reason = "Session::init is the only place that bootstraps the session env snapshot"
         )]
         let envs = std::env::vars_os()
-            .map(|(k, v)| (Arc::<OsStr>::from(k.as_os_str()), Arc::<OsStr>::from(v.as_os_str())))
+            .map(|(k, v)| {
+                (EnvName::new(Arc::<OsStr>::from(k.as_os_str())), Arc::<OsStr>::from(v.as_os_str()))
+            })
             .collect();
         Self::init_with(envs, vt_path::current_dir()?.into(), config)
     }
@@ -223,7 +226,7 @@ impl<'a> Session<'a> {
     /// Returns an error if workspace root cannot be found or PATH env cannot be prepended.
     #[tracing::instrument(level = "debug", skip_all)]
     pub fn init_with(
-        mut envs: FxHashMap<Arc<OsStr>, Arc<OsStr>>,
+        mut envs: FxHashMap<EnvName<Arc<OsStr>>, Arc<OsStr>>,
         cwd: Arc<AbsolutePath>,
         config: SessionConfig<'a>,
     ) -> anyhow::Result<Self> {
@@ -378,8 +381,10 @@ impl<'a> Session<'a> {
                 ));
                 // Don't let SIGINT/CTRL_C kill the runner. Child tasks receive
                 // the signal directly from the terminal driver and handle it
-                // themselves. Cancelling the interrupt token prevents scheduling
-                // new tasks and caching results of in-flight tasks.
+                // themselves. Cancelling the cancel token prevents scheduling
+                // new tasks and caching results of in-flight tasks, and stops
+                // remote cache requests. It's a child of the fast-fail token,
+                // so fast-fail cancels it too.
                 //
                 // On Windows, an ancestor process (e.g. cargo) may have been
                 // created with CREATE_NEW_PROCESS_GROUP, which sets a per-process
@@ -398,13 +403,14 @@ impl<'a> Session<'a> {
                     }
                     SetConsoleCtrlHandler(None, 0);
                 }
-                let interrupt_token = tokio_util::sync::CancellationToken::new();
-                let ct = interrupt_token.clone();
+                let fast_fail_token = tokio_util::sync::CancellationToken::new();
+                let cancel_token = fast_fail_token.child_token();
+                let ct = cancel_token.clone();
                 ctrlc::set_handler(move || {
                     ct.cancel();
                 })?;
 
-                self.execute_graph(graph, builder, interrupt_token)
+                self.execute_graph(graph, builder, fast_fail_token, cancel_token)
                     .await
                     .map_err(SessionError::EarlyExit)
             }
@@ -579,6 +585,7 @@ impl<'a> Session<'a> {
             plan_options: PlanOptions {
                 extra_args: run_command.additional_args.clone().into(),
                 cache_override: run_command.flags.cache_override(),
+                remote_cache_mode: run_command.flags.remote_cache.map(Into::into),
                 concurrency_limit: None,
                 parallel: false,
                 // The selector path runs whatever the user picked interactively;
@@ -665,7 +672,7 @@ impl<'a> Session<'a> {
         }
     }
 
-    pub const fn envs(&self) -> &Arc<FxHashMap<Arc<OsStr>, Arc<OsStr>>> {
+    pub const fn envs(&self) -> &Arc<FxHashMap<EnvName<Arc<OsStr>>, Arc<OsStr>>> {
         &self.envs
     }
 
@@ -715,6 +722,8 @@ impl<'a> Session<'a> {
         );
 
         // Execute the spawn directly using the free function, bypassing the graph pipeline
+        let fast_fail_token = tokio_util::sync::CancellationToken::new();
+        let cancel_token = fast_fail_token.child_token();
         let outcome = execute::execute_spawn(
             Box::new(plain_reporter),
             &spawn_execution,
@@ -722,8 +731,8 @@ impl<'a> Session<'a> {
             &self.workspace_path,
             &self.cache_path,
             self.program_name.as_str(),
-            tokio_util::sync::CancellationToken::new(),
-            tokio_util::sync::CancellationToken::new(),
+            fast_fail_token,
+            cancel_token,
         )
         .await;
         match outcome {
@@ -740,8 +749,11 @@ impl<'a> Session<'a> {
                 )]
                 Ok(ExitStatus(code.clamp(1, 255) as u8))
             }
-            // Infrastructure error — already reported through the reporter's finish()
-            execute::SpawnOutcome::Failed => Ok(ExitStatus::FAILURE),
+            // Infrastructure error — already reported through the reporter's finish().
+            // Nothing cancels the tokens above, and a cancelled command wouldn't have run.
+            execute::SpawnOutcome::Failed | execute::SpawnOutcome::Cancelled => {
+                Ok(ExitStatus::FAILURE)
+            }
         }
     }
 

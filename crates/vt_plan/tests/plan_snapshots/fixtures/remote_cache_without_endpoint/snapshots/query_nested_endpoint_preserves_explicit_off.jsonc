@@ -1,0 +1,44 @@
+// run --remote-cache=off with-url
+{
+  "graph": [
+    {
+      "key": [
+        "<workspace>/",
+        "with-url"
+      ],
+      "node": {
+        "items": [
+          {
+            "kind": {
+              "Expanded": {
+                "graph": [
+                  {
+                    "key": [
+                      "<workspace>/",
+                      "build"
+                    ],
+                    "node": {
+                      "items": [
+                        {
+                          "kind": {
+                            "Leaf": {
+                              "Spawn": {
+                                "cache_metadata": {
+                                  "remote_cache": null
+                                }
+                              }
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

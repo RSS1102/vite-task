@@ -1,0 +1,100 @@
+// run siblings
+{
+  "graph": [
+    {
+      "key": [
+        "<workspace>/",
+        "siblings"
+      ],
+      "node": {
+        "items": [
+          {
+            "kind": {
+              "Expanded": {
+                "graph": [
+                  {
+                    "key": [
+                      "<workspace>/",
+                      "build"
+                    ],
+                    "node": {
+                      "items": [
+                        {
+                          "kind": {
+                            "Leaf": {
+                              "Spawn": {
+                                "cache_metadata": {
+                                  "spawn_fingerprint": {
+                                    "env_fingerprints": {
+                                      "fingerprinted_envs": {},
+                                      "untracked_env_config": [
+                                        "<default untracked envs>"
+                                      ]
+                                    }
+                                  },
+                                  "remote_cache": null
+                                },
+                                "spawn_command": {
+                                  "spawn_envs": {
+                                    "VP_REMOTE_CACHE": "off"
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "kind": {
+              "Expanded": {
+                "graph": [
+                  {
+                    "key": [
+                      "<workspace>/",
+                      "build"
+                    ],
+                    "node": {
+                      "items": [
+                        {
+                          "kind": {
+                            "Leaf": {
+                              "Spawn": {
+                                "cache_metadata": {
+                                  "spawn_fingerprint": {
+                                    "env_fingerprints": {
+                                      "fingerprinted_envs": {},
+                                      "untracked_env_config": [
+                                        "<default untracked envs>"
+                                      ]
+                                    }
+                                  },
+                                  "remote_cache": {
+                                    "access": "read",
+                                    "url": "https://cache.example/projects/test"
+                                  }
+                                },
+                                "spawn_command": {
+                                  "spawn_envs": {}
+                                }
+                              }
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

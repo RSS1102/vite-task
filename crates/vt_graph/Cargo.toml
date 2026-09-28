@@ -11,10 +11,9 @@ rust-version.workspace = true
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 wincode = { workspace = true, features = ["derive"] }
-monostate = { workspace = true }
 petgraph = { workspace = true }
 rustc-hash = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive", "rc"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

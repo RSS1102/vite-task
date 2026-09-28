@@ -1,0 +1,30 @@
+{
+  "tasks": {
+    "build": {
+      "command": "vtt write-file dist/output.txt built",
+      "cache": {
+        "input": ["src/**"],
+        "output": ["dist/**"]
+      }
+    },
+    "check": {
+      "command": "vtt print checked",
+      "cache": {
+        "input": ["src/**"],
+        "output": []
+      }
+    },
+    "all": {
+      "command": "vt run build && vt run check"
+    },
+    "fail": {
+      "command": "vtt exit 1",
+      "cache": false
+    },
+    "fail-during-build": {
+      "command": "vtt print done",
+      "dependsOn": ["build", "fail"],
+      "cache": false
+    }
+  }
+}

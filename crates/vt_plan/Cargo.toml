@@ -19,11 +19,12 @@ futures-util = { workspace = true }
 pathdiff = { workspace = true }
 petgraph = { workspace = true }
 rustc-hash = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive", "rc"] }
 sha2 = { workspace = true }
 shell-escape = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+vt_casefold = { workspace = true }
 vt_glob = { workspace = true }
 vt_graph_ser = { workspace = true }
 vt_path = { workspace = true }
@@ -37,6 +38,7 @@ which = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 copy_dir = { workspace = true }
 libtest-mimic = { workspace = true }
+monostate = { workspace = true }
 snapshot_test = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }

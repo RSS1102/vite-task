@@ -8,6 +8,7 @@ mod path_env;
 mod plan;
 pub mod plan_request;
 mod ps1_shim;
+pub mod remote_cache;
 
 use std::{collections::BTreeMap, ffi::OsStr, fmt::Debug, sync::Arc};
 
@@ -21,6 +22,7 @@ use plan::{ParentCacheConfig, plan_query_request, plan_synthetic_request};
 use plan_request::{CacheOverride, PlanRequest, QueryPlanRequest, SyntheticPlanRequest};
 use rustc_hash::FxHashMap;
 use serde::{Serialize, ser::SerializeMap as _};
+use vt_casefold::EnvName;
 use vt_graph::{TaskGraphLoadError, display::TaskDisplay};
 use vt_path::AbsolutePath;
 use vt_str::Str;
@@ -50,7 +52,7 @@ pub struct SpawnCommand {
     /// Environment variables to set for the spawned process, including both
     /// fingerprinted and untracked envs.
     #[serde(serialize_with = "serialize_envs")]
-    pub spawn_envs: Arc<BTreeMap<Arc<OsStr>, Arc<OsStr>>>,
+    pub spawn_envs: Arc<BTreeMap<EnvName<Arc<OsStr>>, Arc<OsStr>>>,
 
     /// Current working directory
     pub cwd: Arc<AbsolutePath>,
@@ -58,7 +60,7 @@ pub struct SpawnCommand {
 
 /// Serialize environment variables as a map from string to string for better readability.
 fn serialize_envs<S>(
-    envs: &BTreeMap<Arc<OsStr>, Arc<OsStr>>,
+    envs: &BTreeMap<EnvName<Arc<OsStr>>, Arc<OsStr>>,
     serializer: S,
 ) -> Result<S::Ok, S::Error>
 where
@@ -66,7 +68,8 @@ where
 {
     let mut map_ser = serializer.serialize_map(Some(envs.len()))?;
     for (key, value) in envs {
-        map_ser.serialize_entry(&key.display().to_string(), &value.display().to_string())?;
+        map_ser
+            .serialize_entry(&key.inner().display().to_string(), &value.display().to_string())?;
     }
     map_ser.end()
 }
@@ -200,16 +203,13 @@ pub async fn plan_query(
     query_plan_request: QueryPlanRequest,
     workspace_path: &Arc<AbsolutePath>,
     cwd: &Arc<AbsolutePath>,
-    envs: &Arc<FxHashMap<Arc<OsStr>, Arc<OsStr>>>,
+    envs: &Arc<FxHashMap<EnvName<Arc<OsStr>>, Arc<OsStr>>>,
     plan_request_parser: &mut (dyn PlanRequestParser + '_),
     task_graph_loader: &mut (dyn TaskGraphLoader + '_),
 ) -> Result<PlanResult, Error> {
     let indexed_task_graph = task_graph_loader.load_task_graph().await?;
 
-    let resolved_global_cache = resolve_cache_with_override(
-        *indexed_task_graph.global_cache_config(),
-        query_plan_request.plan_options.cache_override,
-    );
+    let resolved_global_cache = indexed_task_graph.global_cache_config().clone();
 
     let QueryPlanRequest { query, plan_options } = query_plan_request;
     let query = Arc::new(query);
@@ -225,17 +225,21 @@ pub async fn plan_query(
     plan_query_request(query, plan_options, context).await
 }
 
-const fn resolve_cache_with_override(
+fn resolve_cache_with_override(
     graph_cache: vt_graph::config::ResolvedGlobalCacheConfig,
     cache_override: CacheOverride,
 ) -> vt_graph::config::ResolvedGlobalCacheConfig {
     match cache_override {
-        CacheOverride::ForceEnabled => {
-            vt_graph::config::ResolvedGlobalCacheConfig { scripts: true, tasks: true }
-        }
-        CacheOverride::ForceDisabled => {
-            vt_graph::config::ResolvedGlobalCacheConfig { scripts: false, tasks: false }
-        }
+        CacheOverride::ForceEnabled => vt_graph::config::ResolvedGlobalCacheConfig {
+            scripts: true,
+            tasks: true,
+            ..graph_cache
+        },
+        CacheOverride::ForceDisabled => vt_graph::config::ResolvedGlobalCacheConfig {
+            scripts: false,
+            tasks: false,
+            ..graph_cache
+        },
         CacheOverride::None => graph_cache,
     }
 }
@@ -264,5 +268,6 @@ pub fn plan_synthetic(
         cwd,
         cwd,
         ParentCacheConfig::None,
+        None,
     )
 }

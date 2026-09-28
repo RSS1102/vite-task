@@ -15,6 +15,7 @@ workspace = true
 anstream = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+bytes = { workspace = true }
 wincode = { workspace = true, features = ["derive"] }
 clap = { workspace = true, features = ["derive"] }
 ctrlc = { workspace = true }
@@ -45,8 +46,10 @@ tracing = { workspace = true }
 twox-hash = { workspace = true }
 materialized_artifact = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
+vt_casefold = { workspace = true }
 vt_glob = { workspace = true }
 vt_path = { workspace = true }
+vt_remote_cache = { workspace = true }
 vt_select = { workspace = true }
 vt_str = { workspace = true }
 # Artifact dep under `[dependencies]` — not `[build-dependencies]`, where

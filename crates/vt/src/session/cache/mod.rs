@@ -2,6 +2,8 @@
 
 pub mod archive;
 pub mod display;
+pub mod remote;
+mod validation;
 
 use std::{collections::BTreeMap, fmt::Display, fs::File, io::Write, sync::Arc, time::Duration};
 
@@ -14,9 +16,13 @@ pub use display::{
 use rusqlite::{Connection, OptionalExtension as _};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 use vt_graph::config::ResolvedGlobConfig;
 use vt_path::{AbsolutePath, RelativePathBuf};
-use vt_plan::cache_metadata::{CacheMetadata, ExecutionCacheKey, SpawnFingerprint};
+use vt_plan::{
+    cache_metadata::{CacheMetadata, ExecutionCacheKey, SpawnFingerprint},
+    remote_cache::{RemoteCacheAccess, ResolvedRemoteCacheConfig},
+};
 use vt_str::Str;
 use wincode::{
     SchemaRead, SchemaReadOwned, SchemaWrite,
@@ -25,6 +31,7 @@ use wincode::{
     io::{Reader, Writer},
 };
 
+use self::remote::{ReadError, RemoteClients, Restore, UploadError};
 use super::execute::{
     fingerprint::{PostRunFingerprint, TrackedEnvQuery},
     pipe::StdOutput,
@@ -139,9 +146,27 @@ pub struct CacheEntryValue {
 #[derive(Debug)]
 pub struct ExecutionCache {
     conn: Mutex<Connection>,
+    remote_clients: RemoteClients,
 }
 
-#[derive(Debug, Clone, Serialize)]
+/// A cache hit: the entry to replay, and the cache it came from.
+#[derive(Debug)]
+pub struct CacheHit {
+    pub value: CacheEntryValue,
+    pub source: CacheHitSource,
+}
+
+/// The cache a hit came from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CacheHitSource {
+    /// The local cache.
+    #[default]
+    Local,
+    /// The remote cache. The entry has since been recorded locally.
+    Remote,
+}
+
+#[derive(Debug, Clone)]
 #[expect(
     clippy::large_enum_variant,
     reason = "FingerprintMismatch contains SpawnFingerprint which is intentionally large; boxing would add unnecessary indirection for a short-lived enum"
@@ -149,6 +174,9 @@ pub struct ExecutionCache {
 pub enum CacheMiss {
     NotFound,
     FingerprintMismatch(FingerprintMismatch),
+    /// Reading the remote cache failed, and the local cache has no entry for
+    /// the task.
+    RemoteReadFailed(Arc<ReadError>),
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -309,7 +337,7 @@ impl ExecutionCache {
              CREATE TABLE IF NOT EXISTS task_fingerprints (key BLOB PRIMARY KEY, value BLOB);",
         )?;
         // Lock is released when lock_file is dropped
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self { conn: Mutex::new(conn), remote_clients: RemoteClients::default() })
     }
 
     #[tracing::instrument]
@@ -319,38 +347,84 @@ impl ExecutionCache {
     }
 
     /// Try to hit cache by looking up the cache entry key and validating inputs.
-    /// Returns `Ok(Ok(cache_value))` on cache hit, `Ok(Err(cache_miss))` on miss.
+    /// Returns `Ok(Ok(cache_hit))` on cache hit, `Ok(Err(cache_miss))` on miss.
+    ///
+    /// After a local miss, the remote cache is queried if the task has one. A
+    /// remote hit is recorded locally, with its output archive downloaded into
+    /// `cache_dir`, and is never uploaded. If the local cache has an entry for
+    /// the task, its miss reason is kept. Otherwise the reason comes from the
+    /// remote cache. Remote requests stop when `cancel_token` is cancelled.
     #[tracing::instrument(level = "debug", skip_all)]
     pub async fn try_hit(
         &self,
         cache_metadata: &CacheMetadata,
         globbed_inputs: &BTreeMap<RelativePathBuf, u64>,
         workspace_root: &AbsolutePath,
-    ) -> anyhow::Result<Result<CacheEntryValue, CacheMiss>> {
-        let spawn_fingerprint = &cache_metadata.spawn_fingerprint;
-        let execution_cache_key = &cache_metadata.execution_cache_key;
-
+        cache_dir: &AbsolutePath,
+        cancel_token: &CancellationToken,
+    ) -> anyhow::Result<Result<CacheHit, CacheMiss>> {
         let cache_key = CacheEntryKey::from_metadata(cache_metadata);
 
-        // Try to find the cache entry by key (spawn fingerprint + input config)
-        if let Some(cache_value) = self.get_by_cache_key(&cache_key).await? {
-            // Validate explicit globbed inputs against the stored values
-            if let Some(mismatch) =
-                detect_globbed_input_change(&cache_value.globbed_inputs, globbed_inputs)
-            {
-                return Ok(Err(CacheMiss::FingerprintMismatch(mismatch)));
-            }
+        let local_miss = match self
+            .try_hit_local(cache_metadata, &cache_key, globbed_inputs, workspace_root)
+            .await?
+        {
+            Ok(value) => return Ok(Ok(CacheHit { value, source: CacheHitSource::Local })),
+            Err(miss) => miss,
+        };
+        #[expect(
+            clippy::manual_let_else,
+            reason = "naming every access mode makes adding one a compile error here"
+        )]
+        let url = match &cache_metadata.remote_cache {
+            Some(ResolvedRemoteCacheConfig {
+                access: RemoteCacheAccess::Read | RemoteCacheAccess::ReadWrite,
+                url,
+            }) => url,
+            None => return Ok(Err(local_miss)),
+        };
+        let remote_miss = match self
+            .try_hit_remote(
+                url,
+                cache_metadata,
+                &cache_key,
+                globbed_inputs,
+                workspace_root,
+                cache_dir,
+                cancel_token,
+            )
+            .await?
+        {
+            Ok(value) => return Ok(Ok(CacheHit { value, source: CacheHitSource::Remote })),
+            Err(miss) => miss,
+        };
+        Ok(Err(match local_miss {
+            CacheMiss::NotFound => remote_miss,
+            local_miss => local_miss,
+        }))
+    }
 
-            // Validate post-run fingerprint (inferred inputs + tracked envs)
-            if let Some(mismatch) = cache_value
-                .post_run_fingerprint
-                .validate(workspace_root, &cache_metadata.unfiltered_envs)?
-            {
-                return Ok(Err(CacheMiss::FingerprintMismatch(mismatch.into())));
+    async fn try_hit_local(
+        &self,
+        cache_metadata: &CacheMetadata,
+        cache_key: &CacheEntryKey,
+        globbed_inputs: &BTreeMap<RelativePathBuf, u64>,
+        workspace_root: &AbsolutePath,
+    ) -> anyhow::Result<Result<CacheEntryValue, CacheMiss>> {
+        let execution_cache_key = &cache_metadata.execution_cache_key;
+
+        // Try to find the cache entry by key (spawn fingerprint + input config)
+        if let Some(cache_value) = self.get_by_cache_key(cache_key).await? {
+            if let Some(mismatch) = cache_value.validate(
+                &cache_metadata.unfiltered_envs,
+                globbed_inputs,
+                workspace_root,
+            )? {
+                return Ok(Err(CacheMiss::FingerprintMismatch(mismatch)));
             }
             // Associate the execution key to the cache entry key if not already,
             // so that next time we can find it and report what changed
-            self.upsert_task_fingerprint(execution_cache_key, &cache_key).await?;
+            self.upsert_task_fingerprint(execution_cache_key, cache_key).await?;
             return Ok(Ok(cache_value));
         }
 
@@ -359,51 +433,78 @@ impl ExecutionCache {
         if let Some(old_cache_key) =
             self.get_cache_key_by_execution_key(execution_cache_key).await?
         {
-            // Destructure to ensure we handle all fields when new ones are added.
             // `get_by_cache_key` above returned None for the *current* cache key,
-            // so at least one field on `old_cache_key` must differ from the
-            // current metadata — checked in priority order (spawn → input → output).
-            let CacheEntryKey {
-                spawn_fingerprint: old_spawn_fingerprint,
-                input_config: old_input_config,
-                output_config: old_output_config,
-            } = old_cache_key;
-            let mismatch = if old_spawn_fingerprint != *spawn_fingerprint {
-                FingerprintMismatch::SpawnFingerprint {
-                    old: old_spawn_fingerprint,
-                    new: spawn_fingerprint.clone(),
-                }
-            } else if old_input_config != cache_metadata.input_config {
-                FingerprintMismatch::InputConfig
-            } else {
-                debug_assert_ne!(old_output_config, cache_metadata.output_config);
-                FingerprintMismatch::OutputConfig
-            };
+            // so the associated key must differ.
+            let mismatch = old_cache_key.into_mismatch(cache_key);
             return Ok(Err(CacheMiss::FingerprintMismatch(mismatch)));
         }
 
         Ok(Err(CacheMiss::NotFound))
     }
 
-    /// Update cache after successful execution.
+    /// Fetch the entry from the remote cache at `endpoint`. An exact entry
+    /// that passes validation is a hit once its output archive is downloaded
+    /// and the entry is recorded locally. A fallback entry, a failed
+    /// validation, or a failed read is a miss. An error while validating
+    /// counts as a failed read, so the remote entry never fails the task.
+    #[expect(clippy::too_many_arguments, reason = "forwarded from `try_hit`")]
+    async fn try_hit_remote(
+        &self,
+        endpoint: &Arc<str>,
+        cache_metadata: &CacheMetadata,
+        cache_key: &CacheEntryKey,
+        globbed_inputs: &BTreeMap<RelativePathBuf, u64>,
+        workspace_root: &AbsolutePath,
+        cache_dir: &AbsolutePath,
+        cancel_token: &CancellationToken,
+    ) -> anyhow::Result<Result<CacheEntryValue, CacheMiss>> {
+        let fetched = self
+            .remote_clients
+            .fetch(endpoint, cache_key, &cache_metadata.execution_cache_key, cancel_token)
+            .await;
+        let validate = |cache_value: &CacheEntryValue| {
+            cache_value.validate(&cache_metadata.unfiltered_envs, globbed_inputs, workspace_root)
+        };
+        let Restore { value: cache_value, blob_id } =
+            match remote::resolve(fetched, cache_key, validate) {
+                Ok(restore) => restore,
+                Err(miss) => return Ok(Err(miss)),
+            };
+
+        let output_archive = match blob_id {
+            Some(blob_id) => {
+                match self
+                    .remote_clients
+                    .download_archive(endpoint, &blob_id, cache_dir, cancel_token)
+                    .await
+                {
+                    Ok(archive_name) => Some(archive_name),
+                    Err(err) => return Ok(Err(err.into_miss())),
+                }
+            }
+            None => None,
+        };
+        let cache_value = CacheEntryValue { output_archive, ..cache_value };
+        self.record(cache_key, &cache_metadata.execution_cache_key, &cache_value, cache_dir)
+            .await?;
+        Ok(Ok(cache_value))
+    }
+
+    /// Record an entry locally.
     ///
     /// If a previous entry exists for the same cache key with a different
     /// `output_archive`, the stale archive file in `cache_dir` is removed
     /// (best-effort) so it doesn't accumulate on disk.
-    #[tracing::instrument(level = "debug", skip_all)]
-    pub async fn update(
+    async fn record(
         &self,
-        cache_metadata: &CacheMetadata,
-        cache_value: CacheEntryValue,
+        cache_key: &CacheEntryKey,
+        execution_cache_key: &ExecutionCacheKey,
+        cache_value: &CacheEntryValue,
         cache_dir: &AbsolutePath,
     ) -> anyhow::Result<()> {
-        let execution_cache_key = &cache_metadata.execution_cache_key;
-
-        let cache_key = CacheEntryKey::from_metadata(cache_metadata);
-
         // If a previous entry exists with a stale output archive, delete the
         // old file so the cache directory doesn't accumulate orphaned archives.
-        if let Some(old_value) = self.get_by_cache_key(&cache_key).await?
+        if let Some(old_value) = self.get_by_cache_key(cache_key).await?
             && let Some(old_archive) = old_value.output_archive
             && cache_value.output_archive.as_ref() != Some(&old_archive)
         {
@@ -413,63 +514,45 @@ impl ExecutionCache {
             let _ = std::fs::remove_file(old_archive_path.as_path());
         }
 
-        self.upsert_cache_entry(&cache_key, &cache_value).await?;
-        self.upsert_task_fingerprint(execution_cache_key, &cache_key).await?;
+        self.upsert_cache_entry(cache_key, cache_value).await?;
+        self.upsert_task_fingerprint(execution_cache_key, cache_key).await?;
         Ok(())
     }
-}
 
-/// Compare stored and current globbed inputs, returning the first changed path.
-/// Both maps are `BTreeMap` so we iterate them in sorted lockstep.
-fn detect_globbed_input_change(
-    stored: &BTreeMap<RelativePathBuf, u64>,
-    current: &BTreeMap<RelativePathBuf, u64>,
-) -> Option<FingerprintMismatch> {
-    let mut stored_iter = stored.iter();
-    let mut current_iter = current.iter();
-    let mut s = stored_iter.next();
-    let mut c = current_iter.next();
+    /// Update cache after successful execution, recording the entry locally
+    /// as [`Self::record`] does.
+    ///
+    /// In `read-write` remote mode, the entry is then uploaded to the remote
+    /// cache, until `cancel_token` is cancelled. Returns `Ok(Err(_))` if the
+    /// local update succeeded but the upload failed.
+    #[tracing::instrument(level = "debug", skip_all)]
+    pub async fn update(
+        &self,
+        cache_metadata: &CacheMetadata,
+        cache_value: CacheEntryValue,
+        cache_dir: &AbsolutePath,
+        cancel_token: &CancellationToken,
+    ) -> anyhow::Result<Result<(), UploadError>> {
+        let execution_cache_key = &cache_metadata.execution_cache_key;
 
-    loop {
-        match (s, c) {
-            (None, None) => return None,
-            (Some((sp, _)), None) => {
-                return Some(FingerprintMismatch::InputChanged {
-                    kind: InputChangeKind::Removed,
-                    path: sp.clone(),
-                });
+        let cache_key = CacheEntryKey::from_metadata(cache_metadata);
+
+        self.record(&cache_key, execution_cache_key, &cache_value, cache_dir).await?;
+
+        let url = match &cache_metadata.remote_cache {
+            Some(ResolvedRemoteCacheConfig { access: RemoteCacheAccess::ReadWrite, url }) => url,
+            Some(ResolvedRemoteCacheConfig { access: RemoteCacheAccess::Read, .. }) | None => {
+                return Ok(Ok(()));
             }
-            (None, Some((cp, _))) => {
-                return Some(FingerprintMismatch::InputChanged {
-                    kind: InputChangeKind::Added,
-                    path: cp.clone(),
-                });
-            }
-            (Some((sp, sh)), Some((cp, ch))) => match sp.cmp(cp) {
-                std::cmp::Ordering::Equal => {
-                    if sh != ch {
-                        return Some(FingerprintMismatch::InputChanged {
-                            kind: InputChangeKind::ContentModified,
-                            path: sp.clone(),
-                        });
-                    }
-                    s = stored_iter.next();
-                    c = current_iter.next();
-                }
-                std::cmp::Ordering::Less => {
-                    return Some(FingerprintMismatch::InputChanged {
-                        kind: InputChangeKind::Removed,
-                        path: sp.clone(),
-                    });
-                }
-                std::cmp::Ordering::Greater => {
-                    return Some(FingerprintMismatch::InputChanged {
-                        kind: InputChangeKind::Added,
-                        path: cp.clone(),
-                    });
-                }
-            },
+        };
+        let upload = self
+            .remote_clients
+            .upload(url, &cache_key, execution_cache_key, &cache_value, cache_dir, cancel_token)
+            .await;
+        if let Err(err) = &upload {
+            tracing::debug!(?err, "remote cache upload failed");
         }
+        Ok(upload)
     }
 }
 

@@ -175,6 +175,15 @@ pub enum Error {
     #[error("Invalid value for VP_RUN_CONCURRENCY_LIMIT: {0:?}")]
     InvalidConcurrencyLimitEnv(Arc<OsStr>),
 
+    #[error("Invalid value for VP_REMOTE_CACHE: {0:?}, expected off, read, or read-write")]
+    InvalidRemoteCacheModeEnv(Arc<OsStr>),
+
+    #[error("Invalid value for VP_REMOTE_CACHE_URL: {0:?}")]
+    InvalidRemoteCacheUrlEnv(Arc<OsStr>),
+
+    #[error("Remote caching requires cache.remote.url or VP_REMOTE_CACHE_URL")]
+    MissingRemoteCacheEndpoint,
+
     /// A cycle was detected in the task dependency graph during planning.
     ///
     /// This is caught by `AcyclicGraph::try_from_graph`, which validates that the

@@ -1,0 +1,37 @@
+// run synthetic
+{
+  "graph": [
+    {
+      "key": [
+        "<workspace>/",
+        "synthetic"
+      ],
+      "node": {
+        "items": [
+          {
+            "kind": {
+              "Leaf": {
+                "Spawn": {
+                  "cache_metadata": {
+                    "spawn_fingerprint": {
+                      "env_fingerprints": {
+                        "fingerprinted_envs": {},
+                        "untracked_env_config": [
+                          "<default untracked envs>"
+                        ]
+                      }
+                    },
+                    "remote_cache": null
+                  },
+                  "spawn_command": {
+                    "spawn_envs": {}
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

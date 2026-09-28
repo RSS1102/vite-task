@@ -1,0 +1,29 @@
+// run --no-cache build
+{
+  "graph": [
+    {
+      "key": [
+        "<workspace>/",
+        "build"
+      ],
+      "node": {
+        "items": [
+          {
+            "kind": {
+              "Leaf": {
+                "Spawn": {
+                  "cache_metadata": null,
+                  "spawn_command": {
+                    "spawn_envs": {
+                      "VP_REMOTE_CACHE": "read-write"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

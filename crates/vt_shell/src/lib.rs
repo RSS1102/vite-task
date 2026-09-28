@@ -9,16 +9,16 @@ use brush_parser::{
     },
     word::{WordPiece, WordPieceWithSource},
 };
-use diff::Diff;
 use serde::{Deserialize, Serialize};
+use vt_casefold::EnvName;
 use vt_str::Str;
-use wincode::{SchemaRead, SchemaWrite};
 
 /// "FOO=BAR program arg1 arg2"
-#[derive(SchemaWrite, SchemaRead, Serialize, Deserialize, Debug, PartialEq, Eq, Diff, Clone)]
-#[diff(attr(#[derive(Debug)]))]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
 pub struct TaskParsedCommand {
-    pub envs: BTreeMap<Str, Str>,
+    /// Later assignments override earlier ones with the same name under the
+    /// platform's rules; the first spelling is kept.
+    pub envs: BTreeMap<EnvName<Str>, Str>,
     pub program: Str,
     pub args: Vec<Str>,
 }
@@ -28,7 +28,7 @@ impl Display for TaskParsedCommand {
         // BTreeMap ensures stable iteration order
         for (name, value) in &self.envs {
             Display::fmt(
-                &format_args!("{}={} ", name, shell_escape::escape(value.as_str().into())),
+                &format_args!("{}={} ", name.inner(), shell_escape::escape(value.as_str().into())),
                 f,
             )?;
         }
@@ -193,7 +193,7 @@ fn pipeline_to_command(
     let SimpleCommand { prefix, word_or_name: Some(program), suffix } = simple_command else {
         return None;
     };
-    let mut envs = BTreeMap::<Str, Str>::new();
+    let mut envs = BTreeMap::<EnvName<Str>, Str>::new();
     if let Some(prefix) = prefix {
         let CommandPrefix(items) = prefix;
         for item in items {
@@ -211,7 +211,7 @@ fn pipeline_to_command(
                 return None;
             };
             // Assignment values are not subject to pathname expansion.
-            envs.insert(name.as_str().into(), unquote(value, false)?);
+            envs.insert(EnvName::new(Str::from(name.as_str())), unquote(value, false)?);
         }
     }
     let mut args = Vec::<Str>::new();
@@ -267,6 +267,10 @@ mod tests {
         try_parse_as_and_list(cmd, true)
     }
 
+    fn env(name: &str) -> EnvName<Str> {
+        EnvName::new(Str::from(name))
+    }
+
     #[test]
     fn test_parse_single_command() {
         let source = r"A=B hello world";
@@ -277,7 +281,7 @@ mod tests {
         assert_eq!(
             cmd,
             &TaskParsedCommand {
-                envs: [("A".into(), "B".into())].into(),
+                envs: [(env("A"), "B".into())].into(),
                 program: "hello".into(),
                 args: vec!["world".into()],
             }
@@ -294,12 +298,12 @@ mod tests {
             commands,
             vec![
                 &TaskParsedCommand {
-                    envs: [("A".into(), "B".into())].into(),
+                    envs: [(env("A"), "B".into())].into(),
                     program: "hello".into(),
                     args: vec!["world".into()],
                 },
                 &TaskParsedCommand {
-                    envs: [("FOO".into(), "BE\"R".into())].into(),
+                    envs: [(env("FOO"), "BE\"R".into())].into(),
                     program: "program".into(),
                     args: vec!["arg1".into(), "arg\"2".into()],
                 },
@@ -320,9 +324,9 @@ mod tests {
         // Test that environment variables maintain stable ordering
         let cmd = TaskParsedCommand {
             envs: [
-                ("ZEBRA".into(), "last".into()),
-                ("ALPHA".into(), "first".into()),
-                ("MIDDLE".into(), "middle".into()),
+                (env("ZEBRA"), "last".into()),
+                (env("ALPHA"), "first".into()),
+                (env("MIDDLE"), "middle".into()),
             ]
             .into(),
             program: "test".into(),
@@ -473,7 +477,7 @@ mod tests {
     #[test]
     fn test_assignment_value_pathname_patterns_stay_literal() {
         let parsed = parse("PATTERN=* tool").unwrap();
-        assert_eq!(parsed[0].0.envs["PATTERN"], "*");
+        assert_eq!(parsed[0].0.envs[&env("PATTERN")], "*");
     }
 
     #[test]
@@ -489,31 +493,18 @@ mod tests {
     }
 
     #[test]
-    fn test_task_parsed_command_serialization_stability() {
-        // Create a command with multiple environment variables
-        let cmd = TaskParsedCommand {
-            envs: [
-                ("VAR_C".into(), "value_c".into()),
-                ("VAR_A".into(), "value_a".into()),
-                ("VAR_B".into(), "value_b".into()),
-            ]
-            .into(),
-            program: "program".into(),
-            args: vec!["arg1".into(), "arg2".into()],
-        };
-
-        // Serialize multiple times
-        let bytes1 = wincode::serialize(&cmd).unwrap();
-        let bytes2 = wincode::serialize(&cmd).unwrap();
-
-        // Verify serialization is stable
-        assert_eq!(bytes1, bytes2);
-
-        // Verify deserialization works and maintains order
-        let decoded: TaskParsedCommand = wincode::deserialize(&bytes1).unwrap();
-        assert_eq!(decoded, cmd);
-
-        // Verify the decoded command still has stable string representation
-        assert_eq!(decoded.to_string(), cmd.to_string());
+    fn later_assignments_override_earlier_ones() {
+        let parsed = parse("Foo=first FOO=last program").unwrap();
+        let envs: Vec<_> = parsed[0]
+            .0
+            .envs
+            .iter()
+            .map(|(name, value)| (name.inner().as_str(), value.as_str()))
+            .collect();
+        if cfg!(windows) {
+            assert_eq!(envs, [("Foo", "last")]);
+        } else {
+            assert_eq!(envs, [("FOO", "last"), ("Foo", "first")]);
+        }
     }
 }

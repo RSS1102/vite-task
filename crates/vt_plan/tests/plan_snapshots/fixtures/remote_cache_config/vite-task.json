@@ -1,0 +1,28 @@
+{
+  "cache": {
+    "scripts": true,
+    "remote": {
+      "url": "https://cache.example/projects/test"
+    }
+  },
+  "tasks": {
+    "build": {
+      "command": "vtt print-file package.json",
+      "cache": { "remote": true }
+    },
+    "local-only": {
+      "command": "vtt print-file package.json",
+      "cache": { "remote": false }
+    },
+    "synthetic": {
+      "command": "vt tool print-file package.json",
+      "cache": { "remote": false }
+    },
+    "tracked-controls": {
+      "command": "vtt print-file package.json",
+      "cache": {
+        "env": ["VP_REMOTE_CACHE", "VP_REMOTE_CACHE_URL"]
+      }
+    }
+  }
+}

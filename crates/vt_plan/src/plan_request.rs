@@ -1,6 +1,7 @@
 use std::{ffi::OsStr, sync::Arc};
 
 use rustc_hash::FxHashMap;
+use vt_casefold::EnvName;
 use vt_graph::{config::UserCacheConfig, query::TaskQuery};
 use vt_path::AbsolutePath;
 use vt_str::Str;
@@ -14,7 +15,7 @@ use vt_str::Str;
 pub struct ScriptCommand {
     pub program: Str,
     pub args: Arc<[Str]>,
-    pub envs: Arc<FxHashMap<Arc<OsStr>, Arc<OsStr>>>,
+    pub envs: Arc<FxHashMap<EnvName<Arc<OsStr>>, Arc<OsStr>>>,
     pub cwd: Arc<AbsolutePath>,
 }
 
@@ -49,6 +50,9 @@ pub enum CacheOverride {
 pub struct PlanOptions {
     pub extra_args: Arc<[Str]>,
     pub cache_override: CacheOverride,
+    /// This level's `--remote-cache` flag. `None` when the flag isn't passed,
+    /// leaving `VP_REMOTE_CACHE` from the envs to select the mode.
+    pub remote_cache_mode: Option<crate::remote_cache::RemoteCacheMode>,
     /// Per-level concurrency limit. `None` means inherit from the parent level
     /// (or default to [`crate::DEFAULT_CONCURRENCY_LIMIT`] at the root).
     pub concurrency_limit: Option<usize>,
@@ -94,7 +98,7 @@ pub struct SyntheticPlanRequest {
     /// - To set envs that are not subject to caching but still passed to the spawned child, use `task_options` to configure `untracked_env`.
     /// - To set envs that should be fingerprinted, use `task_options` to configure `env`.
     /// - If neither is set, and caching is enabled, these envs will have not effect.
-    pub envs: Arc<FxHashMap<Arc<OsStr>, Arc<OsStr>>>,
+    pub envs: Arc<FxHashMap<EnvName<Arc<OsStr>>, Arc<OsStr>>>,
 }
 
 #[derive(Debug)]

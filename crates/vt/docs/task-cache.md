@@ -221,13 +221,15 @@ Vite Task uses `fspy` to monitor file system access during task execution:
 
 ### 7. Inputs Configuration
 
-The `input` field in `vite-task.json` controls which files are tracked for cache fingerprinting:
+The `input` field under a task's `cache` controls which files are tracked for cache fingerprinting:
 
 ```json
 {
   "tasks": {
     "build": {
-      "input": ["src/**", "!dist/**", { "auto": true }]
+      "cache": {
+        "input": ["src/**", "!dist/**", { "auto": true }]
+      }
     }
   }
 }
@@ -409,7 +411,7 @@ The root `vite-task.json` can configure caching for the entire workspace:
 
 ### Task-Level Cache Control
 
-Individual tasks can enable or disable caching:
+Individual tasks can enable or disable caching, and configure it with a `cache` object:
 
 ```json
 {
@@ -419,6 +421,15 @@ Individual tasks can enable or disable caching:
       "cache": true,
       "dependsOn": ["lint"]
     },
+    "test": {
+      "command": "vitest run",
+      "cache": {
+        "env": ["NODE_ENV"],
+        "untrackedEnv": ["CI"],
+        "input": ["src/**", "!dist/**"],
+        "output": ["coverage/**"]
+      }
+    },
     "deploy": {
       "command": "deploy-script.sh",
       "cache": false
@@ -426,6 +437,10 @@ Individual tasks can enable or disable caching:
   }
 }
 ```
+
+- Omitted, `true`, or `{}` — caching enabled with default settings
+- `false` — caching disabled
+- An object — caching enabled with the given `env`, `untrackedEnv`, `input`, and `output`
 
 ### CLI Cache Override
 
@@ -542,7 +557,9 @@ Ensure commands produce identical outputs for identical inputs:
 {
   "tasks": {
     "build": {
-      "input": ["src/**", "tsconfig.json", "!src/**/*.test.ts"]
+      "cache": {
+        "input": ["src/**", "tsconfig.json", "!src/**/*.test.ts"]
+      }
     }
   }
 }

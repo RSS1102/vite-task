@@ -2,7 +2,6 @@ pub mod user;
 
 use std::{collections::BTreeSet, sync::Arc};
 
-use monostate::MustBe;
 use rustc_hash::FxHashSet;
 use serde::Serialize;
 pub use user::{
@@ -63,9 +62,9 @@ impl ResolvedTaskOptions {
             Some(ref cwd) if !cwd.as_str().is_empty() => dir.join(cwd).into(),
             _ => Arc::clone(dir),
         };
-        let cache_config = match user_options.cache_config {
-            UserCacheConfig::Disabled { cache: MustBe!(false) } => None,
-            UserCacheConfig::Enabled { cache: _, enabled_cache_config } => {
+        let cache_config = match user_options.cache_config.unwrap_or_default().into_enabled() {
+            None => None,
+            Some(enabled_cache_config) => {
                 let mut untracked_env: FxHashSet<Str> =
                     enabled_cache_config.untracked_env.unwrap_or_default().into_iter().collect();
                 untracked_env.extend(DEFAULT_UNTRACKED_ENV.iter().copied().map(Str::from));
@@ -83,6 +82,7 @@ impl ResolvedTaskOptions {
                 )?;
 
                 Some(CacheConfig {
+                    remote_cache_allowed: enabled_cache_config.remote.unwrap_or(true),
                     env_config: EnvConfig {
                         fingerprinted_envs: enabled_cache_config
                             .env
@@ -100,11 +100,10 @@ impl ResolvedTaskOptions {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[expect(
-    clippy::struct_field_names,
-    reason = "env_config, input_config, output_config are distinct config categories, not a naming smell"
-)]
 pub struct CacheConfig {
+    /// Whether the task's `cache.remote` allows remote caching. An execution uses
+    /// the remote cache only if its `vp run` level also resolves one.
+    pub remote_cache_allowed: bool,
     pub env_config: EnvConfig,
     pub input_config: ResolvedGlobConfig,
     pub output_config: ResolvedGlobConfig,
@@ -379,7 +378,7 @@ impl ResolvedTaskConfig {
         package_dir: &Arc<AbsolutePath>,
         workspace_root: &AbsolutePath,
     ) -> Result<Self, ResolveTaskConfigError> {
-        let UserTaskConfig { command, options } = user_config;
+        let UserTaskConfig { command, options, top_level_cache_fields: _ } = user_config;
         let commands = match command {
             Command::Single(command) => Arc::from([command]),
             Command::Array(commands) => commands,
@@ -444,6 +443,9 @@ pub const DEFAULT_UNTRACKED_ENV: &[&str] = &[
     // GitHub Actions
     "GITHUB_*",
     "RUNNER_*",
+    // https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-cloud-providers#using-custom-actions
+    // ACTIONS_ID_TOKEN_REQUEST_TOKEN is covered by *_TOKEN below.
+    "ACTIONS_ID_TOKEN_REQUEST_URL",
     // Windows specific
     "APPDATA",
     // Node's compile cache uses LOCALAPPDATA to pick its cache directory
