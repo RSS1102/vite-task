@@ -2,6 +2,7 @@ use std::{process::ExitStatus, time::Duration};
 
 use vt_path::RelativePathBuf;
 use vt_server::Error as IpcServerError;
+use vt_str::Str;
 
 use super::cache::{CacheHitSource, CacheMiss, remote::UploadError};
 
@@ -10,6 +11,9 @@ use super::cache::{CacheHitSource, CacheMiss, remote::UploadError};
 pub enum CacheErrorKind {
     /// Cache lookup (`try_hit`) failed.
     Lookup,
+    /// Restoring the output files of a remote cache hit failed. A local hit
+    /// fails with [`ExecutionError::LocalCacheRestore`] instead.
+    Restore,
     /// Writing the cache entry failed after successful execution.
     Update,
 }
@@ -18,6 +22,7 @@ impl std::fmt::Display for CacheErrorKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Lookup => f.write_str("lookup"),
+            Self::Restore => f.write_str("restore"),
             Self::Update => f.write_str("update"),
         }
     }
@@ -33,6 +38,16 @@ pub enum ExecutionError {
     #[error("Cache {kind} failed")]
     Cache {
         kind: CacheErrorKind,
+        #[source]
+        source: anyhow::Error,
+    },
+
+    /// Restoring the output files of a local cache hit failed. The entry
+    /// stays in the cache, so later runs fail the same way until the cache is
+    /// cleared.
+    #[error("Cache restore failed. Run `{program_name} cache clean` to clear the cache")]
+    LocalCacheRestore {
+        program_name: Str,
         #[source]
         source: anyhow::Error,
     },
