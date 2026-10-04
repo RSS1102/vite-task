@@ -1,6 +1,9 @@
 # Cases that use the remote cache backend are ignored because it runs on
 # Node.js. Windows is skipped because the PTY launcher cannot execute pnpm
-# command shims.
+# command shims. Whether an upload to the backend is still running when the
+# tasks finish depends on timing, so steps that upload hide the message about
+# pending uploads. The cases that test it stall the uploads instead, with
+# stalled-remote-cache in front of the backend.
 [[e2e]]
 name = "read_write"
 cfg = "not(windows)"
@@ -16,7 +19,11 @@ steps = [
       "VP_REMOTE_CACHE",
       "read-write",
     ],
-  ], comment = "The fetch finds no entry. The new execution is uploaded with one store request." },
+    [
+      "VP_RUN_INTERNAL_HIDE_PENDING_UPLOADS",
+      "1",
+    ],
+  ], comment = "The fetch finds no entry. The new execution is uploaded with one store request, and vt run waits for it after the task finishes." },
   { argv = [
     "remote-cache-server",
     "vt",
@@ -44,6 +51,10 @@ steps = [
     [
       "VP_REMOTE_CACHE",
       "read-write",
+    ],
+    [
+      "VP_RUN_INTERNAL_HIDE_PENDING_UPLOADS",
+      "1",
     ],
   ] },
   [
@@ -74,6 +85,10 @@ steps = [
     [
       "VP_REMOTE_CACHE",
       "read-write",
+    ],
+    [
+      "VP_RUN_INTERNAL_HIDE_PENDING_UPLOADS",
+      "1",
     ],
   ] },
   [
@@ -143,6 +158,10 @@ steps = [
       "VP_REMOTE_CACHE",
       "read-write",
     ],
+    [
+      "VP_RUN_INTERNAL_HIDE_PENDING_UPLOADS",
+      "1",
+    ],
   ] },
   [
     "vt",
@@ -182,6 +201,10 @@ steps = [
       "VP_REMOTE_CACHE",
       "read-write",
     ],
+    [
+      "VP_RUN_INTERNAL_HIDE_PENDING_UPLOADS",
+      "1",
+    ],
   ] },
   [
     "vt",
@@ -217,6 +240,10 @@ steps = [
     [
       "VP_REMOTE_CACHE",
       "read-write",
+    ],
+    [
+      "VP_RUN_INTERNAL_HIDE_PENDING_UPLOADS",
+      "1",
     ],
   ] },
   { argv = [
@@ -266,6 +293,10 @@ steps = [
       "VP_REMOTE_CACHE",
       "read-write",
     ],
+    [
+      "VP_RUN_INTERNAL_HIDE_PENDING_UPLOADS",
+      "1",
+    ],
   ] },
   [
     "vt",
@@ -314,6 +345,36 @@ steps = [
     "run",
     "build",
   ], comment = "Nothing was cached locally, so the remote entry is fetched and restored again." },
+]
+
+[[e2e]]
+name = "pending_uploads"
+cfg = "not(windows)"
+ignore = true
+steps = [
+  { argv = [
+    "remote-cache-server",
+    "vtt",
+    "stalled-remote-cache",
+    "--stall",
+    "/store",
+    "vt",
+    "run",
+    "all",
+  ], envs = [
+    [
+      "VP_REMOTE_CACHE",
+      "read-write",
+    ],
+  ], interactions = [
+    { "expect-milestone" = "uploads-pending" },
+    { "write-key" = "ctrl-c" },
+  ], comment = "The proxy never forwards the uploads. check doesn't wait for build's upload, so both are still running when check finishes, and vt run waits for them until Ctrl-C." },
+  { argv = [
+    "vt",
+    "run",
+    "--last-details",
+  ], comment = "Both uploads were cancelled." },
 ]
 
 [[e2e]]
@@ -370,7 +431,11 @@ steps = [
       "VP_REMOTE_CACHE_URL",
       "http://127.0.0.1:0/projects/test",
     ],
-  ], comment = "Nothing can listen on port 0. The failed fetch is the miss reason, and the failed upload is a warning. The task succeeds." },
+    [
+      "VP_RUN_INTERNAL_HIDE_PENDING_UPLOADS",
+      "1",
+    ],
+  ], comment = "Nothing can listen on port 0. The failed fetch is the miss reason, and the upload fails in the background with a warning. The task succeeds." },
   { argv = [
     "vt",
     "run",
@@ -479,9 +544,9 @@ steps = [
       "read-write",
     ],
   ], interactions = [
-    { "expect-milestone" = "stalled" },
+    { "expect-milestone" = "uploads-pending" },
     { "write-key" = "ctrl-c" },
-  ], comment = "The proxy forwards the fetch to the backend, which has no entry, but never forwards the upload. Ctrl-C cancels it." },
+  ], comment = "The proxy forwards the fetch to the backend, which has no entry, but never forwards the upload. Ctrl-C cancels it while vt run waits." },
   { argv = [
     "vt",
     "run",
@@ -492,4 +557,58 @@ steps = [
     "run",
     "build",
   ], comment = "The entry is still in the local cache." },
+]
+
+[[e2e]]
+name = "fast_fail_during_upload"
+cfg = "not(windows)"
+ignore = true
+steps = [
+  { argv = [
+    "remote-cache-server",
+    "vtt",
+    "stalled-remote-cache",
+    "--stall",
+    "/store",
+    "vt",
+    "run",
+    "fail-after-build",
+  ], envs = [
+    [
+      "VP_REMOTE_CACHE",
+      "read-write",
+    ],
+  ], interactions = [
+    { "expect-milestone" = "uploads-pending" },
+    { "write-key" = "ctrl-c" },
+  ], comment = "The proxy never forwards the upload. fail-after-build exits after build finishes, which doesn't cancel build's upload, so vt run waits for it until Ctrl-C." },
+]
+
+[[e2e]]
+name = "hide_pending_uploads"
+cfg = "not(windows)"
+ignore = true
+steps = [
+  { argv = [
+    "remote-cache-server",
+    "vtt",
+    "stalled-remote-cache",
+    "--stall",
+    "/store",
+    "vt",
+    "run",
+    "build",
+  ], envs = [
+    [
+      "VP_REMOTE_CACHE",
+      "read-write",
+    ],
+    [
+      "VP_RUN_INTERNAL_HIDE_PENDING_UPLOADS",
+      "1",
+    ],
+  ], interactions = [
+    { "expect-milestone" = "uploads-pending" },
+    { "write-key" = "ctrl-c" },
+  ], comment = "The proxy never forwards the upload. vt run waits for it until Ctrl-C, without the message about pending uploads." },
 ]

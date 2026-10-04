@@ -1,15 +1,18 @@
-# ctrl_c_during_upload
+# pending_uploads
 
-## `VP_REMOTE_CACHE=read-write remote-cache-server vtt stalled-remote-cache --stall /store vt run build`
+## `VP_REMOTE_CACHE=read-write remote-cache-server vtt stalled-remote-cache --stall /store vt run all`
 
-The proxy forwards the fetch to the backend, which has no entry, but never forwards the upload. Ctrl-C cancels it while vt run waits.
+The proxy never forwards the uploads. check doesn't wait for build's upload, so both are still running when check finishes, and vt run waits for them until Ctrl-C.
 
 **→ expect-milestone:** `uploads-pending`
 
 ```
 $ vtt write-file dist/output.txt built
 
-Waiting for 1 remote cache upload to finish (Ctrl-C to cancel)...
+$ vtt print checked
+checked
+
+Waiting for 2 remote cache uploads to finish (Ctrl-C to cancel)...
 ```
 
 **← write-key:** `ctrl-c`
@@ -17,15 +20,19 @@ Waiting for 1 remote cache upload to finish (Ctrl-C to cancel)...
 ```
 $ vtt write-file dist/output.txt built
 
-Waiting for 1 remote cache upload to finish (Ctrl-C to cancel)...
+$ vtt print checked
+checked
+
+Waiting for 2 remote cache uploads to finish (Ctrl-C to cancel)...
 ---
-vt run: remote-cache#build not uploaded to the remote cache: interrupted. (Run `vt run --last-details` for full details)
+vt run: 0/2 cache hit (0%). remote-cache#build (and 1 more) not uploaded to the remote cache: interrupted. (Run `vt run --last-details` for full details)
+[remote-cache] POST /fetch 404
 [remote-cache] POST /fetch 404
 ```
 
 ## `vt run --last-details`
 
-The details show why build wasn't uploaded.
+Both uploads were cancelled.
 
 ```
 
@@ -33,7 +40,7 @@ The details show why build wasn't uploaded.
     Vite+ Task Runner • Execution Summary
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Statistics:   1 task • 0 cache hits • 1 cache miss
+Statistics:   2 tasks • 0 cache hits • 2 cache misses
 Performance:  0% cache hit rate
 
 Task Details:
@@ -41,16 +48,9 @@ Task Details:
   [1] remote-cache#build: $ vtt write-file dist/output.txt built ✓
       → Cache miss: no previous cache entry found
       ⚠ Not uploaded to the remote cache: interrupted
+  ·······················································
+  [2] remote-cache#check: $ vtt print checked ✓
+      → Cache miss: no previous cache entry found
+      ⚠ Not uploaded to the remote cache: interrupted
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-```
-
-## `vt run build`
-
-The entry is still in the local cache.
-
-```
-$ vtt write-file dist/output.txt built ◉ cache hit, replaying
-
----
-vt run: cache hit.
 ```
