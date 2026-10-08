@@ -6,6 +6,4 @@ The default-success rule must apply to nested `vt run --filter ...` invocations 
 
 ```
 No packages matched the filter: nonexistent
----
-vt run: 0/0 cache hit (0%). (Run `vt run --last-details` for full details)
 ```

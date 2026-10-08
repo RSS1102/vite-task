@@ -265,6 +265,11 @@ impl SummaryStats {
 
         stats
     }
+
+    /// Tasks with caching enabled: the denominator of the cache hit rate.
+    const fn cacheable(&self) -> usize {
+        self.total - self.cache_disabled
+    }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -797,29 +802,34 @@ pub fn format_full_summary(summary: &LastRunSummary) -> Vec<u8> {
     let _ = writeln!(buf);
 
     // Performance line
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "percentage is always 0..=100, fits in u32"
-    )]
-    #[expect(clippy::cast_sign_loss, reason = "percentage is always non-negative")]
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "acceptable precision loss for display percentage"
-    )]
-    let cache_rate = if total > 0 { (cache_hits as f64 / total as f64 * 100.0) as u32 } else { 0 };
+    let cacheable = stats.cacheable();
+    let _ = write!(buf, "{}  ", "Performance:".style(Style::new().bold()));
+    if cacheable == 0 {
+        let _ = write!(buf, "{}", "no task has caching enabled".style(Style::new().bright_black()));
+    } else {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "percentage is always 0..=100, fits in u32"
+        )]
+        #[expect(clippy::cast_sign_loss, reason = "percentage is always non-negative")]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "acceptable precision loss for display percentage"
+        )]
+        let cache_rate = (cache_hits as f64 / cacheable as f64 * 100.0) as u32;
 
-    let _ = write!(
-        buf,
-        "{}  {} cache hit rate",
-        "Performance:".style(Style::new().bold()),
-        format_args!("{cache_rate}%").style(if cache_rate >= 75 {
-            Style::new().green().bold()
-        } else if cache_rate >= 50 {
-            CACHE_MISS_STYLE
-        } else {
-            Style::new().red()
-        })
-    );
+        let _ = write!(
+            buf,
+            "{} cache hit rate",
+            format_args!("{cache_rate}%").style(if cache_rate >= 75 {
+                Style::new().green().bold()
+            } else if cache_rate >= 50 {
+                CACHE_MISS_STYLE
+            } else {
+                Style::new().red()
+            })
+        );
+    }
 
     if stats.total_saved > Duration::ZERO {
         let formatted_total_saved = format_summary_duration(stats.total_saved);
@@ -1008,13 +1018,20 @@ impl InputModified {
 /// Render a compact summary (one-liner or empty).
 ///
 /// Rules:
+/// - No tasks → empty
 /// - Single task + not cache hit → empty (no summary at all)
 /// - Single task + cache hit → thin line + "vp run: cache hit, {duration} saved."
 ///   ("remote cache hit" for a remote hit)
-/// - Multi-task → thin line + "vp run: {hits}/{total} cache hit ({rate}%), {duration} saved."
-///   with an optional remote hit count ("({rate}%, {remote} remote)"), failure count,
-///   and `--verbose` hint.
+/// - Multi-task → thin line + "vp run: {hits}/{cacheable} cache hit ({rate}%),
+///   {successful}/{total} successful, {duration} saved." where `cacheable` leaves out tasks
+///   with caching disabled, and `successful` includes cache hits. The hit count is left out
+///   when `cacheable` is 0, and has an optional remote hit count ("({rate}%, {remote} remote)").
+///   Followed by the `--last-details` hint.
 pub fn format_compact_summary(summary: &LastRunSummary, program_name: &str) -> Vec<u8> {
+    if summary.tasks.is_empty() {
+        return Vec::new();
+    }
+
     let stats = SummaryStats::compute(&summary.tasks);
 
     let is_single_task = summary.tasks.len() == 1;
@@ -1048,42 +1065,44 @@ pub fn format_compact_summary(summary: &LastRunSummary, program_name: &str) -> V
         show_last_details_hint = false;
     } else if !is_single_task {
         // Multi-task
+        let _ = write!(buf, "{}", run_label.as_str().style(Style::new().blue().bold()));
+        let cacheable = stats.cacheable();
+
+        // No hit count when no task had caching enabled
+        if cacheable > 0 {
+            let hits = stats.cache_hits;
+
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "percentage is always 0..=100, fits in u32"
+            )]
+            #[expect(clippy::cast_sign_loss, reason = "percentage is always non-negative")]
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "acceptable precision loss for display percentage"
+            )]
+            let rate = (hits as f64 / cacheable as f64 * 100.0) as u32;
+
+            let _ = write!(buf, " {hits}/{cacheable} cache hit ({rate}%");
+            if stats.remote_cache_hits > 0 {
+                let _ = write!(buf, ", {} remote", stats.remote_cache_hits);
+            }
+            let _ = write!(buf, "),");
+        }
+
         let total = stats.total;
-        let hits = stats.cache_hits;
-
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "percentage is always 0..=100, fits in u32"
-        )]
-        #[expect(clippy::cast_sign_loss, reason = "percentage is always non-negative")]
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "acceptable precision loss for display percentage"
-        )]
-        let rate = if total > 0 { (hits as f64 / total as f64 * 100.0) as u32 } else { 0 };
-
+        let successful = total - stats.failed;
+        let successful_style = if successful < total { Style::new().red() } else { Style::new() };
         let _ = write!(
             buf,
-            "{} {hits}/{total} cache hit ({rate}%",
-            run_label.as_str().style(Style::new().blue().bold()),
+            " {} successful",
+            vt_str::format!("{successful}/{total}").style(successful_style)
         );
-        if stats.remote_cache_hits > 0 {
-            let _ = write!(buf, ", {} remote", stats.remote_cache_hits);
-        }
-        let _ = write!(buf, ")");
 
         if stats.total_saved > Duration::ZERO {
             let formatted_total_saved = format_summary_duration(stats.total_saved);
-            let _ = write!(
-                buf,
-                ", {} saved",
-                formatted_total_saved.style(Style::new().green().bold()),
-            );
-        }
-
-        if stats.failed > 0 {
-            let n = stats.failed;
-            let _ = write!(buf, ", {} failed", n.style(Style::new().red()));
+            let _ =
+                write!(buf, ", {} saved", formatted_total_saved.style(Style::new().green().bold()));
         }
 
         let _ = write!(buf, ".");
@@ -1156,10 +1175,8 @@ pub fn format_uploads_pending(count: NonZeroUsize) -> Vec<u8> {
     let _ = writeln!(
         buf,
         "{}",
-        vt_str::format!(
-            "Waiting for {count} remote cache {uploads} to finish (Ctrl-C to cancel)..."
-        )
-        .style(Style::new().bright_black())
+        vt_str::format!("Waiting for {count} remote cache {uploads} to finish...")
+            .style(Style::new().bright_black())
     );
     buf
 }
@@ -1232,6 +1249,14 @@ mod tests {
                 },
             },
         }
+    }
+
+    fn cache_disabled_task(task_name: &str) -> TaskSummary {
+        let mut task = cache_miss_task(task_name);
+        if let TaskResult::Spawned { cache_status, .. } = &mut task.result {
+            *cache_status = SpawnedCacheStatus::Disabled;
+        }
+        task
     }
 
     /// A task in the package at `package_dir` that read and wrote `path`, both
@@ -1352,14 +1377,46 @@ mod tests {
                 cache_miss_task("c"),
             ])
             .as_str(),
-            "---\nvp run: 2/3 cache hit (66%, 1 remote), 2s saved. \
+            "---\nvp run: 2/3 cache hit (66%, 1 remote), 3/3 successful, 2s saved. \
              (Run `vp run --last-details` for full details)\n"
         );
         assert_eq!(
             compact_summary(vec![cache_hit_task("a", CacheHitSource::Local), cache_miss_task("b")])
                 .as_str(),
-            "---\nvp run: 1/2 cache hit (50%), 1s saved. \
+            "---\nvp run: 1/2 cache hit (50%), 2/2 successful, 1s saved. \
              (Run `vp run --last-details` for full details)\n"
+        );
+    }
+
+    #[test]
+    fn cache_hit_rate_leaves_out_tasks_with_caching_disabled() {
+        let tasks = || {
+            vec![
+                cache_hit_task("a", CacheHitSource::Local),
+                cache_miss_task("b"),
+                cache_disabled_task("c"),
+            ]
+        };
+        assert_eq!(
+            compact_summary(tasks()).as_str(),
+            "---\nvp run: 1/2 cache hit (50%), 3/3 successful, 1s saved. \
+             (Run `vp run --last-details` for full details)\n"
+        );
+        assert!(
+            full_summary(tasks())
+                .as_str()
+                .lines()
+                .any(|line| line == "Performance:  50% cache hit rate, 1s saved in total")
+        );
+        assert_eq!(
+            compact_summary(vec![cache_disabled_task("a"), cache_disabled_task("b")]).as_str(),
+            "---\nvp run: 2/2 successful. (Run `vp run --last-details` for full details)\n"
+        );
+        assert!(
+            full_summary(vec![cache_disabled_task("a")])
+                .as_str()
+                .lines()
+                .any(|line| line == "Performance:  no task has caching enabled")
         );
     }
 
@@ -1405,7 +1462,7 @@ mod tests {
         ]);
         assert_eq!(
             summary.as_str(),
-            "---\nvp run: 0/2 cache hit (0%). pkg#a (and 1 more) not uploaded to the remote cache: \
+            "---\nvp run: 0/2 cache hit (0%), 2/2 successful. pkg#a (and 1 more) not uploaded to the remote cache: \
              network error. (Run `vp run --last-details` for full details)\n"
         );
 
@@ -1415,7 +1472,7 @@ mod tests {
         ]);
         assert_eq!(
             summary.as_str(),
-            "---\nvp run: 0/2 cache hit (0%). pkg#a (and 1 more) not uploaded to the remote cache. \
+            "---\nvp run: 0/2 cache hit (0%), 2/2 successful. pkg#a (and 1 more) not uploaded to the remote cache. \
              (Run `vp run --last-details` for full details)\n"
         );
     }
@@ -1423,14 +1480,8 @@ mod tests {
     #[test]
     fn uploads_pending_names_the_count() {
         let pending = |count| strip(&format_uploads_pending(NonZeroUsize::new(count).unwrap()));
-        assert_eq!(
-            pending(1).as_str(),
-            "Waiting for 1 remote cache upload to finish (Ctrl-C to cancel)...\n"
-        );
-        assert_eq!(
-            pending(2).as_str(),
-            "Waiting for 2 remote cache uploads to finish (Ctrl-C to cancel)...\n"
-        );
+        assert_eq!(pending(1).as_str(), "Waiting for 1 remote cache upload to finish...\n");
+        assert_eq!(pending(2).as_str(), "Waiting for 2 remote cache uploads to finish...\n");
     }
 
     #[test]
