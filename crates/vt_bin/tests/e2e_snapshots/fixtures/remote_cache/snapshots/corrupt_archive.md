@@ -1,6 +1,6 @@
 # corrupt_archive
 
-## `VP_REMOTE_CACHE=read-write remote-cache-server vt run build`
+## `VP_REMOTE_CACHE=read-write VP_RUN_INTERNAL_HIDE_PENDING_UPLOADS=1 remote-cache-server vt run build`
 
 ```
 $ vtt write-file dist/output.txt built
@@ -42,7 +42,7 @@ The details include the underlying error.
     Vite+ Task Runner • Execution Summary
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Statistics:   1 tasks • 0 cache hits • 1 cache misses
+Statistics:   1 task • 0 cache hits • 1 cache miss
 Performance:  0% cache hit rate
 
 Task Details:

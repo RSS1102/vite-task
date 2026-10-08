@@ -5,7 +5,14 @@ pub mod display;
 pub mod remote;
 mod validation;
 
-use std::{collections::BTreeMap, fmt::Display, fs::File, io::Write, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    fmt::Display,
+    fs::File,
+    io::Write,
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 // Re-export display functions for convenience
 pub use display::format_cache_status_inline;
@@ -26,12 +33,11 @@ use vt_plan::{
 use vt_str::Str;
 use wincode::{
     SchemaRead, SchemaReadOwned, SchemaWrite,
-    config::{ConfigCore, Configuration},
+    config::Configuration,
     error::{ReadResult, WriteResult},
-    io::{Reader, Writer},
 };
 
-use self::remote::{ReadError, RemoteClients, Restore, UploadError};
+use self::remote::{ReadError, RemoteClients, RemoteUploads, Restore, UploadError};
 use super::execute::{
     fingerprint::{PostRunFingerprint, TrackedEnvQuery},
     pipe::StdOutput,
@@ -90,39 +96,6 @@ impl CacheEntryKey {
     }
 }
 
-/// wincode schema adapter for `Duration`.
-struct DurationSchema;
-
-// SAFETY: Writes exactly `size_of::<u64>() + size_of::<u32>()` bytes matching size_of.
-unsafe impl<C: ConfigCore> SchemaWrite<C> for DurationSchema {
-    type Src = Duration;
-
-    fn size_of(_src: &Self::Src) -> WriteResult<usize> {
-        Ok(size_of::<u64>() + size_of::<u32>())
-    }
-
-    fn write(mut writer: impl Writer, src: &Self::Src) -> WriteResult<()> {
-        <u64 as SchemaWrite<C>>::write(writer.by_ref(), &src.as_secs())?;
-        <u32 as SchemaWrite<C>>::write(writer.by_ref(), &src.subsec_nanos())?;
-        Ok(())
-    }
-}
-
-// SAFETY: Reads u64 + u32, matching the write format; dst is initialized on Ok.
-unsafe impl<'de, C: ConfigCore> SchemaRead<'de, C> for DurationSchema {
-    type Dst = Duration;
-
-    fn read(
-        mut reader: impl Reader<'de>,
-        dst: &mut std::mem::MaybeUninit<Self::Dst>,
-    ) -> ReadResult<()> {
-        let secs = <u64 as SchemaRead<'de, C>>::get(&mut reader)?;
-        let nanos = <u32 as SchemaRead<'de, C>>::get(&mut reader)?;
-        dst.write(Duration::new(secs, nanos));
-        Ok(())
-    }
-}
-
 /// Cached execution result for a task.
 ///
 /// Contains the post-run fingerprint (from fspy), captured outputs,
@@ -131,7 +104,6 @@ unsafe impl<'de, C: ConfigCore> SchemaRead<'de, C> for DurationSchema {
 pub struct CacheEntryValue {
     pub post_run_fingerprint: PostRunFingerprint,
     pub std_outputs: Arc<[StdOutput]>,
-    #[wincode(with = "DurationSchema")]
     pub duration: Duration,
     /// Hashes of explicit input files computed from positive globs.
     /// Files matching negative globs are already filtered out.
@@ -147,6 +119,7 @@ pub struct CacheEntryValue {
 pub struct ExecutionCache {
     conn: Mutex<Connection>,
     remote_clients: RemoteClients,
+    uploads: RemoteUploads,
 }
 
 /// A cache hit: the entry to replay, and the cache it came from.
@@ -162,7 +135,8 @@ pub enum CacheHitSource {
     /// The local cache.
     #[default]
     Local,
-    /// The remote cache. The entry has since been recorded locally.
+    /// The remote cache. The entry is recorded locally once its outputs are
+    /// restored.
     Remote,
 }
 
@@ -337,7 +311,11 @@ impl ExecutionCache {
              CREATE TABLE IF NOT EXISTS task_fingerprints (key BLOB PRIMARY KEY, value BLOB);",
         )?;
         // Lock is released when lock_file is dropped
-        Ok(Self { conn: Mutex::new(conn), remote_clients: RemoteClients::default() })
+        Ok(Self {
+            conn: Mutex::new(conn),
+            remote_clients: RemoteClients::default(),
+            uploads: RemoteUploads::default(),
+        })
     }
 
     #[tracing::instrument]
@@ -350,10 +328,11 @@ impl ExecutionCache {
     /// Returns `Ok(Ok(cache_hit))` on cache hit, `Ok(Err(cache_miss))` on miss.
     ///
     /// After a local miss, the remote cache is queried if the task has one. A
-    /// remote hit is recorded locally, with its output archive downloaded into
-    /// `cache_dir`, and is never uploaded. If the local cache has an entry for
-    /// the task, its miss reason is kept. Otherwise the reason comes from the
-    /// remote cache. Remote requests stop when `cancel_token` is cancelled.
+    /// remote hit has its output archive downloaded into `cache_dir`, is
+    /// recorded locally by [`Self::restore`], and is never uploaded. If the
+    /// local cache has an entry for the task, its miss reason is kept.
+    /// Otherwise the reason comes from the remote cache. Remote requests stop
+    /// when `cancel_token` is cancelled.
     #[tracing::instrument(level = "debug", skip_all)]
     pub async fn try_hit(
         &self,
@@ -376,16 +355,18 @@ impl ExecutionCache {
             clippy::manual_let_else,
             reason = "naming every access mode makes adding one a compile error here"
         )]
-        let url = match &cache_metadata.remote_cache {
-            Some(ResolvedRemoteCacheConfig {
-                access: RemoteCacheAccess::Read | RemoteCacheAccess::ReadWrite,
-                url,
-            }) => url,
+        let remote_config = match &cache_metadata.remote_cache {
+            Some(
+                remote_config @ ResolvedRemoteCacheConfig {
+                    access: RemoteCacheAccess::Read | RemoteCacheAccess::ReadWrite,
+                    ..
+                },
+            ) => remote_config,
             None => return Ok(Err(local_miss)),
         };
         let remote_miss = match self
             .try_hit_remote(
-                url,
+                remote_config,
                 cache_metadata,
                 &cache_key,
                 globbed_inputs,
@@ -442,15 +423,16 @@ impl ExecutionCache {
         Ok(Err(CacheMiss::NotFound))
     }
 
-    /// Fetch the entry from the remote cache at `endpoint`. An exact entry
-    /// that passes validation is a hit once its output archive is downloaded
-    /// and the entry is recorded locally. A fallback entry, a failed
-    /// validation, or a failed read is a miss. An error while validating
-    /// counts as a failed read, so the remote entry never fails the task.
+    /// Fetch the entry from the remote cache that `remote_config` configures.
+    /// An exact entry that passes validation is a hit once its output archive
+    /// is downloaded.
+    /// A fallback entry, a failed validation, or a failed read is a miss. An
+    /// error while validating counts as a failed read, so the remote entry
+    /// never fails the task.
     #[expect(clippy::too_many_arguments, reason = "forwarded from `try_hit`")]
     async fn try_hit_remote(
         &self,
-        endpoint: &Arc<str>,
+        remote_config: &ResolvedRemoteCacheConfig,
         cache_metadata: &CacheMetadata,
         cache_key: &CacheEntryKey,
         globbed_inputs: &BTreeMap<RelativePathBuf, u64>,
@@ -460,7 +442,7 @@ impl ExecutionCache {
     ) -> anyhow::Result<Result<CacheEntryValue, CacheMiss>> {
         let fetched = self
             .remote_clients
-            .fetch(endpoint, cache_key, &cache_metadata.execution_cache_key, cancel_token)
+            .fetch(remote_config, cache_key, &cache_metadata.execution_cache_key, cancel_token)
             .await;
         let validate = |cache_value: &CacheEntryValue| {
             cache_value.validate(&cache_metadata.unfiltered_envs, globbed_inputs, workspace_root)
@@ -475,7 +457,7 @@ impl ExecutionCache {
             Some(blob_id) => {
                 match self
                     .remote_clients
-                    .download_archive(endpoint, &blob_id, cache_dir, cancel_token)
+                    .download_archive(remote_config, &blob_id, cache_dir, cancel_token)
                     .await
                 {
                     Ok(archive_name) => Some(archive_name),
@@ -484,10 +466,7 @@ impl ExecutionCache {
             }
             None => None,
         };
-        let cache_value = CacheEntryValue { output_archive, ..cache_value };
-        self.record(cache_key, &cache_metadata.execution_cache_key, &cache_value, cache_dir)
-            .await?;
-        Ok(Ok(cache_value))
+        Ok(Ok(CacheEntryValue { output_archive, ..cache_value }))
     }
 
     /// Record an entry locally.
@@ -523,36 +502,100 @@ impl ExecutionCache {
     /// as [`Self::record`] does.
     ///
     /// In `read-write` remote mode, the entry is then uploaded to the remote
-    /// cache, until `cancel_token` is cancelled. Returns `Ok(Err(_))` if the
-    /// local update succeeded but the upload failed.
+    /// cache in the background, and the task doesn't wait for it. Returns
+    /// where the upload's error is set if it fails: right away if the upload
+    /// can't start, or later by the background upload. Read it after
+    /// [`Self::wait_for_uploads`] returns.
     #[tracing::instrument(level = "debug", skip_all)]
     pub async fn update(
         &self,
         cache_metadata: &CacheMetadata,
         cache_value: CacheEntryValue,
         cache_dir: &AbsolutePath,
-        cancel_token: &CancellationToken,
-    ) -> anyhow::Result<Result<(), UploadError>> {
+    ) -> anyhow::Result<Arc<OnceLock<UploadError>>> {
         let execution_cache_key = &cache_metadata.execution_cache_key;
 
         let cache_key = CacheEntryKey::from_metadata(cache_metadata);
 
         self.record(&cache_key, execution_cache_key, &cache_value, cache_dir).await?;
 
-        let url = match &cache_metadata.remote_cache {
-            Some(ResolvedRemoteCacheConfig { access: RemoteCacheAccess::ReadWrite, url }) => url,
+        let upload_error = Arc::new(OnceLock::new());
+        let remote_config = match &cache_metadata.remote_cache {
+            Some(
+                remote_config @ ResolvedRemoteCacheConfig {
+                    access: RemoteCacheAccess::ReadWrite,
+                    ..
+                },
+            ) => remote_config,
             Some(ResolvedRemoteCacheConfig { access: RemoteCacheAccess::Read, .. }) | None => {
-                return Ok(Ok(()));
+                return Ok(upload_error);
             }
         };
-        let upload = self
-            .remote_clients
-            .upload(url, &cache_key, execution_cache_key, &cache_value, cache_dir, cancel_token)
-            .await;
-        if let Err(err) = &upload {
-            tracing::debug!(?err, "remote cache upload failed");
+        match self.remote_clients.prepare_upload(
+            remote_config,
+            &cache_key,
+            execution_cache_key,
+            &cache_value,
+            cache_dir,
+        ) {
+            Ok(upload) => self.uploads.spawn(upload, Arc::clone(&upload_error)),
+            Err(err) => {
+                tracing::debug!(?err, "remote cache upload failed");
+                let _ = upload_error.set(err);
+            }
         }
-        Ok(upload)
+        Ok(upload_error)
+    }
+
+    /// The number of uploads to the remote cache still running.
+    pub fn pending_uploads(&self) -> usize {
+        self.uploads.pending()
+    }
+
+    /// Wait for the uploads to the remote cache to finish. If
+    /// `interrupt_token` is cancelled first, or already was, the uploads are
+    /// cancelled instead, each with [`UploadError::Interrupted`] as its error.
+    /// The entries stay in the local cache.
+    pub async fn wait_for_uploads(&self, interrupt_token: &CancellationToken) {
+        self.uploads.wait(interrupt_token).await;
+    }
+
+    /// Restore the output files of `hit` into `workspace_root`.
+    ///
+    /// A remote hit is recorded locally once its outputs are restored. If
+    /// they can't be, its downloaded archive is removed instead, so the next
+    /// run fetches it again. Returns an error if the outputs can't be
+    /// restored.
+    pub async fn restore(
+        &self,
+        cache_metadata: &CacheMetadata,
+        hit: &CacheHit,
+        workspace_root: &AbsolutePath,
+        cache_dir: &AbsolutePath,
+    ) -> anyhow::Result<()> {
+        if let Some(archive_name) = &hit.value.output_archive {
+            let archive_path = cache_dir.join(archive_name.as_str());
+            if let Err(err) = archive::extract_output_archive(workspace_root, &archive_path) {
+                if hit.source == CacheHitSource::Remote {
+                    // Best-effort: the file may already be missing.
+                    let _ = std::fs::remove_file(archive_path.as_path());
+                }
+                return Err(err.context("failed to extract the output archive"));
+            }
+        }
+
+        if hit.source == CacheHitSource::Remote {
+            let cache_key = CacheEntryKey::from_metadata(cache_metadata);
+            if let Err(err) = self
+                .record(&cache_key, &cache_metadata.execution_cache_key, &hit.value, cache_dir)
+                .await
+            {
+                // The outputs are restored, so the task still succeeds. The
+                // next run fetches the entry from the remote cache again.
+                tracing::warn!(?err, "failed to record a remote cache hit locally");
+            }
+        }
+        Ok(())
     }
 }
 

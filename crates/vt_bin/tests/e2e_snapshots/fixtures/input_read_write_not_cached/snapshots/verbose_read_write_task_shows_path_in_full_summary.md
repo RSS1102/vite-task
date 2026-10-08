@@ -12,12 +12,15 @@ Under `-v`, the full summary should list the exact overlapping path that caused 
     Vite+ Task Runner • Execution Summary
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Statistics:   1 tasks • 0 cache hits • 1 cache misses
+Statistics:   1 task • 0 cache hits • 1 cache miss
 Performance:  0% cache hit rate
 
 Task Details:
 ────────────────────────────────────────────────
   [1] @test/rw-pkg#task: ~/packages/rw-pkg$ vtt replace-file-content src/data.txt i ! ✓
-      → Not cached: read and wrote 'packages/rw-pkg/src/data.txt'
+      → Not cached: the task read and wrote 'packages/rw-pkg/src/data.txt'
+        If this file is temporary or shouldn't affect caching, exclude it (or a glob matching it) in the task's `cache` config:
+          input: [{ auto: true }, "!src/data.txt"],
+          output: [{ auto: true }, "!src/data.txt"],
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```

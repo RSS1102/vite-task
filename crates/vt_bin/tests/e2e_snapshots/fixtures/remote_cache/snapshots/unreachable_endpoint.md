@@ -1,8 +1,8 @@
 # unreachable_endpoint
 
-## `VP_REMOTE_CACHE=read-write VP_REMOTE_CACHE_URL=http://127.0.0.1:0/projects/test vt run build`
+## `VP_REMOTE_CACHE=read-write VP_REMOTE_CACHE_URL=http://127.0.0.1:0/projects/test VP_RUN_INTERNAL_HIDE_PENDING_UPLOADS=1 vt run build`
 
-Nothing can listen on port 0. The failed fetch is the miss reason, and the failed upload is a warning. The task succeeds.
+Nothing can listen on port 0. The failed fetch is the miss reason, and the upload fails in the background with a warning. The task succeeds.
 
 ```
 $ vtt write-file dist/output.txt built ○ cache miss: remote cache fetch failed, executing
@@ -21,7 +21,7 @@ The details include the underlying error.
     Vite+ Task Runner • Execution Summary
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Statistics:   1 tasks • 0 cache hits • 1 cache misses
+Statistics:   1 task • 0 cache hits • 1 cache miss
 Performance:  0% cache hit rate
 
 Task Details:

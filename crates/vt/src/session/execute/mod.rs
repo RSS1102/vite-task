@@ -31,7 +31,7 @@ use self::{
     spawn::{ChildHandle, ChildOutcome, SpawnStdio, spawn},
 };
 use super::{
-    cache::{CacheEntryValue, CacheHit, CacheMiss, ExecutionCache, archive},
+    cache::{CacheHit, CacheHitSource, CacheMiss, ExecutionCache},
     event::{
         CacheDisabledReason, CacheErrorKind, CacheNotUpdatedReason, CacheStatus, CacheUpdateStatus,
         ExecutionError,
@@ -339,7 +339,9 @@ impl Report {
 ///
 /// Cancelling `fast_fail_token` kills the process. `cancel_token` must be a
 /// child of `fast_fail_token` that Ctrl-C also cancels: cancelling it stops
-/// remote cache requests and prevents caching.
+/// remote cache lookups and prevents caching. A cached run's upload to the
+/// remote cache runs in the background, and the caller waits for it with
+/// [`ExecutionCache::wait_for_uploads`].
 ///
 /// Every path reports through the single `finish()` below — errors (cache
 /// lookup failure, spawn failure, cache update failure) do not abort the
@@ -410,16 +412,21 @@ async fn run(
     //    runs exactly once on every arm) and either replay the hit — no need
     //    to execute the command — or carry the globbed inputs into the run.
     let (stdio_config, globbed_inputs) = match lookup {
-        CacheLookup::Hit(CacheHit { value: cached, source }) => {
-            let mut stdio_config =
-                reporter.start(CacheStatus::Hit { replayed_duration: cached.duration, source });
+        CacheLookup::Hit { hit, metadata } => {
+            let mut stdio_config = reporter.start(CacheStatus::Hit {
+                replayed_duration: hit.value.duration,
+                source: hit.source,
+            });
             return Ok(replay_cache_hit(
                 &mut stdio_config,
-                &cached,
+                &hit,
+                cache,
+                metadata,
                 workspace_root,
                 cache_dir,
                 program_name,
-            ));
+            )
+            .await);
         }
         CacheLookup::Miss { miss, globbed_inputs } => {
             (reporter.start(CacheStatus::Miss(miss)), globbed_inputs)
@@ -525,9 +532,10 @@ async fn run(
 /// outcome provides: a hit owns the cached entry to replay, a miss keeps the
 /// reason plus the globbed inputs (reused by the cache-update phase after the
 /// run), and disabled has neither.
-enum CacheLookup {
-    /// Cache hit — the cached entry to replay, and where it came from.
-    Hit(CacheHit),
+enum CacheLookup<'a> {
+    /// Cache hit — the cached entry to replay, where it came from, and the
+    /// metadata that looked it up.
+    Hit { hit: CacheHit, metadata: &'a CacheMetadata },
     /// Cache miss — the detailed reason (`NotFound` or `FingerprintMismatch`).
     Miss { miss: CacheMiss, globbed_inputs: BTreeMap<RelativePathBuf, u64> },
     /// Caching is disabled for this task (no cache metadata).
@@ -537,13 +545,13 @@ enum CacheLookup {
 /// Phase 1: compute the globbed inputs and try to hit the cache. A remote hit
 /// downloads its output archive into `cache_dir`. Remote requests stop when
 /// `cancel_token` is cancelled.
-async fn lookup_cache(
-    cache_metadata: Option<&CacheMetadata>,
+async fn lookup_cache<'a>(
+    cache_metadata: Option<&'a CacheMetadata>,
     cache: &ExecutionCache,
     workspace_root: &Arc<AbsolutePath>,
     cache_dir: &AbsolutePath,
     cancel_token: &CancellationToken,
-) -> Result<CacheLookup, Report> {
+) -> Result<CacheLookup<'a>, Report> {
     let Some(cache_metadata) = cache_metadata else {
         return Ok(CacheLookup::Disabled);
     };
@@ -563,7 +571,7 @@ async fn lookup_cache(
         .try_hit(cache_metadata, &globbed_inputs, workspace_root, cache_dir, cancel_token)
         .await
     {
-        Ok(Ok(cached)) => Ok(CacheLookup::Hit(cached)),
+        Ok(Ok(hit)) => Ok(CacheLookup::Hit { hit, metadata: cache_metadata }),
         Ok(Err(miss)) => Ok(CacheLookup::Miss { miss, globbed_inputs }),
         Err(err) => {
             Err(Report::failed(ExecutionError::Cache { kind: CacheErrorKind::Lookup, source: err }))
@@ -572,15 +580,17 @@ async fn lookup_cache(
 }
 
 /// Phase 3 (cache hit): replay the captured stdout/stderr and restore the
-/// output archive.
-fn replay_cache_hit(
+/// output files.
+async fn replay_cache_hit(
     stdio_config: &mut StdioConfig,
-    cached: &CacheEntryValue,
+    hit: &CacheHit,
+    cache: &ExecutionCache,
+    cache_metadata: &CacheMetadata,
     workspace_root: &Arc<AbsolutePath>,
     cache_dir: &AbsolutePath,
     program_name: &str,
 ) -> Report {
-    for output in cached.std_outputs.iter() {
+    for output in hit.value.std_outputs.iter() {
         let writer: &mut dyn std::io::Write = match output.kind {
             pipe::OutputKind::StdOut => &mut stdio_config.writers.stdout_writer,
             pipe::OutputKind::StdErr => &mut stdio_config.writers.stderr_writer,
@@ -589,24 +599,23 @@ fn replay_cache_hit(
         let _ = writer.flush();
     }
 
-    // Restore output files from the cached archive. Failure here means the
-    // archive file is missing, truncated, or otherwise unreadable — the
-    // task can't proceed because the cache promised the outputs would be
-    // restored. Surface a recovery instruction rather than just the raw
-    // I/O error so users know to clear the cache.
-    if let Some(ref archive_name) = cached.output_archive {
-        let archive_path = cache_dir.join(archive_name.as_str());
-        if let Err(err) = archive::extract_output_archive(workspace_root, &archive_path) {
-            let err = err.context(vt_str::format!(
-                "failed to restore cached outputs from {}; the archive may have been deleted \
-                 or corrupted. Run `{program_name} cache clean` to clear the cache.",
-                archive_path.as_path().display()
-            ));
-            return Report::Failed {
-                cache_update: CacheUpdateStatus::NotUpdated(CacheNotUpdatedReason::CacheHit),
-                error: ExecutionError::Cache { kind: CacheErrorKind::Lookup, source: err },
-            };
-        }
+    // Failure here means the archive is missing or unreadable, or its files
+    // can't be written. The task fails because the cache promised the
+    // outputs would be restored.
+    if let Err(err) = cache.restore(cache_metadata, hit, workspace_root, cache_dir).await {
+        let error = match hit.source {
+            CacheHitSource::Local => {
+                ExecutionError::LocalCacheRestore { program_name: program_name.into(), source: err }
+            }
+            // Not recorded locally, so there's no entry to clear.
+            CacheHitSource::Remote => {
+                ExecutionError::Cache { kind: CacheErrorKind::Restore, source: err }
+            }
+        };
+        return Report::Failed {
+            cache_update: CacheUpdateStatus::NotUpdated(CacheNotUpdatedReason::CacheHit),
+            error,
+        };
     }
 
     Report::CacheHit
